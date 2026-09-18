@@ -1,0 +1,24 @@
+# Dữ liệu runtime nặng / PII — không đưa lên GitHub
+workspace/reports/
+workspace/state/
+workspace/.openclaw/
+workspace/memory/contexts/
+workspace/memory/antispam/
+workspace/memory/conversations/
+
+# Session transcript dumps, file tạm, media
+workspace/openclaw-session-*.html
+workspace/today_files.txt
+workspace/9router_check.txt
+workspace/tmp/
+workspace/tmp_ocr_frames/
+workspace/tmp_video_frames/
+workspace/media/
+workspace/memory/*.jpg
+workspace/memory/*.png
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
