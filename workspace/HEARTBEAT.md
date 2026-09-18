@@ -26,3 +26,8 @@ Memory giờ dùng per-user files (1 file/user). Iterate folder + check mtime:
 - Check `memory/whitepaper-data.md` → verify "Last synced" date is today or yesterday
 - If last sync is older than 2 days → cron job may have failed → notify admin
 - If whitepaper content has major changes → notify admin
+
+### 🧾 KB Health Check (Daily)
+- `exec`: `node scripts/kb-lint.mjs`
+- Exit code 0 → không làm gì.
+- Exit code ≠ 0 → gửi admin Anh Phi (7835139312) qua tool `message` (`{"channel":"telegram","to":"7835139312","text":"..."}`): tiêu đề `⚠️ KB lint failed` + tối đa 5 dòng `ERROR` đầu tiên. KHÔNG tự sửa file KB.
