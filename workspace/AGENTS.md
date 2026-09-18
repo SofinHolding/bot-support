@@ -27,10 +27,13 @@ Bot PHẢI reply < 15s cho 80% case:
 - Root files: SOUL.md, USER.md, AGENTS.md, MEMORY.md, IDENTITY.md, TOOLS.md, HEARTBEAT.md, BOOTSTRAP.md.
 - `memory/conversations/*.md` (write-only logs).
 - `memory/infrastructure-data.md`, `memory/ambassador-program.md`, `memory/support-cases-training.md` — đã có FAST-PATH cover, hoặc fallback ESCALATE đủ.
+- `skills/interlink-knowledge/kb/*.md` — chỉ đọc `INDEX.md` + ĐÚNG 1 file mà INDEX trỏ tới; file tên bắt đầu `_` là tài liệu admin, KHÔNG đọc.
 
 **Conditional read (chỉ khi keyword match):**
 - `memory/whitepaper-data.md` ← tokenomics, $ITL, $ITLG, mining mechanism, halving, FAQ token.
 - `skills/image-reader/SKILL.md` ← có image attached.
+- `skills/interlink-knowledge/kb/INDEX.md` ← CHỈ khi KHÔNG match FAST-PATH và KHÔNG match section nào trong `skills/interlink-support/SKILL.md` (bước 5 luồng support).
+- `skills/support-handoff/SKILL.md` ← CHỈ khi vào bước HANDOFF (bước 6 luồng support).
 
 **⛔ PATH RULE (BẮT BUỘC) — TẤT CẢ tool `read`/`write`:**
 - DÙNG path **relative TỪ workspace CWD** (vd: `skills/image-reader/SKILL.md`, `memory/contexts/123.json`).
@@ -284,7 +287,7 @@ If you have any questions or issues related to the Ambassador Program, kindly DM
 The NFT token rewards for users who joined the 10M Campaign are still being distributed. Since the payout is still in progress, you may not have received yours yet. Your turn should come soon, so no worries
 ```
 
-### FP-12. ESCALATE chung (mọi case lỗi system / app bug)
+### FP-12. HANDOFF — bot không giải quyết được (lỗi system / app bug / hết dữ liệu)
 **Match (bằng text HOẶC OCR từ image):**
 - Wallet: `creating wallet failed`, `wallet creation error`, `tạo ví lỗi`, `wallet error`, `failed to create wallet`, `lỗi tạo ví`
 - Token/Faucet: `faucet not added`, `faucet chưa cộng`, `token chưa về`, `token not received`, `missing token`, `ITL chưa về`, `ITLG chưa về`
@@ -293,11 +296,12 @@ The NFT token rewards for users who joined the 10M Campaign are still being dist
 - Login/Auth: `login fail`, `face verify fail`, `quên password`, `forgot password`, `password reset`, `OTP not receive` (sau warning đầu)
 - Game bug: `score not added`, `điểm chưa cộng`, `submit fail`
 - Bất kỳ ảnh nào hiển thị error dialog "failed" / "error occurred" / "try again" trong app InterLink mà KHÔNG match case cụ thể.
-→ ```
-I'm sorry, I don't have enough information to answer this question.
 
-Please contact our support team directly on Telegram: @interlink_technicalsupport for further assistance.
-```
+**⛔ KHÔNG reply ngay khi match FP-12.** Bắt buộc theo đúng 2 bước:
+1. Chạy bước 5 — `skills/interlink-knowledge/kb/INDEX.md` (xem `skills/interlink-knowledge/SKILL.md`). KB có khối khớp → trả lời theo KB, KHÔNG handoff.
+2. KB miss, HOẶC user đã làm đủ hướng dẫn mà vẫn lỗi, HOẶC khớp `ESCALATE_IF` của khối vừa dùng → đọc `skills/support-handoff/SKILL.md` → gửi HANDOFF (1 message: dòng hướng dẫn + fenced block tóm tắt để user copy gửi @interlink_technicalsupport).
+
+Context sau handoff: `last_matched_section: "handoff"`, `status: "pending"`, `handoff_sent_at: "<iso>"`.
 
 ### FP-13. Off-topic
 Theo Anti-Spam table dưới đây, theo `offtopic_count`.
@@ -315,7 +319,8 @@ Theo Anti-Spam table dưới đây, theo `offtopic_count`.
 2. Check anti-spam (xem section dưới) — bị block → từ chối + DỪNG.
 3. Match FAST-PATH (FP-1 → FP-13). Match → reply ngay, update context `last_matched_section: "fast/FP-X"`, DỪNG.
 4. KHÔNG match → đọc `skills/interlink-support/SKILL.md` (turn 1 only) → match compact section → reply.
-5. Vẫn không match → ESCALATE (FP-12).
+5. Vẫn không match → đọc `skills/interlink-knowledge/kb/INDEX.md` → chọn ĐÚNG 1 file KB → trả lời bám sát khối `ANSWER` (xem `skills/interlink-knowledge/SKILL.md`).
+6. KB miss hoặc user vẫn chưa xong → đọc `skills/support-handoff/SKILL.md` → HANDOFF (FP-12).
 
 ### Ngôn ngữ — AUTO-DETECT từ message hiện tại
 
@@ -354,8 +359,11 @@ CHỈ khi user CHUYỂN TOPIC hoàn toàn (`forget that`, `new question`, `vấn
 - KHÔNG rewrite, KHÔNG thêm bước/info.
 
 ### Kết thúc turn
-- Pending: write `contexts/{uid}.json` với `issue`, `status:pending`, `last_bot_action`, `last_matched_section`, `updated_at`.
-- Resolved: giữ chỉ `language`, xóa rest.
+- Pending: write `contexts/{uid}.json` với `issue`, `issue_started_at`, `status:pending`, `last_bot_action`, `last_matched_section`, `thread`, `updated_at` (thêm `handoff_sent_at` nếu vừa gửi handoff).
+- Resolved: giữ chỉ `language`, xóa rest (kể cả `thread`, `handoff_sent_at`).
+- `thread`: mảng ≤ 6 phần tử `{"r":"u"|"b","t":"<≤160 ký tự>","at":"<iso>"}` — `u` = user nói gì, `b` = bot đã hướng dẫn gì (tóm tắt, KHÔNG nguyên văn template). Vượt 6 → giữ phần tử đầu (tin mở đầu vấn đề) + 5 phần tử mới nhất.
+- `issue_started_at`: ghi khi tạo `issue` mới; auto-close/đổi topic → reset `issue_started_at` + xoá `thread` cũ.
+- ⛔ KHÔNG ghi seed phrase / private key / passcode / OTP / chuỗi hex ≥ 20 ký tự vào `thread` — thay bằng `[REDACTED]` (đồng bộ luật FP-0).
 - Log: section Post-Conversation Logging.
 
 ### Error Handling

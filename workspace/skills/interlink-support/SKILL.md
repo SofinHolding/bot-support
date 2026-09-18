@@ -34,12 +34,7 @@ That's just a notification email. Please monitor the KYC section in the Interlin
 **Case 2 — User HỎI TIẾP với nội dung mới (CHỈ áp dụng khi turn này KHÔNG kèm ảnh FP-5b Type 1/Type 2):** match keyword: `Nooo`, `still nothing`, `still not`, `still wait`, `still waiting`, `vẫn chưa thấy`, `vẫn chưa được`, `vẫn ko thấy`, `đã chờ mấy ngày`, `waited X days`, `checked but no`, `not yet`, `still pending`, `still waiting after`, `help me please`, `what should I do`, `tôi phải làm gì`, `giúp tôi với`, `please help`, hoặc câu hỏi/yêu cầu hỗ trợ thêm.
 
 **⚠️ Lưu ý quan trọng:** Nếu turn này có ẢNH match FP-5b (Type 1 email InterLink hoặc Type 2 screen KYC queue) → KHÔNG match Case 2, áp dụng FP-5b HIGHEST PRIORITY OVERRIDE → reply NGUYÊN VĂN template KYC notification (kể cả khi caption text là "still wait", "still nothing", v.v.).
-→ **GỬI NGUYÊN VĂN template FP-12, MỘT message DUY NHẤT**. **⛔ KHÔNG output câu nào trước/sau** (KHÔNG "Checking the follow-up rule...", KHÔNG "Let me check...", KHÔNG "I see...", KHÔNG mọi narration). Reply ONLY:
-```
-I'm sorry, I don't have enough information to answer this question.
-
-Please contact our support team directly on Telegram: @interlink_technicalsupport for further assistance.
-```
+→ **HANDOFF theo AGENTS.md FP-12** (bước 5 KB → bước 6 handoff). **⛔ KHÔNG output câu nào trước/sau** ngoài dòng hướng dẫn + fenced block của `skills/support-handoff/SKILL.md`.
 
 **Case 3 — User cảm ơn/đồng ý** (`okay thank you`, `thanks`, `got it`, `ok`, `cảm ơn`):
 → `You're welcome` (không escalate).
@@ -322,8 +317,4 @@ Requirement: the wallet must be active (Trade, Swap).
 
 ## ⛔ KHÔNG khớp case nào → ESCALATE
 
-→ ```
-I'm sorry, I don't have enough information to answer this question.
-
-Please contact our support team directly on Telegram: @interlink_technicalsupport for further assistance.
-```
+→ Chạy bước 5 (KB admin: `skills/interlink-knowledge/kb/INDEX.md`). KB miss → **HANDOFF theo AGENTS.md FP-12**.
