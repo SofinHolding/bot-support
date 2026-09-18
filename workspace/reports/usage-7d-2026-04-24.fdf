@@ -1,0 +1,19 @@
+%FDF-1.2
+1 0 obj
+<<
+/FDF <<
+  /Fields [
+    << /T (users) /V (1139) >>
+    << /T (messages) /V (13533) >>
+    << /T (total_tokens) /V (424800025) >>
+    << /T (range_from) /V (2026-04-20) >>
+    << /T (range_to) /V (2026-04-24) >>
+  ]
+>>
+>>
+endobj
+trailer
+<<
+/Root 1 0 R
+>>
+%%EOF
