@@ -1,0 +1,59 @@
+# Ba khối triển khai + Postgres (pgvector). Chạy: docker compose up -d --build
+# Lần đầu: cp .env.example .env và điền TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_IDS, OWNER_TELEGRAM_ID, khoá LLM.
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
+    MEDIA_DIR: /app/data/media
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+  volumes:
+    - media:/app/data/media
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support}
+      POSTGRES_DB: support
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support -d support"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    # Không publish cổng 5432 ra ngoài: chỉ các service trong mạng compose truy cập được.
+
+  bot:
+    <<: *app
+    command: ["node", "dist/bot.js"]
+    ports: ["3000:3000"] # webhook Telegram: đặt sau reverse proxy HTTPS
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  admin:
+    <<: *app
+    command: ["node", "dist/admin.js"]
+    ports: ["3001:3001"] # đặt sau reverse proxy HTTPS; đặt COOKIE_SECURE=true và TRUST_PROXY=true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *app
+    command: ["node", "dist/worker.js"]
+
+volumes:
+  pgdata:
+  media:

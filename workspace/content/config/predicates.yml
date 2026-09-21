@@ -1,0 +1,163 @@
+# Predicate dùng chung trong requires / excludes / rules của template.
+# Đây là cấu hình được bảo vệ: sửa ở đây có thể đổi hành vi của nhiều template cùng lúc.
+# Cụm từ được so khớp sau khi bỏ dấu tiếng Việt, hạ chữ thường và bỏ dấu câu.
+predicates:
+  mentions_kyc:
+    any: [kyc, verification, verify, verified, curator, xác minh, xac minh, verifikation]
+
+  # FP-5b Case A, điều kiện 1: đã nhận email/notification
+  mentions_kyc_email_received:
+    any:
+      - got mail
+      - got my email
+      - got email
+      - received mail
+      - received email
+      - verification mail in my inbox
+      - kyc verification mail
+      - verification email
+      - email says upload documents
+      - nhận email xác minh
+      - email rồi
+      - quá trình xác minh đã sẵn sàng
+
+  # FP-5b Case A, điều kiện 2: app vẫn đang chờ / queue
+  still_waiting:
+    any:
+      - still in queue
+      - still in the queue
+      - still waiting
+      - still pending
+      - not yet up to 24 hours
+      - vẫn ở queue
+      - vẫn chờ
+      - không thấy màn hình xác minh
+      - app chưa thấy
+      - in the queue
+      - in queue
+
+  # FP-6b Case A
+  completed_level_1:
+    any:
+      - completed level 1
+      - finished level 1
+      - done step 1
+      - passed stage 1
+      - level 1 done
+      - first kyc done
+      - hoàn thành level 1
+      - hoàn tất kyc lần đầu
+      - hoàn tất thủ tục kyc lần đầu
+      - xong bước 1
+      - qua level 1
+
+  # FP-6b Case C
+  wants_speed_up:
+    any:
+      - speed up kyc
+      - speed up verification
+      - faster kyc
+      - expedite kyc
+      - push kyc faster
+      - đẩy nhanh kyc
+      - đẩy nhanh xác minh
+      - kyc nhanh hơn
+      - muốn nhanh kyc
+
+  # FP-6b Case B: "20 days", "2 months", "2 tháng", "20 ngày"...
+  mentions_duration:
+    regex: '\b\d+\s*(day|days|week|weeks|month|months|ngay|tuan|thang)\b'
+    normalized: true
+
+  mentions_duration_with_kyc:
+    all_of: [mentions_kyc, mentions_duration]
+
+  mentions_campaign_10m:
+    any: [10m campaign, campaign 10m, 10m, 10 million, 10 triệu]
+
+  nft_not_received:
+    any:
+      - chưa nhận
+      - not received
+      - haven't received
+      - have not received
+      - didn't receive
+      - did not receive
+      - not own
+      - do you not own this nft
+      - chưa có nft
+      - không thấy nft
+
+  # S04 "Quên Login ID" (khác FP-8 "forgot ID"): đã quên + nhắc tới Login ID
+  mentions_forgot:
+    any: [forgot, forget, forgotten, lost, cant remember, can't remember, dont remember, don't remember, quên, không nhớ]
+
+  mentions_login_id:
+    any: [login id, id đăng nhập, id dang nhap]
+
+  # ---- Loại tin follow-up (chỉ áp dụng cho tin NGẮN, xem follow-up.maxWords trong code) ----
+  is_thanks:
+    any: [thanks, thank you, thx, ty, got it, ok, okay, oke, cảm ơn, cám ơn, okay thank you, ok thanks, thanks a lot]
+
+  is_negative:
+    any:
+      - "no"
+      - nope
+      - not burn
+      - no burn
+      - không phải burn
+      - still not
+      - still nothing
+      - still wait
+      - still waiting
+      - not yet
+      - still pending
+      - nooo
+      - vẫn chưa
+      - vẫn chưa thấy
+      - vẫn chưa được
+      - vẫn ko thấy
+      - đã chờ mấy ngày
+      - checked but no
+      - help me
+      - help me please
+      - please help
+      - what should i do
+      - tôi phải làm gì
+      - giúp tôi với
+
+  is_not_receive:
+    any: [not receive, still not receive, not receiving, didn't receive, vẫn không nhận được, không nhận được]
+
+  no_old_email:
+    any:
+      - no longer have old email
+      - no longer have my old email
+      - lost old email
+      - lost my old email
+      - don't have old email
+      - không còn email cũ
+      - không có email cũ
+
+  # Khách tuyên bố đổi chủ đề => bỏ qua ngữ cảnh follow-up
+  topic_change:
+    any: [new question, forget that, another question, vấn đề khác, câu hỏi khác]
+
+  # Câu hỏi về tri thức dự án (AGENTS.md: "whitepaper-data.md <- tokenomics, $ITL, $ITLG, mining mechanism, halving, FAQ token")
+  knowledge_topic:
+    any:
+      - tokenomics
+      - $itl
+      - $itlg
+      - itl token
+      - itlg token
+      - genesis token
+      - mining mechanism
+      - halving
+      - whitepaper
+      - token supply
+      - total supply
+      - vesting
+      - token allocation
+      - dual token
+      - human currency

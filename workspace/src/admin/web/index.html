@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>InterLink Support - Quản trị</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Toàn bộ giao diện được dựng bằng app.js (không có script/style/handler inline: CSP). -->
+  <header id="topbar" class="topbar" hidden>
+    <div class="topbar-in">
+      <div class="brand">InterLink Support<small>quản trị</small></div>
+      <div class="spacer"></div>
+      <div class="who" id="who"></div>
+    </div>
+    <nav id="nav" class="nav" aria-label="Điều hướng"></nav>
+  </header>
+  <main id="app" aria-live="polite"><div class="loading">Đang tải...</div></main>
+  <div class="footer" id="footer"></div>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <noscript><p class="notice notice-err">Trang quản trị cần bật JavaScript.</p></noscript>
+  <script src="/app.js" defer></script>
+</body>
+</html>

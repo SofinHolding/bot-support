@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.git
+legacy
+docs
+tests
+.env
+*.md
+!content/**/*.md
