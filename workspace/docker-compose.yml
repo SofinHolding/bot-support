@@ -2,7 +2,9 @@
 # Lần đầu: cp .env.example .env và điền TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_IDS, OWNER_TELEGRAM_ID, khoá LLM.
 x-app: &app
   build: .
-  env_file: .env
+  env_file:
+    - path: .env
+      required: false
   environment:
     DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
     MEDIA_DIR: /app/data/media
