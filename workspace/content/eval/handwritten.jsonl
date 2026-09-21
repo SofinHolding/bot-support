@@ -1,0 +1,37 @@
+{"question": "when can I take my tokens out of the app?", "expected": "fp-2-withdraw"}
+{"question": "mình muốn rút ITLG về ví thì làm thế nào", "expected": "fp-2-withdraw"}
+{"question": "is there any date for listing on exchange", "expected": "fp-3-listing-tge"}
+{"question": "bao giờ token lên sàn vậy admin", "expected": "fp-3-listing-tge"}
+{"question": "my ITLG balance went down today, why?", "expected": "fp-4-itlg-burn"}
+{"question": "sao ITLG của tôi bị trừ", "expected": "fp-4-itlg-burn"}
+{"question": "how do I do the KYC process", "expected": "fp-5-how-to-kyc"}
+{"question": "I received the email that says start verifying but the app still shows in queue", "expected": "fp-5b-kyc-email-queue"}
+{"question": "đã nhận email nhưng vào app vẫn ở hàng chờ", "expected": "fp-5b-kyc-email-queue"}
+{"question": "kyc slow, curator hasn't picked me", "expected": "fp-6-kyc-slow"}
+{"question": "finished level 1 of KYC, what now?", "expected": "fp-6b-kyc-review-long"}
+{"question": "my KYC has been in review for 2 weeks", "expected": "fp-6b-kyc-review-long"}
+{"question": "I need to change the email of my account", "expected": "fp-7-change-email"}
+{"question": "tôi muốn đổi email tài khoản", "expected": "fp-7-change-email"}
+{"question": "I forgot my ID", "expected": "fp-8-forgot-id"}
+{"question": "can you delete my account please", "expected": "fp-9-delete-account"}
+{"question": "tôi muốn xóa tài khoản", "expected": "fp-9-delete-account"}
+{"question": "can I change my ID?", "expected": "fp-10-change-id"}
+{"question": "how can I become an ambassador of interlink", "expected": "fp-11-ambassador"}
+{"question": "I completed the 10M campaign task but I did not receive the NFT", "expected": "fp-11b-campaign-10m-nft"}
+{"question": "creating wallet failed, please help", "expected": "esc-wallet-create"}
+{"question": "swap fail and my token is gone", "expected": "esc-swap"}
+{"question": "how to create a wallet", "expected": "wallet-create"}
+{"question": "how to check my seedphrase", "expected": "wallet-check-seedphrase"}
+{"question": "how to sign up", "expected": "how-to-sign-up"}
+{"question": "cách đăng ký tài khoản interlink", "expected": "how-to-sign-up"}
+{"question": "where do I enter the referral code", "expected": "referral-code"}
+{"question": "I did not receive OTP email", "expected": "otp-email"}
+{"question": "how to create a mining group", "expected": "group-mining-create"}
+{"question": "how do I earn more ITLG", "expected": "itlg-earn-more"}
+{"question": "when is the weekly reward paid", "expected": "weekly-reward-schedule"}
+{"question": "camera black screen when scanning face", "expected": "face-scan-black-screen"}
+{"question": "what is the HCS formula", "expected": "hcs-formula"}
+{"question": "what is interlink", "expected": "whitepaper-general"}
+{"question": "the black cloud in the game is a bug?", "expected": "game-slime-cloud"}
+{"question": "my parrot refuses to eat vegetables", "expected": null}
+{"question": "zebra quantum banana mango", "expected": null}

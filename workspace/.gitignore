@@ -1,23 +1,15 @@
-# Sensitive runtime data
-.openclaw/
-state/
-memory/conversations/
-memory/antispam/
-memory/contexts/
-memory/antispam-state.json
-memory/conversation-context.json
+# dependencies / build
+node_modules/
+dist/
 
-# Oversized runtime datasets (exceed GitHub 100MB/file limit, contain user PII)
-reports/usage-daily.jsonl
-reports/user-index.json
-
-# Scratch / working directories
-tmp/
-tmp_video_frames/
-tmp_ocr_frames/
-
-# OS / editor junk
-.DS_Store
-Thumbs.db
+# secrets and local state
+.env
+.env.*
+!.env.example
+data/
 *.log
 *.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db

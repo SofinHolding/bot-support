@@ -1,0 +1,81 @@
+/** Cấu hình chạy được đổi từ Admin Web, không cần deploy lại. Giá trị mặc định lấy từ các luật/ngưỡng của hệ thống cũ. */
+import type { OpsRepo } from "../db/repo-ops";
+
+export interface Settings {
+  "router.semantic_confident": number;
+  "router.semantic_margin": number;
+  "router.semantic_suggest": number;
+  "router.tier3_mode": "extractive" | "generative";
+  "router.tier3_min_score": number;
+  "router.too_short_max_chars": number;
+
+  "episode.t_gap_minutes": number; // im lặng quá ngưỡng này thì open -> dormant
+  "episode.t_abandon_days": number; // dormant quá ngưỡng này thì tự đóng (HEARTBEAT.md: 7 ngày)
+  "episode.summary_every_k": number;
+  "episode.closed_lookback_days": number;
+  "episode.ask_when_unclear": boolean;
+
+  "antispam.stale_days": number; // HEARTBEAT.md: xoá antispam không hoạt động > 30 ngày
+
+  "alerts.escalation_daily_threshold": number; // cron cũ: > 100 template escalate/ngày thì báo owner
+  "alerts.new_questions_threshold": number; // HEARTBEAT.md: "nhiều câu hỏi mới" thì báo owner cập nhật skill
+  "alerts.whitepaper_stale_days": number; // HEARTBEAT.md: sync quá 2 ngày thì báo
+
+  "limits.tokens_per_user_day": number; // chống đốt token: vượt thì không gọi LLM cho khách đó trong ngày
+  "batching.window_ms": number; // gom tin nhắn liên tiếp (gateway cũ: debounce 2000ms)
+  "retention.media_days": number;
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  "router.semantic_confident": 0.82,
+  "router.semantic_margin": 0.08,
+  "router.semantic_suggest": 0.35,
+  "router.tier3_mode": "extractive",
+  "router.tier3_min_score": 0.25,
+  "router.too_short_max_chars": 2,
+
+  "episode.t_gap_minutes": 60,
+  "episode.t_abandon_days": 7,
+  "episode.summary_every_k": 6,
+  "episode.closed_lookback_days": 30,
+  "episode.ask_when_unclear": false,
+
+  "antispam.stale_days": 30,
+
+  "alerts.escalation_daily_threshold": 100,
+  "alerts.new_questions_threshold": 5,
+  "alerts.whitepaper_stale_days": 2,
+
+  "limits.tokens_per_user_day": 200_000,
+  "batching.window_ms": 2000,
+  "retention.media_days": 30,
+};
+
+export class SettingsService {
+  private cache: { at: number; value: Settings } | null = null;
+  constructor(private readonly ops: OpsRepo, private readonly ttlMs = 10_000, private readonly now: () => number = Date.now) {}
+
+  async get(): Promise<Settings> {
+    if (this.cache && this.now() - this.cache.at < this.ttlMs) return this.cache.value;
+    const stored = await this.ops.getSettings();
+    const merged = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+    for (const k of Object.keys(DEFAULT_SETTINGS)) if (stored[k] !== undefined && typeof stored[k] === typeof (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[k]) merged[k] = stored[k];
+    this.cache = { at: this.now(), value: merged as unknown as Settings };
+    return this.cache.value;
+  }
+
+  invalidate() {
+    this.cache = null;
+  }
+}
+
+/** Kiểm tra giá trị trước khi ghi từ Admin Web. */
+export function validateSetting(key: string, value: unknown): string | null {
+  const def = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
+  if (def === undefined) return `khoá cấu hình không tồn tại: ${key}`;
+  if (typeof value !== typeof def) return `sai kiểu dữ liệu (cần ${typeof def})`;
+  if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) return "giá trị phải là số không âm";
+  if (key === "router.tier3_mode" && value !== "extractive" && value !== "generative") return "chỉ nhận extractive | generative";
+  if (key.startsWith("router.semantic") && (value as number) > 1) return "ngưỡng phải trong khoảng 0..1";
+  return null;
+}

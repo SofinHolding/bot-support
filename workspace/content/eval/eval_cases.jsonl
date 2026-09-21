@@ -1,0 +1,215 @@
+{"question":"how to login","expected":"how-to-login","source":"keyword"}
+{"question":"cách login","expected":"how-to-login","source":"keyword"}
+{"question":"đăng nhập","expected":"how-to-login","source":"keyword"}
+{"question":"scan face black","expected":"face-scan-black-screen","source":"keyword"}
+{"question":"scan đen","expected":"face-scan-black-screen","source":"keyword"}
+{"question":"camera không hoạt động","expected":"face-scan-black-screen","source":"keyword"}
+{"question":"camera black screen","expected":"face-scan-black-screen","source":"keyword"}
+{"question":"forgot login ID","expected":"forgot-login-id","source":"keyword"}
+{"question":"twin","expected":"twin-account","source":"keyword"}
+{"question":"sinh đôi","expected":"twin-account","source":"keyword"}
+{"question":"anh em sinh đôi","expected":"twin-account","source":"keyword"}
+{"question":"cùng mặt","expected":"twin-account","source":"keyword"}
+{"question":"how to sign up","expected":"how-to-sign-up","source":"keyword"}
+{"question":"cách đăng ký","expected":"how-to-sign-up","source":"keyword"}
+{"question":"register","expected":"how-to-sign-up","source":"keyword"}
+{"question":"create account","expected":"how-to-sign-up","source":"keyword"}
+{"question":"referral code","expected":"referral-code","source":"keyword"}
+{"question":"mã mời","expected":"referral-code","source":"keyword"}
+{"question":"ref code","expected":"referral-code","source":"keyword"}
+{"question":"nhập code","expected":"referral-code","source":"keyword"}
+{"question":"OTP email","expected":"otp-email","source":"keyword"}
+{"question":"không nhận OTP email","expected":"otp-email","source":"keyword"}
+{"question":"verification code","expected":"otp-email","source":"keyword"}
+{"question":"OTP telegram","expected":"otp-telegram","source":"keyword"}
+{"question":"telegram OTP bot","expected":"otp-telegram","source":"keyword"}
+{"question":"What is Interlink?","expected":"whitepaper-general","source":"keyword"}
+{"question":"tell me about project","expected":"whitepaper-general","source":"keyword"}
+{"question":"withdraw","expected":"fp-2-withdraw","source":"keyword"}
+{"question":"rút tiền","expected":"fp-2-withdraw","source":"keyword"}
+{"question":"cash out","expected":"fp-2-withdraw","source":"keyword"}
+{"question":"how to withdraw","expected":"fp-2-withdraw","source":"keyword"}
+{"question":"khi nào rút","expected":"fp-2-withdraw","source":"keyword"}
+{"question":"when list","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"when tge","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"khi nào list","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"khi nào lên sàn","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"convert ITLG","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"convert to ITL","expected":"fp-3-listing-tge","source":"keyword"}
+{"question":"why ITLG reduce","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"ITLG bị giảm","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"ITLG bị burn","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"ITLG bị trừ","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"total reduce","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"mất ITLG","expected":"fp-4-itlg-burn","source":"keyword"}
+{"question":"how to KYC","expected":"fp-5-how-to-kyc","source":"keyword"}
+{"question":"cách KYC","expected":"fp-5-how-to-kyc","source":"keyword"}
+{"question":"làm sao KYC","expected":"fp-5-how-to-kyc","source":"keyword"}
+{"question":"verify mặt","expected":"fp-5-how-to-kyc","source":"keyword"}
+{"question":"KYC chậm","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"KYC slow","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"curator chưa chọn","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"not selected","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"waiting curator","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"vẫn chưa KYC","expected":"fp-6-kyc-slow","source":"keyword"}
+{"question":"completed level 1","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"finished level 1","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"done step 1","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"passed stage 1","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"level 1 done","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"first KYC done","expected":"fp-6b-kyc-review-long","source":"keyword"}
+{"question":"change email","expected":"fp-7-change-email","source":"keyword"}
+{"question":"đổi email","expected":"fp-7-change-email","source":"keyword"}
+{"question":"update email","expected":"fp-7-change-email","source":"keyword"}
+{"question":"forgot ID","expected":"fp-8-forgot-id","source":"keyword"}
+{"question":"quên ID","expected":"fp-8-forgot-id","source":"keyword"}
+{"question":"lost ID","expected":"fp-8-forgot-id","source":"keyword"}
+{"question":"forgot login","expected":"fp-8-forgot-id","source":"keyword"}
+{"question":"quên login","expected":"fp-8-forgot-id","source":"keyword"}
+{"question":"delete account","expected":"fp-9-delete-account","source":"keyword"}
+{"question":"xoá account","expected":"fp-9-delete-account","source":"keyword"}
+{"question":"xóa tài khoản","expected":"fp-9-delete-account","source":"keyword"}
+{"question":"close account","expected":"fp-9-delete-account","source":"keyword"}
+{"question":"change ID","expected":"fp-10-change-id","source":"keyword"}
+{"question":"đổi ID","expected":"fp-10-change-id","source":"keyword"}
+{"question":"update ID","expected":"fp-10-change-id","source":"keyword"}
+{"question":"ambassador","expected":"fp-11-ambassador","source":"keyword"}
+{"question":"đại sứ","expected":"fp-11-ambassador","source":"keyword"}
+{"question":"i want ambassador","expected":"fp-11-ambassador","source":"keyword"}
+{"question":"how to become ambassador","expected":"fp-11-ambassador","source":"keyword"}
+{"question":"do you not own this nft","expected":"fp-11b-campaign-10m-nft","source":"keyword"}
+{"question":"creating wallet failed","expected":"esc-wallet-create","source":"keyword"}
+{"question":"wallet creation error","expected":"esc-wallet-create","source":"keyword"}
+{"question":"tạo ví lỗi","expected":"esc-wallet-create","source":"keyword"}
+{"question":"wallet error","expected":"esc-wallet-create","source":"keyword"}
+{"question":"failed to create wallet","expected":"esc-wallet-create","source":"keyword"}
+{"question":"lỗi tạo ví","expected":"esc-wallet-create","source":"keyword"}
+{"question":"faucet not added","expected":"esc-token-missing","source":"keyword"}
+{"question":"faucet chưa cộng","expected":"esc-token-missing","source":"keyword"}
+{"question":"token chưa về","expected":"esc-token-missing","source":"keyword"}
+{"question":"token not received","expected":"esc-token-missing","source":"keyword"}
+{"question":"missing token","expected":"esc-token-missing","source":"keyword"}
+{"question":"ITL chưa về","expected":"esc-token-missing","source":"keyword"}
+{"question":"swap fail","expected":"esc-swap","source":"keyword"}
+{"question":"swap error","expected":"esc-swap","source":"keyword"}
+{"question":"swap không được","expected":"esc-swap","source":"keyword"}
+{"question":"swap stuck","expected":"esc-swap","source":"keyword"}
+{"question":"mining bug","expected":"esc-mining-bug","source":"keyword"}
+{"question":"không cộng ITLG","expected":"esc-mining-bug","source":"keyword"}
+{"question":"HHP reset","expected":"esc-mining-bug","source":"keyword"}
+{"question":"weekly reward chưa nhận","expected":"esc-weekly-reward","source":"keyword"}
+{"question":"login fail","expected":"esc-login-fail","source":"keyword"}
+{"question":"face verify fail","expected":"esc-login-fail","source":"keyword"}
+{"question":"quên password","expected":"esc-forgot-password","source":"keyword"}
+{"question":"forgot password","expected":"esc-forgot-password","source":"keyword"}
+{"question":"password reset","expected":"esc-forgot-password","source":"keyword"}
+{"question":"score not added","expected":"esc-game-bug","source":"keyword"}
+{"question":"điểm chưa cộng","expected":"esc-game-bug","source":"keyword"}
+{"question":"submit fail","expected":"esc-game-bug","source":"keyword"}
+{"question":"HCS not added","expected":"esc-hcs-app","source":"keyword"}
+{"question":"HCS không cộng","expected":"esc-hcs-app","source":"keyword"}
+{"question":"HCS không tăng","expected":"esc-hcs-app","source":"keyword"}
+{"question":"slime cloud","expected":"game-slime-cloud","source":"keyword"}
+{"question":"đám mây đen","expected":"game-slime-cloud","source":"keyword"}
+{"question":"game khó","expected":"game-slime-cloud","source":"keyword"}
+{"question":"đám mây slime","expected":"game-slime-cloud","source":"keyword"}
+{"question":"upgrade","expected":"game-upgrade-max","source":"keyword"}
+{"question":"không nâng cấp","expected":"game-upgrade-max","source":"keyword"}
+{"question":"MAX item","expected":"game-upgrade-max","source":"keyword"}
+{"question":"create group","expected":"group-mining-create","source":"keyword"}
+{"question":"tạo group","expected":"group-mining-create","source":"keyword"}
+{"question":"group mining","expected":"group-mining-create","source":"keyword"}
+{"question":"mining group","expected":"group-mining-create","source":"keyword"}
+{"question":"HCS wallet","expected":"hcs-wallet-not-added","source":"keyword"}
+{"question":"HCS ví","expected":"hcs-wallet-not-added","source":"keyword"}
+{"question":"HCS formula","expected":"hcs-formula","source":"keyword"}
+{"question":"công thức HCS","expected":"hcs-formula","source":"keyword"}
+{"question":"cách tính HCS","expected":"hcs-formula","source":"keyword"}
+{"question":"HCS thấp","expected":"hcs-low","source":"keyword"}
+{"question":"HCS low","expected":"hcs-low","source":"keyword"}
+{"question":"nhiều ITLG nhưng HCS thấp","expected":"hcs-low","source":"keyword"}
+{"question":"nhiều ví","expected":"hcs-multiple-wallets","source":"keyword"}
+{"question":"multiple wallets","expected":"hcs-multiple-wallets","source":"keyword"}
+{"question":"link multiple wallet HCS","expected":"hcs-multiple-wallets","source":"keyword"}
+{"question":"đã match curator","expected":"kyc-matched-not-verified","source":"keyword"}
+{"question":"matched but not KYC","expected":"kyc-matched-not-verified","source":"keyword"}
+{"question":"curator selected nhưng chưa verify","expected":"kyc-matched-not-verified","source":"keyword"}
+{"question":"chuyển ITLG sang ITL","expected":"itlg-to-itl-conversion","source":"keyword"}
+{"question":"ITLG to ITL","expected":"itlg-to-itl-conversion","source":"keyword"}
+{"question":"recover ITLG","expected":"itlg-recover-after-burn","source":"keyword"}
+{"question":"lấy lại ITLG","expected":"itlg-recover-after-burn","source":"keyword"}
+{"question":"khôi phục ITLG","expected":"itlg-recover-after-burn","source":"keyword"}
+{"question":"giảm 50%","expected":"itlg-mining-reduced-50","source":"keyword"}
+{"question":"ITLG ít","expected":"itlg-mining-reduced-50","source":"keyword"}
+{"question":"mine ít","expected":"itlg-mining-reduced-50","source":"keyword"}
+{"question":"DAO","expected":"itlg-mining-reduced-50","source":"keyword"}
+{"question":"vote","expected":"itlg-mining-reduced-50","source":"keyword"}
+{"question":"earn more ITLG","expected":"itlg-earn-more","source":"keyword"}
+{"question":"kiếm thêm ITLG","expected":"itlg-earn-more","source":"keyword"}
+{"question":"tăng ITLG","expected":"itlg-earn-more","source":"keyword"}
+{"question":"how to earn","expected":"itlg-earn-more","source":"keyword"}
+{"question":"I mine every day but still got burned","expected":"itlg-burn-despite-mining","source":"keyword"}
+{"question":"mine đều mà vẫn bị burn","expected":"itlg-burn-despite-mining","source":"keyword"}
+{"question":"ngày nào cũng mine mà bị trừ","expected":"itlg-burn-despite-mining","source":"keyword"}
+{"question":"weekly reward","expected":"weekly-reward-schedule","source":"keyword"}
+{"question":"monthly reward","expected":"weekly-reward-schedule","source":"keyword"}
+{"question":"chưa nhận thưởng tuần/tháng","expected":"weekly-reward-schedule","source":"keyword"}
+{"question":"create wallet","expected":"wallet-create","source":"keyword"}
+{"question":"tạo ví","expected":"wallet-create","source":"keyword"}
+{"question":"make wallet","expected":"wallet-create","source":"keyword"}
+{"question":"check seedphrase","expected":"wallet-check-seedphrase","source":"keyword"}
+{"question":"xem seedphrase","expected":"wallet-check-seedphrase","source":"keyword"}
+{"question":"private key","expected":"wallet-check-seedphrase","source":"keyword"}
+{"question":"connect social","expected":"wallet-connect-social","source":"keyword"}
+{"question":"kết nối X/Twitter/Discord","expected":"wallet-connect-social","source":"keyword"}
+{"question":"visa card","expected":"wallet-visa-card","source":"keyword"}
+{"question":"apply visa","expected":"wallet-visa-card","source":"keyword"}
+{"question":"đăng ký thẻ visa","expected":"wallet-visa-card","source":"keyword"}
+{"question":"wallet address","expected":"wallet-address","source":"keyword"}
+{"question":"địa chỉ ví","expected":"wallet-address","source":"keyword"}
+{"question":"find wallet address","expected":"wallet-address","source":"keyword"}
+{"question":"swap không thấy","expected":"wallet-swap-token-missing","source":"keyword"}
+{"question":"destination token","expected":"wallet-swap-token-missing","source":"keyword"}
+{"question":"swapped but missing","expected":"wallet-swap-token-missing","source":"keyword"}
+{"question":"reset wallet","expected":"wallet-reset-lost","source":"keyword"}
+{"question":"lost wallet","expected":"wallet-reset-lost","source":"keyword"}
+{"question":"uninstalled app","expected":"wallet-reset-lost","source":"keyword"}
+{"question":"out of wallet","expected":"wallet-reset-lost","source":"keyword"}
+{"question":"lấy lại ví","expected":"wallet-reset-lost","source":"keyword"}
+{"question":"when can I take my tokens out of the app?","expected":"fp-2-withdraw","source":"handwritten"}
+{"question":"mình muốn rút ITLG về ví thì làm thế nào","expected":"fp-2-withdraw","source":"handwritten"}
+{"question":"is there any date for listing on exchange","expected":"fp-3-listing-tge","source":"handwritten"}
+{"question":"bao giờ token lên sàn vậy admin","expected":"fp-3-listing-tge","source":"handwritten"}
+{"question":"my ITLG balance went down today, why?","expected":"fp-4-itlg-burn","source":"handwritten"}
+{"question":"sao ITLG của tôi bị trừ","expected":"fp-4-itlg-burn","source":"handwritten"}
+{"question":"how do I do the KYC process","expected":"fp-5-how-to-kyc","source":"handwritten"}
+{"question":"I received the email that says start verifying but the app still shows in queue","expected":"fp-5b-kyc-email-queue","source":"handwritten"}
+{"question":"đã nhận email nhưng vào app vẫn ở hàng chờ","expected":"fp-5b-kyc-email-queue","source":"handwritten"}
+{"question":"kyc slow, curator hasn't picked me","expected":"fp-6-kyc-slow","source":"handwritten"}
+{"question":"finished level 1 of KYC, what now?","expected":"fp-6b-kyc-review-long","source":"handwritten"}
+{"question":"my KYC has been in review for 2 weeks","expected":"fp-6b-kyc-review-long","source":"handwritten"}
+{"question":"I need to change the email of my account","expected":"fp-7-change-email","source":"handwritten"}
+{"question":"tôi muốn đổi email tài khoản","expected":"fp-7-change-email","source":"handwritten"}
+{"question":"I forgot my ID","expected":"fp-8-forgot-id","source":"handwritten"}
+{"question":"can you delete my account please","expected":"fp-9-delete-account","source":"handwritten"}
+{"question":"tôi muốn xóa tài khoản","expected":"fp-9-delete-account","source":"handwritten"}
+{"question":"can I change my ID?","expected":"fp-10-change-id","source":"handwritten"}
+{"question":"how can I become an ambassador of interlink","expected":"fp-11-ambassador","source":"handwritten"}
+{"question":"I completed the 10M campaign task but I did not receive the NFT","expected":"fp-11b-campaign-10m-nft","source":"handwritten"}
+{"question":"creating wallet failed, please help","expected":"esc-wallet-create","source":"handwritten"}
+{"question":"swap fail and my token is gone","expected":"esc-swap","source":"handwritten"}
+{"question":"how to create a wallet","expected":"wallet-create","source":"handwritten"}
+{"question":"how to check my seedphrase","expected":"wallet-check-seedphrase","source":"handwritten"}
+{"question":"how to sign up","expected":"how-to-sign-up","source":"handwritten"}
+{"question":"cách đăng ký tài khoản interlink","expected":"how-to-sign-up","source":"handwritten"}
+{"question":"where do I enter the referral code","expected":"referral-code","source":"handwritten"}
+{"question":"I did not receive OTP email","expected":"otp-email","source":"handwritten"}
+{"question":"how to create a mining group","expected":"group-mining-create","source":"handwritten"}
+{"question":"how do I earn more ITLG","expected":"itlg-earn-more","source":"handwritten"}
+{"question":"when is the weekly reward paid","expected":"weekly-reward-schedule","source":"handwritten"}
+{"question":"camera black screen when scanning face","expected":"face-scan-black-screen","source":"handwritten"}
+{"question":"what is the HCS formula","expected":"hcs-formula","source":"handwritten"}
+{"question":"what is interlink","expected":"whitepaper-general","source":"handwritten"}
+{"question":"the black cloud in the game is a bug?","expected":"game-slime-cloud","source":"handwritten"}
+{"question":"my parrot refuses to eat vegetables","expected":null,"source":"handwritten"}
+{"question":"zebra quantum banana mango","expected":null,"source":"handwritten"}
