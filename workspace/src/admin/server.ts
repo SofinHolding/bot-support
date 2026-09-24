@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fastifyCookie from "@fastify/cookie";
 import fastifyMultipart from "@fastify/multipart";
+import { readReviewWorkbook } from "../kb/review-xlsx";
+import { FOLLOW_UP_KINDS } from "../core/templates";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -296,6 +298,64 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const slug = (req.params as { slug: string }).slug;
     await kbService.deleteDocument(slug, actor(req));
     return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- mục hỏi đáp (form cho người không rành kỹ thuật)
+  const itemStep = z.object({
+    say: z.record(z.string(), z.string().max(4096)),
+    next: z.partialRecord(z.enum(FOLLOW_UP_KINDS), z.string().max(120)).optional(),
+  });
+  const itemBody = z.object({
+    title: z.string().trim().min(2).max(200),
+    kind: z.enum(["answer", "handoff", "system"]),
+    questions: z.array(z.string().trim().min(1).max(500)).max(100),
+    phrases: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
+    applies_when: z.string().trim().max(1000).optional(),
+    distinct_from: z.array(z.object({ item: z.string().max(120), difference: z.string().max(1000), clarify: z.string().max(1000) })).max(20).default([]),
+    steps: z.array(itemStep).max(10),
+    handoff: z.object({ category: z.string().max(80).optional(), error_code: z.string().max(40).optional(), pic: z.string().max(80).optional(), ask_customer: z.array(z.string().max(300)).max(20).optional() }).optional(),
+  });
+
+  app.get("/api/items", async () => ({ topics: await kbService.listItemTopics() }));
+
+  app.post("/api/items/:topic", { preHandler: need("admin") }, async (req) => {
+    const topic = (req.params as { topic: string }).topic;
+    const b = z.object({ originalId: z.string().max(120).optional(), remove: z.boolean().optional(), item: itemBody.optional() }).parse(req.body);
+    const r = await kbService.saveItem({ topic, originalId: b.originalId, remove: b.remove, item: b.item ? { ...b.item, id: b.originalId ?? "" } : undefined }, actor(req));
+    await audit(req, b.remove ? "items.remove" : b.originalId ? "items.update" : "items.create", `${topic}:${r.itemId ?? b.originalId ?? ""}`, null, { versionId: r.versionId, ok: r.report.ok });
+    return r;
+  });
+
+  /** "Thử hỏi bot": câu này bot trả lời bằng mục nào (bộ đang chạy, hoặc sau khi đưa bản nháp lên). Không gọi AI. */
+  app.post("/api/items/try", async (req) => {
+    const b = z.object({ question: z.string().trim().min(1).max(500), versionId: z.number().int().positive().optional() }).parse(req.body);
+    return kbService.tryQuestion(b.question, b.versionId);
+  });
+
+  /** Ghi nhận "giữ nguyên có chủ ý" cho cặp mục hỏi đáp ↔ đoạn tài liệu mà bước kiểm tra chặn, rồi kiểm tra lại bản nháp. */
+  app.post("/api/items/decide", { preHandler: need("admin") }, async (req) => {
+    const b = z.object({ versionId: z.number().int().positive(), itemId: z.string().max(120), chunkId: z.string().max(40), note: z.string().max(1000).optional() }).parse(req.body);
+    const report = await kbService.decideItemChunk({ ...b, decision: "keep_both" }, actor(req));
+    await audit(req, "items.pair_decision", `${b.itemId}|chunk:${b.chunkId}`, null, { decision: "keep_both", note: b.note ?? null });
+    return { report };
+  });
+
+  /** Nhập file rà soát khách hàng trả về (.xlsx): áp quyết định thành bản nháp của các chủ đề. Không publish. */
+  app.post("/api/items/import-review", { preHandler: need("admin") }, async (req) => {
+    const file = await req.file();
+    if (!file) throw new KbError("thiếu tệp");
+    if (!/\.xlsx$/i.test(file.filename)) throw new KbError("chỉ nhận tệp .xlsx (file rà soát nội dung)");
+    const buf = await file.toBuffer();
+    if (file.file.truncated) throw new KbError(`tệp vượt quá ${Math.round(MAX_UPLOAD_BYTES / 1_000_000)} MB`, 413);
+    let read;
+    try {
+      read = await readReviewWorkbook(buf);
+    } catch (e) {
+      throw new KbError(`không đọc được tệp Excel: ${(e as Error).message}`, 422);
+    }
+    const r = await kbService.applyReviewToDrafts(read.input, actor(req));
+    await audit(req, "items.import_review", file.filename, null, { drafts: r.drafts, applied: r.applied.length, decisions: r.decisionsSaved });
+    return { ...r, todo: [...read.unknown, ...r.todo] };
   });
 
   /**

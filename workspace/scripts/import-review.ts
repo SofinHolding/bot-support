@@ -10,11 +10,11 @@
  *   tai-lieu-can-sua.md      — các đoạn tài liệu tham khảo khách muốn sửa / bỏ
  *   quyet-dinh-cap.json      — quyết định về cặp mục hỏi đáp ↔ đoạn tài liệu, lưu vào bảng quyết định khi publish
  */
-import ExcelJS from "exceljs";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { itemsDocToYaml, parseItemsDoc, type ItemsDoc } from "../src/core/items";
-import { applyReview, parsePairDecision, parseRowDecision, parseWhere, type ChunkRow, type ItemRow, type PairRow, type ReviewInput, type SharedRow } from "../src/kb/review-import";
+import { applyReview } from "../src/kb/review-import";
+import { readReviewWorkbook } from "../src/kb/review-xlsx";
 
 const arg = (k: string, d?: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? d;
 const file = arg("file");
@@ -25,66 +25,8 @@ if (!file) {
   process.exit(1);
 }
 
-const text = (v: ExcelJS.CellValue): string => {
-  if (v == null) return "";
-  if (typeof v === "object" && "richText" in v) return v.richText.map((r) => r.text).join("");
-  if (typeof v === "object" && "text" in v) return String(v.text);
-  if (typeof v === "object" && "result" in v) return String(v.result ?? "");
-  return String(v);
-};
-
-/** Đọc một sheet thành các dòng {tiêu đề cột: giá trị}. `headerRow`: dòng chứa tiêu đề. */
-function rows(ws: ExcelJS.Worksheet | undefined, headerRow = 1): Record<string, string>[] {
-  if (!ws) return [];
-  const headers = (ws.getRow(headerRow).values as ExcelJS.CellValue[]).map(text);
-  const out: Record<string, string>[] = [];
-  ws.eachRow((row, n) => {
-    if (n <= headerRow) return;
-    const o: Record<string, string> = {};
-    (row.values as ExcelJS.CellValue[]).forEach((v, i) => headers[i] && (o[headers[i]!] = text(v).trim()));
-    out.push(o);
-  });
-  return out;
-}
-
-const col = (r: Record<string, string>, prefix: string) => r[Object.keys(r).find((k) => k.startsWith(prefix)) ?? ""] ?? "";
-
 async function main() {
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(file!);
-  const sheet = (prefix: string) => wb.worksheets.find((w) => w.name.startsWith(prefix));
-  const unknown: string[] = [];
-  const check = <T>(v: T | undefined, raw: string, where: string) => {
-    if (raw && v === undefined) unknown.push(`${where}: không hiểu lựa chọn "${raw}"`);
-    return v;
-  };
-
-  const items: ItemRow[] = rows(sheet("1.")).filter((r) => col(r, "Mã hệ thống")).map((r) => ({
-    id: col(r, "Mã hệ thống"),
-    decision: check(parseRowDecision(col(r, "Quyết định")), col(r, "Quyết định"), `mục ${col(r, "Mã hệ thống")}`),
-    newAnswer: col(r, "Câu trả lời mới"),
-    addQuestions: col(r, "Thêm câu khách hay hỏi").split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
-    note: col(r, "Ghi chú"),
-  }));
-  const chunks: ChunkRow[] = rows(sheet("2.")).filter((r) => col(r, "Mã hệ thống")).map((r) => ({
-    key: col(r, "Mã hệ thống"),
-    decision: check(parseRowDecision(col(r, "Quyết định")), col(r, "Quyết định"), `đoạn ${col(r, "Mã hệ thống")}`),
-    newText: col(r, "Nội dung mới"),
-  }));
-  const pairRows = (prefix: string): PairRow[] =>
-    rows(sheet(prefix)).filter((r) => col(r, "Mã cặp")).map((r) => ({
-      code: col(r, "Mã cặp"),
-      a: col(r, "Mã hệ thống mục thứ nhất"),
-      b: col(r, "Mã hệ thống mục thứ hai"),
-      decision: check(parsePairDecision(col(r, "Quyết định")), col(r, "Quyết định"), `cặp ${col(r, "Mã cặp")}`),
-      contextA: col(r, "Nếu giữ cả hai: mục thứ nhất"),
-      contextB: col(r, "Nếu giữ cả hai: mục thứ hai"),
-      fixText: col(r, "Nội dung đúng"),
-      fixWhere: check(parseWhere(col(r, "Sửa ở mục nào")), col(r, "Sửa ở mục nào"), `cặp ${col(r, "Mã cặp")}`),
-    }));
-  const shared: SharedRow[] = rows(sheet("4."), 2).filter((r) => col(r, "Mã hệ thống")).map((r) => ({ id: col(r, "Mã hệ thống"), ownAnswer: col(r, "Câu trả lời riêng") }));
-  const objections = rows(sheet("5.")).filter((r) => col(r, "Ý kiến")).map((r) => ({ code: col(r, "Mã cặp"), text: col(r, "Ý kiến") }));
-  const input: ReviewInput = { items, chunks, pairs: [...pairRows("3."), ...pairRows("6.")], shared, objections };
+  const { input, unknown } = await readReviewWorkbook(file!);
 
   const docs: ItemsDoc[] = readdirSync(itemsDir).filter((f) => f.endsWith(".yaml")).map((f) => {
     const r = parseItemsDoc(readFileSync(join(itemsDir, f), "utf8"));

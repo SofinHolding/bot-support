@@ -114,6 +114,21 @@ ${distinct ? "    distinct_from: [{ item: pizza-oven-clean, difference: Một b�
     expect(step3(good).details.join("\n")).not.toMatch(/khai báo "khác với"/);
   });
 
+  it("mục hỏi đáp thay chỗ template cũ cùng mã: publish từng chủ đề được, bot dùng câu mới, template cũ bị che", async () => {
+    const legacy = w.live.index.get("fp-7-change-email")!;
+    expect(legacy.item).toBeUndefined();
+    const doc = {
+      topic: "account",
+      title: "Tài khoản",
+      items: [{ id: legacy.id, title: "Đổi email", kind: "answer" as const, questions: legacy.match.examples, phrases: legacy.match.keywords, distinct_from: [], steps: [{ say: { en: "New change-email answer." }, next: { no_old_email: "email-old-email-required" } }] }],
+    };
+    const d = await w.kbService.createDraft({ slug: "test-items-takeover", kind: "items", md: itemsDocToYaml(doc), author: admin });
+    expect(d.report.steps.find((x) => x.name.startsWith("3."))!.details.join(" ")).not.toMatch(/trùng/);
+    await w.kbService.publish(d.version.id, admin);
+    expect(w.live.index.get("fp-7-change-email")!.answers.en).toBe("New change-email answer.");
+    expect(w.live.index.templates.filter((t) => t.id === "fp-7-change-email")).toHaveLength(1);
+  });
+
   it("'khác với' trỏ tới mục không tồn tại → chặn", async () => {
     const md = pizza(true).replace("item: pizza-oven-clean", "item: no-such-item");
     const { report } = await w.kbService.createDraft({ slug: "test-items-missing", kind: "items", md, author: admin });

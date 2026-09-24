@@ -11,8 +11,9 @@ import { chunkEmbedText, parseKnowledgeDoc, sha1, type KnowledgeChunk } from "..
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
 import { parseTemplateFile, validateBundle } from "../core/templates";
-import { compileItems, parseItemsDoc, type ItemsDoc } from "../core/items";
-import { chunkKey, hasValidDecision, itemKey, templateHash, textHash } from "./pair-decisions";
+import { compileItems, ITEM_TOPICS, itemsDocToYaml, parseItemsDoc, type ItemsDoc, type KnowledgeItem } from "../core/items";
+import { chunkKey, hasValidDecision, itemKey, orderPair, templateHash, textHash, type PairDecisionKind } from "./pair-decisions";
+import { applyReview, type ReviewInput } from "./review-import";
 import { containsPhrase, normalize, wordCount } from "../core/text";
 import type { ParseIssue, Template } from "../domain/types";
 import type { Db } from "../db/db";
@@ -22,9 +23,9 @@ import { usableLlm, type LlmPort, type OverlapSide } from "../core/ports";
 import { evalSettings, outcomeKey, routeOffline, runEval, type EvalCase } from "./eval";
 import type { LiveContent } from "./live-content";
 import { findOverlaps, narrowTemplateMatch, probesFromChunks, probesFromTemplates, replaceChunkSection, replaceTemplateAnswer, type OverlapPair, type OverlapRef, type ProbeItem } from "./overlap";
-import { CONFUSION_FIX_HINT, confusionKey, confusionsOf, describeConfusion, findConfusions, type Confusion } from "./routing-check";
+import { CONFUSION_FIX_HINT, confusionKey, confusionsOf, describeConfusion, findConfusions, withExampleCache, type Confusion } from "./routing-check";
 import type { Evaluator } from "../core/predicates";
-import type { TemplateIndex } from "../core/template-index";
+import { TemplateIndex } from "../core/template-index";
 
 export type DocKind = "templates" | "knowledge" | "guide" | "items";
 /** Tài liệu dịch ra template đang chạy: template soạn tay (cũ) và mục hỏi đáp (mới, src/core/items.ts). */
@@ -55,6 +56,16 @@ export interface ValidationReport {
   /** Cặp chồng lấn có cấu trúc (kb/overlap.ts) mà bước 3 vừa tính — trợ lý "Nạp nội dung mới" dùng lại để dựng các khung
    * xung đột trên màn hình, không cần quét lại. `undefined` với guide (không quét). */
   overlapPairs?: OverlapPair[];
+  /** Mục hỏi đáp của bản nháp giành câu hỏi của đoạn tài liệu mà chưa có quyết định: Admin Web hiện nút "ghi nhận giữ nguyên" */
+  hijacks?: ItemHijack[];
+}
+
+export interface ItemHijack {
+  itemId: string;
+  itemTitle: string;
+  chunkId: string;
+  doc: string;
+  heading: string;
 }
 
 const needsSecondApproval = (r: ValidationReport): boolean => (r.securityRules?.length ?? 0) > 0 || r.guide === true;
@@ -172,7 +183,7 @@ export class KbService {
       return report;
     }
 
-    const liveRows = await this.d.kb.loadPublishedTemplateRows();
+    const liveRows = (await this.d.kb.loadPublishedTemplateRows()).filter((r) => !this.replacedBy(kind, parsed.templates, r)); // template cũ bản nháp sẽ thay chỗ: coi như đã không còn
     const others = liveRows.filter((r) => r.docSlug !== slug).map((r) => r.template);
 
     // 2. Quét an toàn
@@ -225,7 +236,9 @@ export class KbService {
       const check = await this.routingCheck(pairs, { draftIds: new Set(parsed.templates.map((t) => t.id)), afterIdx, afterEvaluator, docOf: docOfAfter });
       report.overlapPairs = check.pairs;
       // Mục hỏi đáp: xung đột phải được xử lý XONG trước khi publish (không chỉ cảnh báo như template cũ).
-      const blocking = kind === "items" ? await this.itemGate(parsed, others, afterIdx, check.confusions) : [];
+      const gate = kind === "items" ? await this.itemGate(parsed, others, afterIdx, check.confusions) : { messages: [], hijacks: [] };
+      const blocking = gate.messages;
+      if (gate.hijacks.length) report.hijacks = gate.hijacks;
       steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length || blocking.length ? "error" : conflictWarn.length || check.warn ? "warning" : "ok", details: [...dup, ...blocking, ...conflictWarn, ...check.details] });
     } else if (kind === "guide") {
       // Hướng dẫn không được CHO PHÉP điều hệ thống cấm (dự đoán giá, lộ công thức HCS, xin seed/mật khẩu, dùng kiến thức chung, bỏ qua luật)
@@ -320,7 +333,11 @@ export class KbService {
     const index = this.d.live.index as typeof this.d.live.index | undefined;
     if (!probes.length || !index) return [];
     try {
-      return await findOverlaps({ index, kb: this.d.kb, embedder: this.d.embedder, docOf: new Map(liveRows.map((r) => [r.template.id, r.docSlug])) }, probes, { excludeDoc: slug, maxPairs: 40, minScore: KbService.DRAFT_OVERLAP_MIN });
+      const docOf = new Map(liveRows.map((r) => [r.template.id, r.docSlug]));
+      const pairs = await findOverlaps({ index, kb: this.d.kb, embedder: this.d.embedder, docOf }, probes, { excludeDoc: slug, maxPairs: 40, minScore: KbService.DRAFT_OVERLAP_MIN });
+      // template cũ bị bản nháp mục hỏi đáp thay chỗ (không có trong liveRows) không còn là "mục khác" để so
+      const gone = (r: OverlapRef) => r.kind === "template" && r.doc !== slug && !docOf.has(r.id);
+      return pairs.filter((p) => !gone(p.a) && !gone(p.b));
     } catch {
       return [];
     }
@@ -394,8 +411,9 @@ export class KbService {
    *  4. Hỏi thử bot: câu hỏi về một đoạn tài liệu bị mục hỏi đáp này giành mất, mà chưa có quyết định còn hiệu lực
    *     (kb_pair_decisions — hết hiệu lực khi một trong hai bên đổi nội dung).
    */
-  private async itemGate(parsed: Parsed, others: Template[], afterIdx: TemplateIndex, confusions: Confusion[]): Promise<string[]> {
+  private async itemGate(parsed: Parsed, others: Template[], afterIdx: TemplateIndex, confusions: Confusion[]): Promise<{ messages: string[]; hijacks: ItemHijack[] }> {
     const out: string[] = [];
+    const hijacks: ItemHijack[] = [];
     const draft = parsed.templates.filter((t) => t.item && t.item.step === 0);
     const draftIds = new Set(parsed.templates.map((t) => t.id));
     const meta = (id: string) => afterIdx.get(id)?.item;
@@ -427,10 +445,246 @@ export class KbService {
         const heading = chunk?.heading ?? c.owner.title;
         const got = afterIdx.get(c.got);
         if (got && hasValidDecision(decisions, { key: itemKey(c.got), hash: templateHash(got) }, { key: chunkKey(c.owner.doc, heading), hash: textHash(chunk?.text ?? "") })) continue;
+        if (!hijacks.some((h) => h.itemId === c.got && h.chunkId === c.owner.id)) hijacks.push({ itemId: c.got, itemTitle: titleOf(c.got), chunkId: c.owner.id, doc: c.owner.doc, heading });
         out.push(`${describeConfusion(c, titleOf, "sẽ")} Cần xử lý: sửa cách hỏi / cụm nhận biết của mục ${name(c.got)} để câu hỏi về đoạn tài liệu này tới được tài liệu, hoặc ghi nhận quyết định giữ nguyên có chủ ý.`);
       }
     }
-    return [...new Set(out)];
+    return { messages: [...new Set(out)], hijacks };
+  }
+
+  // ---------------------------------------------------------------- mục hỏi đáp (Admin Web dạng form)
+  /** Template cũ (tài liệu "templates") sẽ bị mục hỏi đáp của bản nháp thay chỗ khi publish (cùng mã) — xem loadPublishedTemplateRows. */
+  private replacedBy(kind: DocKind, draft: Template[], row: { kind: string; template: Template }): boolean {
+    return kind === "items" && row.kind === "templates" && draft.some((t) => t.id === row.template.id);
+  }
+
+
+  /** Mỗi chủ đề là một tài liệu loại "items", slug cố định theo chủ đề. */
+  static itemsSlug = (topic: string) => `items-${topic}`;
+
+  /** Bản mới nhất CÒN SỬA ĐƯỢC của một tài liệu mục hỏi đáp: bản nháp nếu có, không thì bản đang chạy, không thì tài liệu rỗng. */
+  async editableItems(slug: string, topicHint?: string): Promise<{ doc: ItemsDoc; draft?: VersionRow; published?: VersionRow; pending?: VersionRow }> {
+    const versions = await this.d.kb.listVersions(slug);
+    const latest = versions[0];
+    const published = versions.find((v) => v.status === "published");
+    const draft = latest && (latest.status === "draft" || latest.status === "rejected") ? latest : undefined;
+    const pending = latest?.status === "pending_approval" ? latest : undefined;
+    const base = draft ?? pending ?? published;
+    const topic = topicHint ?? slug.replace(/^items-/, "");
+    const doc = base ? parseItemsDoc(base.source_md).doc : undefined;
+    return { doc: doc ?? { topic, title: ITEM_TOPICS[topic] ?? topic, items: [] }, draft, published, pending };
+  }
+
+  /** Danh sách chủ đề cho Admin Web: mọi chủ đề cố định, kèm bản đang chạy / bản nháp của từng chủ đề (nếu đã có). */
+  async listItemTopics() {
+    const docs = new Map((await this.d.kb.listDocuments()).filter((d) => d.kind === "items").map((d) => [d.slug, d]));
+    const brief = (v?: VersionRow) => (v ? { id: v.id, version: v.version, status: v.status, ok: !!(v.report as ValidationReport | null)?.ok } : null);
+    const out = [];
+    for (const [topic, title] of Object.entries(ITEM_TOPICS)) {
+      const slug = KbService.itemsSlug(topic);
+      if (!docs.has(slug)) {
+        out.push({ topic, title, slug, exists: false, items: [] as KnowledgeItem[], draft: null, published: null, pending: null });
+        continue;
+      }
+      const e = await this.editableItems(slug, topic);
+      out.push({ topic, title, slug, exists: true, items: e.doc.items, draft: brief(e.draft), published: brief(e.published), pending: brief(e.pending) });
+    }
+    return out;
+  }
+
+  /** Mã mục tự sinh từ tên (bỏ dấu, chữ thường, gạch ngang), không trùng mục nào đang có. Mã cố định từ đó về sau. */
+  private async newItemId(title: string, taken: Set<string>): Promise<string> {
+    for (const r of await this.d.kb.loadPublishedTemplateRows()) taken.add(r.template.id.replace(/--b\d+$/, ""));
+    const base =
+      title
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .replace(/đ/gi, "d")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-{2,}/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 60) || "muc";
+    let id = base;
+    for (let i = 2; taken.has(id); i++) id = `${base}-${i}`;
+    return id;
+  }
+
+  /**
+   * Lưu một mục từ form: ghi vào bản nháp của chủ đề (tạo bản nháp nếu chưa có) rồi chạy đủ các bước kiểm tra như mọi bản nháp.
+   * `originalId` = mục đang sửa (mã giữ nguyên); không có = mục mới (mã tự sinh từ tên). `remove` = xoá mục khỏi bản nháp.
+   * Điều kiện kỹ thuật (`advanced`) và tin hệ thống không sửa qua form.
+   */
+  async saveItem(input: { topic: string; item?: KnowledgeItem; originalId?: string; remove?: boolean }, author: Actor): Promise<{ versionId: number; report: ValidationReport; itemId?: string }> {
+    if (!ITEM_TOPICS[input.topic]) throw new KbError(`chủ đề không có: ${input.topic}`);
+    const slug = KbService.itemsSlug(input.topic);
+    const e = await this.editableItems(slug, input.topic);
+    if (e.pending) throw new KbError("chủ đề này đang có bản chờ người thứ hai duyệt — duyệt hoặc từ chối bản đó trước khi sửa tiếp", 409);
+    const doc = structuredClone(e.doc);
+    let itemId: string | undefined;
+    if (input.remove) {
+      const cur = doc.items.find((i) => i.id === input.originalId);
+      if (!cur) throw new KbError("không tìm thấy mục", 404);
+      if (cur.kind === "system") throw new KbError("tin hệ thống do code gửi, không xoá qua form");
+      doc.items = doc.items.filter((i) => i.id !== input.originalId);
+    } else {
+      if (!input.item) throw new KbError("thiếu nội dung mục");
+      const item = structuredClone(input.item);
+      if (input.originalId) {
+        const i = doc.items.findIndex((x) => x.id === input.originalId);
+        if (i < 0) throw new KbError("không tìm thấy mục", 404);
+        const cur = doc.items[i]!;
+        if (cur.kind === "system" && JSON.stringify(cur.steps) !== JSON.stringify(item.steps)) throw new KbError("tin hệ thống do code gửi: nội dung giữ nguyên từng chữ, không sửa qua form");
+        item.id = cur.id; // mã cố định
+        item.kind = cur.kind === "system" ? "system" : item.kind;
+        item.advanced = cur.advanced; // điều kiện kỹ thuật chỉ đổi qua tài liệu nguồn
+        item.source = cur.source;
+        doc.items[i] = item;
+      } else {
+        if (item.kind === "system") throw new KbError("tin hệ thống chỉ do code tạo");
+        item.id = await this.newItemId(item.title, new Set(doc.items.map((x) => x.id)));
+        item.source = `admin:${author.label}`;
+        delete item.advanced;
+        doc.items.push(item);
+      }
+      itemId = item.id;
+    }
+    const md = itemsDocToYaml(doc);
+    if (e.draft) return { versionId: e.draft.id, report: await this.updateDraft(e.draft.id, md), itemId };
+    const r = await this.createDraft({ slug, kind: "items", title: doc.title, md, author });
+    return { versionId: r.version.id, report: r.report, itemId };
+  }
+
+  /**
+   * "Thử hỏi bot": câu này sẽ được trả lời bằng mục nào — trên bộ đang chạy, hoặc trên bộ SAU KHI đưa bản nháp `versionId` lên.
+   * Chỉ tầng không dùng AI (luật, cụm từ, so nghĩa) + các mục gần nghĩa nhất mà AI sẽ được chọn trong đó. Không gọi AI.
+   */
+  async tryQuestion(question: string, versionId?: number) {
+    let index = this.d.live.index as TemplateIndex;
+    let evaluator = this.d.live.evaluator;
+    if (versionId) {
+      const v = await this.mustVersion(versionId);
+      const doc = await this.d.kb.getDocument(v.slug);
+      if (!doc || !compiled(doc.kind)) throw new KbError("chỉ thử được với bản nháp mục hỏi đáp / template");
+      const parsed = this.parse(doc.kind, v.source_md, v.slug);
+      const union = [...(await this.d.kb.loadPublishedTemplateRows()).filter((r) => r.docSlug !== v.slug && !this.replacedBy(doc.kind, parsed.templates, r)).map((r) => r.template), ...parsed.templates];
+      evaluator = makeEvaluator(await this.predicateMap());
+      // vector câu mẫu: dùng lại của bộ đang chạy (cùng câu), rồi bộ nhớ đệm embedding; chỉ embed câu thật sự mới
+      const vecByText = new Map<string, number[]>();
+      for (const t of index.templates) {
+        const vs = index.vectorsOf(t.id);
+        if (vs.length === t.match.examples.length) t.match.examples.forEach((ex, i) => vecByText.set(ex, vs[i]!));
+      }
+      const model = index.vectorsModel;
+      const missing = [...new Set(union.flatMap((t) => t.match.examples).filter((ex) => !vecByText.has(ex)))];
+      if (model && missing.length) {
+        const cached = await this.d.kb.getEmbeddings(missing.map((ex) => sha1(ex)), model);
+        for (const ex of missing) if (cached.has(sha1(ex))) vecByText.set(ex, cached.get(sha1(ex))!);
+        const todo = missing.filter((ex) => !vecByText.has(ex));
+        if (todo.length) {
+          try {
+            const t = await embedTagged(this.d.embedder, todo);
+            if (t.model === model) {
+              todo.forEach((ex, i) => vecByText.set(ex, t.vectors[i]!));
+              await this.d.kb.putEmbeddings(todo.map((ex, i) => ({ hash: sha1(ex), vector: t.vectors[i]! })), model);
+            }
+          } catch {
+            /* không embed được: mục mới chỉ tìm được bằng cụm nhận biết */
+          }
+        }
+      }
+      const vectors = new Map<string, number[][]>();
+      for (const t of union) {
+        const vs = t.match.examples.map((ex) => vecByText.get(ex));
+        if (vs.length && vs.every(Boolean)) vectors.set(t.id, vs as number[][]);
+      }
+      index = withExampleCache(new TemplateIndex(union, evaluator, undefined, vectors, index.vectorsModel), evaluator, this.d.embedder);
+    }
+    const r = await routeOffline(question, null, index, evaluator, evalSettings(this.d.live.urlHosts));
+    const titleOf = (id: string) => index.get(id)?.item?.title ?? index.get(id)?.sets_context.issue ?? id;
+    const o = r.outcome;
+    const tid = o.kind === "TEMPLATE" ? o.templateId : undefined;
+    const t = tid ? index.get(tid) : undefined;
+    const suggestions = (await index.suggest(question, 5)).map((s) => ({ id: s.templateId, title: titleOf(s.templateId), score: s.score }));
+    return {
+      result: o.kind,
+      itemId: tid ?? null,
+      title: tid ? titleOf(tid) : null,
+      answer: t ? (index.resolveAnswerSource(t).answers.en ?? null) : null,
+      via: o.kind === "TEMPLATE" ? o.via : o.kind === "ESCALATE" ? o.reason : null,
+      ranked: r.trace.ranked.map((x) => ({ id: x.templateId, title: titleOf(x.templateId) })),
+      suggestions,
+    };
+  }
+
+  /**
+   * Áp file rà soát khách hàng trả về (đã đọc thành `input`) lên bản sửa được của MỌI chủ đề mục hỏi đáp: chủ đề nào đổi thì
+   * lưu thành bản nháp (chạy đủ kiểm tra). Quyết định "giữ nguyên" cho cặp mục ↔ đoạn tài liệu được lưu gắn với nội dung của
+   * bản nháp vừa tạo. Không publish. Sửa đoạn tài liệu tham khảo chỉ được liệt kê (sửa ở tài liệu gốc).
+   */
+  async applyReviewToDrafts(input: ReviewInput, author: Actor) {
+    const topics = Object.keys(ITEM_TOPICS);
+    const before = new Map<string, { slug: string; yaml: string; pending: boolean }>();
+    const docs: ItemsDoc[] = [];
+    for (const topic of topics) {
+      const slug = KbService.itemsSlug(topic);
+      if (!(await this.d.kb.getDocument(slug))) continue;
+      const e = await this.editableItems(slug, topic);
+      before.set(topic, { slug, yaml: itemsDocToYaml(e.doc), pending: !!e.pending });
+      docs.push(e.doc);
+    }
+    if (!docs.length) throw new KbError("chưa có chủ đề mục hỏi đáp nào — chuyển dữ liệu cũ sang trước (scripts/migrate-to-items.ts)");
+    const res = applyReview(docs, input);
+    const drafts: { topic: string; title: string; versionId: number; ok: boolean }[] = [];
+    const todo = [...res.todo];
+    for (const d of res.docs) {
+      const b = before.get(d.topic)!;
+      const yaml = itemsDocToYaml(d);
+      if (yaml === b.yaml) continue;
+      if (b.pending) {
+        todo.push(`chủ đề "${d.title}" đang có bản chờ duyệt — thay đổi của chủ đề này chưa được lưu, duyệt/từ chối bản đó rồi nhập lại file`);
+        continue;
+      }
+      const e = await this.editableItems(b.slug, d.topic);
+      const r = e.draft ? { id: e.draft.id, report: await this.updateDraft(e.draft.id, yaml) } : await this.createDraft({ slug: b.slug, kind: "items", title: d.title, md: yaml, author }).then((x) => ({ id: x.version.id, report: x.report }));
+      drafts.push({ topic: d.topic, title: d.title, versionId: r.id, ok: r.report.ok });
+    }
+    // quyết định cặp mục ↔ đoạn tài liệu: gắn với nội dung hiện tại của bản nháp (hoặc bản đang chạy) và của đoạn
+    const chunks = await this.d.kb.listPublishedChunks();
+    const compiledNow = new Map(res.docs.flatMap((d) => compileItems(d)).map((t) => [t.id, t]));
+    let saved = 0;
+    for (const pd of res.pairDecisions) {
+      const sides = [pd.a, pd.b].map((k) => {
+        if (k.startsWith("item:")) {
+          const t = compiledNow.get(k.slice(5));
+          return t ? { key: itemKey(t.id), hash: templateHash(t) } : undefined;
+        }
+        const c = chunks.find((x) => chunkKey(x.docSlug, x.heading) === k);
+        return c ? { key: k, hash: textHash(c.text) } : undefined;
+      });
+      if (!sides[0] || !sides[1]) {
+        todo.push(`${pd.from}: không tìm thấy một trong hai bên để lưu quyết định`);
+        continue;
+      }
+      await this.d.kb.savePairDecision({ ...orderPair(sides[0], sides[1]), decision: pd.decision, note: pd.note, decidedBy: `${author.label} (file rà soát, ${pd.from})` });
+      saved++;
+    }
+    // bản nháp đã kiểm tra TRƯỚC khi lưu quyết định cặp: kiểm tra lại để các chặn "giành đoạn tài liệu" đã quyết được gỡ
+    if (saved) for (const d of drafts) d.ok = (await this.revalidate(d.versionId)).ok;
+    return { drafts, applied: res.applied, todo, chunkChanges: res.chunkChanges, decisionsSaved: saved };
+  }
+
+  /** Ghi nhận quyết định cho cặp mục hỏi đáp (trong bản nháp `versionId`) ↔ đoạn tài liệu đang chạy, gắn với nội dung hiện tại của hai bên. */
+  async decideItemChunk(input: { versionId: number; itemId: string; chunkId: string; decision: PairDecisionKind; note?: string }, author: Actor): Promise<ValidationReport> {
+    const v = await this.mustVersion(input.versionId);
+    const doc = await this.d.kb.getDocument(v.slug);
+    if (doc?.kind !== "items") throw new KbError("chỉ áp dụng cho bản nháp mục hỏi đáp");
+    const t = this.parse("items", v.source_md, v.slug).templates.find((x) => x.id === input.itemId);
+    const chunk = (await this.d.kb.listPublishedChunks()).find((c) => c.chunkId === input.chunkId);
+    if (!t || !chunk) throw new KbError("không tìm thấy mục hoặc đoạn tài liệu", 404);
+    const p = orderPair({ key: itemKey(t.id), hash: templateHash(t) }, { key: chunkKey(chunk.docSlug, chunk.heading), hash: textHash(chunk.text) });
+    await this.d.kb.savePairDecision({ ...p, decision: input.decision, note: input.note ?? null, decidedBy: author.label });
+    return this.revalidate(v.id);
   }
 
   /** Bao nhiêu cặp điểm cao nhất được hỏi AI mô tả khi CHỐT xung đột lúc publish (xem `syncConflictsAfterPublish`). Có giới hạn để một lần Publish không gọi AI hàng chục lần. */
@@ -675,7 +929,7 @@ export class KbService {
       chunkRows = parsed.chunks.map((c) => ({ ...c, embedding: cache.get(key(c)), embeddingModel: tagged.get(key(c)) }));
     } else {
       // kiểm tra chéo với phần còn lại của kho trước khi kích hoạt
-      const live = (await this.d.kb.loadPublishedTemplateRows()).filter((r) => r.docSlug !== v.slug).map((r) => r.template);
+      const live = (await this.d.kb.loadPublishedTemplateRows()).filter((r) => r.docSlug !== v.slug && !this.replacedBy(kind, parsed.templates, r)).map((r) => r.template);
       const predicates = await this.predicateMap();
       const errs = validateBundle([...live, ...parsed.templates], makeEvaluator(predicates).names()).filter((i) => i.level === "error");
       if (errs.length) throw new KbError("không nhất quán với phần còn lại của kho: " + errs.map((e) => e.message).join("; "));

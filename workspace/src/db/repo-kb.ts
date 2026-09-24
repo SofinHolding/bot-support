@@ -171,11 +171,16 @@ export function kbRepo(db: Db) {
         await db.query("INSERT INTO templates (id, version_id, doc_slug, definition) VALUES ($1,$2,$3,$4::jsonb)", [t.id, versionId, slug, JSON.stringify(t)]);
       }
     },
-    async loadPublishedTemplateRows(): Promise<{ docSlug: string; template: Template }[]> {
-      const r = await db.query<{ doc_slug: string; definition: Template }>(
-        "SELECT t.doc_slug, t.definition FROM templates t JOIN kb_document_versions v ON v.id = t.version_id WHERE v.status = 'published' ORDER BY t.id",
+    /**
+     * Template đang chạy. Mục hỏi đáp (tài liệu loại "items") THAY CHỖ template cũ cùng mã: khi một chủ đề mục hỏi đáp được
+     * publish, template cũ trùng mã bị che (không nạp) — chuyển dần từng chủ đề, hoàn tác chủ đề thì template cũ tự hiện lại.
+     */
+    async loadPublishedTemplateRows(): Promise<{ docSlug: string; kind: string; template: Template }[]> {
+      const r = await db.query<{ doc_slug: string; kind: string; definition: Template }>(
+        "SELECT t.doc_slug, d.kind, t.definition FROM templates t JOIN kb_document_versions v ON v.id = t.version_id JOIN kb_documents d ON d.slug = t.doc_slug WHERE v.status = 'published' ORDER BY t.id",
       );
-      return r.rows.map((x) => ({ docSlug: x.doc_slug, template: x.definition }));
+      const claimed = new Set(r.rows.filter((x) => x.kind === "items").map((x) => x.definition.id));
+      return r.rows.filter((x) => x.kind === "items" || !claimed.has(x.definition.id)).map((x) => ({ docSlug: x.doc_slug, kind: x.kind, template: x.definition }));
     },
     async loadPublishedTemplates(): Promise<Template[]> {
       return (await this.loadPublishedTemplateRows()).map((x) => x.template);

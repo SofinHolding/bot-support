@@ -127,7 +127,7 @@ export function migrateTemplates(templates: Template[], opts: { titles?: Record<
     }
     if (single.length) note(t.id, "bỏ từ khoá một từ", single.map((s) => `"${s}"`).join(", "));
     const codeMatched = !!(t.match.exact.length || t.match.rules.length || t.match.image_types.length);
-    if (kind !== "system" && questions.length < 3 && !codeMatched) {
+    if (kind !== "system" && questions.length < 3 && (!codeMatched || questions.length > 0)) {
       const extra = phrases.filter((p) => !questions.some((q) => normalize(q) === normalize(p))).slice(0, 3 - questions.length);
       if (extra.length) {
         questions.push(...extra);

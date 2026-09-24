@@ -1,0 +1,62 @@
+# CLAUDE.md — InterLink Support Bot
+
+Hướng dẫn cho agent làm việc trong repo này. Đọc trước khi đề xuất thay đổi.
+
+## Bản đồ
+
+- `src/core/`: luật thuần, không I/O.
+  - `router.ts`: chọn câu trả lời.
+  - `gate.ts`: cổng quyết định.
+  - `template-index.ts`: sinh ứng viên.
+  - `items.ts`: mô hình mục hỏi đáp; parse, kiểm tra, dịch sang template.
+  - `knowledge.ts`: cắt đoạn tài liệu.
+  - `followup.ts`: tin nối tiếp.
+- `src/kb/`: kho nội dung.
+  - `service.ts`: nháp → kiểm tra 6 bước → publish → rollback; `itemGate` là luật chặn publish của mục hỏi đáp.
+  - `routing-check.ts`: "hỏi thử bot".
+  - `pair-decisions.ts`: quyết định theo cặp, gắn hash nội dung.
+  - `migrate-items.ts`, `review-import.ts`: chuyển dữ liệu cũ, áp quyết định của khách.
+- `src/bot/`: pipeline Telegram, episode (gồm `pending_clarify`: hỏi lại khách 1 lần).
+- `src/admin/`: API Fastify (`server.ts`) + SPA vanilla (`web/app.js`; CSP chặt, không `innerHTML`).
+- `src/db/migrations/`: SQL tăng dần. Không sửa migration đã phát hành, chỉ thêm file mới.
+- `content/`:
+  - `skills/*/SKILL.md`: chỉ dẫn cho AI;
+  - `guide/agent-guide.md`: Hướng dẫn AI làm việc;
+  - `config/predicates.yml`;
+  - `templates/`, `knowledge/`: nội dung gốc cho seed.
+- `docs/KIEN_TRUC_KIEN_THUC.md`: kiến trúc hệ thống kiến thức; đọc trước khi động vào kb/router.
+- `docs/adr/`: các quyết định lớn và lý do.
+
+## Lệnh
+
+```bash
+npm run typecheck
+npm test
+npx vitest run tests/items.test.ts
+```
+
+Test chạy trên PGlite (Postgres trong bộ nhớ), không cần DB thật. `tests/pg-driver.test.ts` cần mở cổng TCP cục bộ và có thể bị bỏ qua trên Windows.
+
+Script thao tác dữ liệu (`scripts/*.ts`) chỉ ghi file vào `.staging/` (gitignored), trừ khi tài liệu đầu file nói khác.
+
+## Bất biến — KHÔNG được làm
+
+1. **Không đổi nghĩa** các luật [CODE]/[AI] trong `agent-guide`, các yêu cầu R1… trong SKILL, mẫu SECURITY_RULE, `predicates.yml`, quy trình kiểm tra/duyệt. Thay đổi các nội dung này chỉ đi qua **duyệt hai người** trên Admin Web. Chỉ được soạn đề xuất (`docs/de-xuat/`), không sửa thẳng file.
+2. Luồng nạp nội dung (intake) **không bao giờ** tạo hay sửa "Hướng dẫn AI làm việc" (`agent-guide`).
+3. AI chỉ **chọn**, không viết câu trả lời. Khách nhận nguyên văn nội dung đã duyệt (dịch trung thành). Mọi đầu ra của AI được code kiểm lại.
+4. Mục hỏi đáp:
+   - không có độ ưu tiên dạng số;
+   - không có cụm nhận biết một từ;
+   - không đổi `id` đã publish;
+   - không gộp hai mục chỉ vì giống chữ; gộp là quyết định của người duyệt;
+   - hai mục dễ lẫn phải khai báo `distinct_from` kèm câu hỏi lại.
+5. Xung đột dữ liệu phải xử lý xong trước khi publish (`itemGate`). Không hạ lỗi xuống cảnh báo để cho qua.
+6. Không gọi dịch vụ AI / embedding **trả phí** trong script hay test mà không hỏi người dùng. Test dùng `fakeLlm()` và `HashEmbedder`.
+7. Câu hỏi gửi khách hàng (người sở hữu nội dung) chỉ lấy từ xung đột mà các phương pháp của dự án phát hiện, không tự suy luận ra.
+8. Báo cáo cho người dùng viết bằng lời thường, không có mã code hay id (trừ cột "Mã hệ thống" dùng làm khoá).
+
+## Quy ước
+
+- Comment và thông báo lỗi cho admin viết bằng tiếng Việt. Câu trả lời gốc cho khách viết bằng tiếng Anh.
+- Thông báo lỗi kiểm tra phải nói **cần làm gì**, không chỉ nói sai ở đâu.
+- Sửa `app.js`: dùng `h()`/`textContent`; không handler inline; không `innerHTML`.

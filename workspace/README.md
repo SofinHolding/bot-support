@@ -2,9 +2,9 @@
 
 Bot hỗ trợ khách hàng InterLink trên Telegram, xây lại từ hệ thống OpenClaw cũ theo [docs/de_xuat_kien_truc_moi.md](docs/de_xuat_kien_truc_moi.md).
 
-- **Trả lời nguyên văn** từ kho template đã duyệt; LLM chỉ phân loại (tầng 2) hoặc sinh có trích dẫn cho câu hỏi tri thức (tầng 3). Đa số tin nhắn **không tốn token**.
+- **Trả lời nguyên văn** từ nội dung đã duyệt (mục hỏi đáp và tài liệu tham khảo). AI hiểu câu hỏi rồi **chọn** trong danh sách ứng viên, không tự viết câu trả lời; câu khớp chắc chắn bằng cụm nhiều từ/luật đi đường nhanh, có AI xác nhận. Kiến trúc kho nội dung: [docs/KIEN_TRUC_KIEN_THUC.md](docs/KIEN_TRUC_KIEN_THUC.md).
 - **Cổng quyết định** bằng code: bảo mật, `requires/excludes`, ngữ cảnh, `response_mode`, kiểm tra đầu ra. Luật không nằm trong prompt.
-- **Admin Web**: xem lịch sử theo từng vấn đề, ticket, dashboard/usage; **Admin tự nạp file `.md`** (Draft → 6 bước kiểm tra → Publish, rollback), không cần lập trình viên.
+- **Admin Web**: xem lịch sử theo từng vấn đề, ticket, dashboard/usage; **người quản lý nhập "mục hỏi đáp" bằng form** (nhiều cách hỏi, nhiều bước, khai báo mục dễ lẫn, thử hỏi bot ngay trên form), tài liệu tham khảo bằng `.md` (Draft → 6 bước kiểm tra → Publish, rollback), không cần lập trình viên.
 - Toàn bộ dữ liệu ở **PostgreSQL + pgvector** thay cho ~20.000 file JSON.
 - Ràng buộc của hệ thống cũ được truy vết đầy đủ ở [docs/RANG_BUOC.md](docs/RANG_BUOC.md).
 - Hướng dẫn dùng Admin Web cho người vận hành (không cần biết code): [docs/HUONG_DAN_ADMIN_WEB.md](docs/HUONG_DAN_ADMIN_WEB.md).
@@ -35,7 +35,7 @@ src/
 content/    templates/*.md (nội dung được duyệt) · knowledge/*.md · config/predicates.yml · eval/
 legacy/     luật cũ (AGENTS.md, skills) — nguồn đối chiếu cho `npm run parity`
 docs/       mô tả hệ thống, kiến trúc, ma trận ràng buộc
-tests/      143 test (Postgres thật bằng PGlite, gồm cả đường driver `pg`)
+tests/      test tự động (Postgres thật bằng PGlite, gồm cả đường driver `pg`)
 ```
 
 ## Chạy thử nhanh (một tiến trình, không cần Docker)

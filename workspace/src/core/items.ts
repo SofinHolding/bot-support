@@ -190,7 +190,7 @@ export function validateItemsDoc(doc: ItemsDoc): ParseIssue[] {
 
     if (it.kind !== "system") {
       if (!it.questions.length && !hasCodeMatch) err(it.id, "chưa có cách hỏi nào của khách (questions)");
-      else if (it.questions.length < 3 && !hasCodeMatch) warn(it.id, `mới có ${it.questions.length} cách hỏi — nên có ít nhất 3 câu khách hay hỏi, diễn đạt khác nhau`);
+      else if (it.questions.length < 3 && (!hasCodeMatch || it.questions.length > 0)) warn(it.id, `mới có ${it.questions.length} cách hỏi — nên có ít nhất 3 câu khách hay hỏi, diễn đạt khác nhau`);
     }
     for (const p of it.phrases) {
       const n = normalize(p);
