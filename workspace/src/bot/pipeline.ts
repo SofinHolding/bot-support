@@ -186,6 +186,7 @@ export class BotPipeline {
         fastVerify: settings["router.fast_verify"],
         tooShortMaxChars: settings["router.too_short_max_chars"],
         urlHostWhitelist: this.d.live.urlHosts,
+        askWhenUnclear: settings["episode.ask_when_unclear"],
       };
       const isSticker = items.every((i) => i.sticker) ;
       const otherMediaOnly = !rawText && !photos.length && items.some((i) => i.otherMedia) && !isSticker;
@@ -205,7 +206,7 @@ export class BotPipeline {
         const router = mode === "hybrid" ? routeHybrid : mode === "llm_first" && llm ? routeLlmFirst : route;
         try {
           result = await router(
-          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack } },
+          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined } },
           { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge },
           );
         } finally {
@@ -298,6 +299,9 @@ export class BotPipeline {
       });
       const ep = fin.episode;
       if (ep && messageId) await this.linkMessage(messageId, ep.id);
+      // Hỏi lại khách: ghi các mục đang chờ phân biệt; lượt kế tiếp (dù kết quả gì) xoá đi — chỉ hỏi lại 1 lần
+      if (outcome.kind === "CLARIFY" && ep) await conv.updateEpisode(ep.id, { pending_clarify: { items: outcome.items } });
+      else if (loaded.active?.pending_clarify) await conv.updateEpisode(loaded.active.id, { pending_clarify: null });
 
       // Nội dung ảnh (đã che) đi cùng sự kiện: các lượt sau vẫn biết ảnh nói gì dù ảnh không được đọc lại
       const imageText = vision && !vision.has_secret ? maskSensitive(vision.error_text).replace(/["\s]+/g, " ").trim().slice(0, 160) : "";
@@ -427,6 +431,12 @@ export class BotPipeline {
       }
       case "OFFTOPIC":
         return { texts: [], lang }; // câu cảnh báo do nhánh anti-spam dựng
+      case "CLARIFY": {
+        // câu hỏi lại đã được người duyệt viết (tiếng Anh) trong mục hỏi đáp: dịch trung thành như mọi câu đã duyệt
+        const r = await this.d.resolver.dynamic(outcome.question, lang, "en");
+        if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
+        return { texts: [r.text], lang: r.lang, note: r.note, mode: r.mode };
+      }
     }
   }
 

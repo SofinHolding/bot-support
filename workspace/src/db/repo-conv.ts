@@ -27,6 +27,8 @@ export interface EpisodeRow {
   summary_upto_message_id: number | null;
   last_template_id: string | null;
   last_bot_action: string | null;
+  /** bot vừa hỏi lại khách để phân biệt các mục này (tối đa 1 lần); lượt sau chỉ chọn trong đây */
+  pending_clarify: { items: string[] } | null;
   opened_at: Date;
   last_activity_at: Date;
   closed_at: Date | null;
@@ -198,7 +200,7 @@ export function convRepo(db: Db) {
     },
     async updateEpisode(
       id: number,
-      p: Partial<{ issue: string | null; topic_group: string | null; status: EpisodeStatus; last_template_id: string | null; last_bot_action: string | null; last_activity_at: Date; closed_at: Date | null }>,
+      p: Partial<{ issue: string | null; topic_group: string | null; status: EpisodeStatus; last_template_id: string | null; last_bot_action: string | null; last_activity_at: Date; closed_at: Date | null; pending_clarify: { items: string[] } | null }>,
     ) {
       const sets: string[] = [];
       const vals: unknown[] = [id];

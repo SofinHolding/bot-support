@@ -2,7 +2,7 @@
  * Chỉ mục template trong bộ nhớ: SINH ỨNG VIÊN (candidate generation), không quyết định.
  * Quyết định gửi hay không thuộc về DecisionGate (gate.ts).
  */
-import type { Template, VisionScreenType } from "../domain/types";
+import type { ItemDistinctFrom, Template, VisionScreenType } from "../domain/types";
 import { ESCALATE_TEMPLATE_ID } from "../domain/types";
 import { cosine, embedTagged, type Embedder } from "./embedding";
 import { containsPhrase, containsPhraseLoose, normalize } from "./text";
@@ -143,6 +143,14 @@ export class TemplateIndex {
   isEscalateShortcut(id: string): boolean {
     const t = this.byId.get(id);
     return !!t && t.id !== ESCALATE_TEMPLATE_ID && this.resolveAnswerSource(t).id === ESCALATE_TEMPLATE_ID;
+  }
+
+  /**
+   * Hai mục hỏi đáp đã được người duyệt khai báo là KHÁC nhau (distinct_from, khai ở bên nào cũng được): trả về lời khai
+   * (khác ở điểm nào + câu hỏi lại khách). Chỉ có với mục hỏi đáp (src/core/items.ts); template cũ luôn undefined.
+   */
+  distinctPair(a: string, b: string): ItemDistinctFrom | undefined {
+    return this.byId.get(a)?.item?.distinct_from.find((d) => d.item === b) ?? this.byId.get(b)?.item?.distinct_from.find((d) => d.item === a);
   }
 
   /** Vector câu mẫu đã tính sẵn của một template (theo thứ tự `match.examples`, model = `vectorsModel`). Máy quét chồng lấn dùng lại, không embed lại. */

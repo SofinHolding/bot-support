@@ -124,6 +124,10 @@ export function decide(
     const [top, second] = ranked;
     const tie = second && top!.kind !== "override" && second.kind === top!.kind && !!second.loose === !!top!.loose && second.priority === top!.priority && second.phraseLen === top!.phraseLen;
     if (tie) return { result: { verdict: "MATCH_AMBIGUOUS", candidates: ranked.slice(0, 5).map((h) => h.templateId) }, steps, ranked: rankedView };
+    // Mục hỏi đáp đã khai báo "khác với" một mục cũng khớp câu này: người duyệt đã nói hai tình huống này dễ lẫn, nên thứ hạng
+    // (độ dài cụm, ưu tiên) KHÔNG được tự phân định — để AI chọn hoặc hỏi lại khách (src/core/items.ts).
+    const linked = top!.kind === "override" ? [] : ranked.slice(1).filter((h) => index.distinctPair(top!.templateId, h.templateId));
+    if (linked.length) return { result: { verdict: "MATCH_AMBIGUOUS", candidates: [top!, ...linked].slice(0, 5).map((h) => h.templateId) }, steps, ranked: rankedView };
     return { result: { verdict: "MATCH_CONFIDENT", templateId: top!.templateId, via: top!.kind }, steps, ranked: rankedView };
   }
 
@@ -137,7 +141,8 @@ export function decide(
   if (s1 && ctx.parentEscalatedGroup && s1.score >= settings.semanticConfident && index.get(s1.templateId)!.group === ctx.parentEscalatedGroup) {
     return { result: { verdict: "ESCALATE", reason: `khách quay lại chủ đề "${ctx.parentEscalatedGroup}" đã được chuyển support trước đó`, sourceTemplateId: s1.templateId }, steps, ranked: [] };
   }
-  if (s1 && s1.score >= settings.semanticConfident && (!s2 || s1.score - s2.score >= settings.semanticMargin)) {
+  const linkedRunnerUp = !!s1 && eligible.slice(1).some((s) => s.score >= settings.semanticSuggest && index.distinctPair(s1.templateId, s.templateId));
+  if (s1 && s1.score >= settings.semanticConfident && (!s2 || s1.score - s2.score >= settings.semanticMargin) && !linkedRunnerUp) {
     return { result: { verdict: "MATCH_CONFIDENT", templateId: s1.templateId, via: "semantic" }, steps, ranked: [{ templateId: s1.templateId, kind: "semantic", priority: 0, phraseLen: 0 }] };
   }
   if (s1 && s1.score >= settings.semanticSuggest) {

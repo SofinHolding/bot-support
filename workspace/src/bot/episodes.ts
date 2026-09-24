@@ -22,7 +22,7 @@ export interface LoadedEpisode {
   recent: EpisodeRow[];
 }
 
-export type TurnKind = "TEMPLATE" | "ESCALATE" | "GROUNDED" | "OFFTOPIC" | "SECURITY" | "BLOCKED";
+export type TurnKind = "TEMPLATE" | "ESCALATE" | "GROUNDED" | "OFFTOPIC" | "SECURITY" | "BLOCKED" | "CLARIFY";
 
 export interface FinalizeInput {
   userId: number;
@@ -126,7 +126,7 @@ export class EpisodeManager {
     const t = inp.template;
     const group = t && !NON_TOPIC_GROUPS.has(t.group) ? t.group : undefined;
     const escalating = inp.kind === "ESCALATE" || isEscalationTemplate(t);
-    const directive = escalating ? "escalated" : t?.sets_context.status ?? (inp.kind === "GROUNDED" ? "pending" : "none");
+    const directive = escalating ? "escalated" : t?.sets_context.status ?? (inp.kind === "GROUNDED" || inp.kind === "CLARIFY" ? "pending" : "none");
     const issue = group ? t?.sets_context.issue : undefined; // chỉ template có chủ đề mới đặt/đổi issue: FP-12, chào, cảm ơn không xoá vấn đề gốc
     const opensCase = escalating || directive === "pending" || directive === "resolved";
 

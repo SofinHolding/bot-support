@@ -31,6 +31,8 @@ export interface RouterSettings extends GateSettings {
   fastVerify: boolean;
   tooShortMaxChars: number;
   urlHostWhitelist: Set<string>;
+  /** Cho AI hỏi lại khách 1 lần khi câu hỏi mơ hồ giữa hai mục hỏi đáp đã khai báo là khác nhau (setting episode.ask_when_unclear) */
+  askWhenUnclear?: boolean;
 }
 
 export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> = {
@@ -41,6 +43,7 @@ export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> =
   knowledgeLang: "vi",
   fastVerify: true,
   tooShortMaxChars: 2,
+  askWhenUnclear: false,
 };
 
 export interface RouteContext {
@@ -48,6 +51,8 @@ export interface RouteContext {
   pendingIssue?: string;
   parentEscalatedGroup?: string;
   contextPack?: ContextPack;
+  /** Lượt trước bot đã hỏi lại khách để phân biệt các mục này: lượt này chỉ chọn trong đây, không rõ nữa thì chuyển nhân viên */
+  pendingClarify?: { items: string[] };
 }
 
 export interface RouteRequest {
@@ -64,7 +69,9 @@ export type Outcome =
   | { kind: "TEMPLATE"; templateId: string; tier: Tier; via: string }
   | { kind: "ESCALATE"; tier: Tier; reason: string; sourceTemplateId?: string }
   | { kind: "GROUNDED"; tier: 3; answer: string; /** ngôn ngữ thật của `answer` (khác ngôn ngữ khách => phải dịch trước khi gửi) */ sourceLang: string; /** sha1 của đoạn nguồn chính: khoá lưu câu trả lời đã gửi cho admin xem */ sourceHash?: string; sources: { chunkId: string; docSlug: string; heading: string; url?: string }[]; mode: "extractive" | "generative" }
-  | { kind: "OFFTOPIC"; tier: Tier; reason: string };
+  | { kind: "OFFTOPIC"; tier: Tier; reason: string }
+  /** Hỏi lại khách (tối đa 1 lần) để phân biệt các mục đã khai báo là khác nhau. `question` là câu hỏi lại đã duyệt, tiếng Anh. */
+  | { kind: "CLARIFY"; tier: 2; question: string; items: string[] };
 
 export interface RouteTrace {
   gates: GateStep[];
@@ -306,6 +313,25 @@ async function tier3(req: RouteRequest, deps: RouterDeps, trace: RouteTrace, don
   }
 }
 
+/**
+ * Ứng viên gửi cho SKILL select-answer. Mục hỏi đáp mang thêm ngữ cảnh áp dụng và các lời khai "khác với" giữa các ứng viên
+ * trong CÙNG danh sách — AI dựa vào đó để phân biệt, hoặc trả CLARIFY:<A>,<B> khi không phân biệt được.
+ */
+function selectCandidates(templates: Template[], chunks: KnowledgeHit[], index: TemplateIndex) {
+  const topicOf = (t: Template): string => {
+    if (!t.item) return `${t.group} — ${t.match.examples[0] ?? t.match.keywords[0] ?? t.sets_context.issue ?? t.id}`;
+    const diffs = templates.filter((o) => o.id !== t.id).flatMap((o) => {
+      const d = index.distinctPair(t.id, o.id);
+      return d ? [`differs from T:${o.id}: ${d.difference}`] : [];
+    });
+    return [t.item.title, t.item.applies_when ? `applies when: ${t.item.applies_when}` : "", ...diffs].filter(Boolean).join(" — ");
+  };
+  return [
+    ...templates.map((t) => ({ ref: `T:${t.id}`, topic: topicOf(t), text: (index.resolveAnswerSource(t).answers.en ?? "").slice(0, 600) })),
+    ...chunks.map((c) => ({ ref: `K:${c.chunkId}`, topic: `${c.docSlug} — ${c.heading}`, text: c.text.slice(0, 1800) })),
+  ];
+}
+
 /** Ngôn ngữ thật của một đoạn tri thức (đoạn có dấu tiếng Việt luôn là "vi" dù lời khai ghi gì). */
 const hitLang = (h: KnowledgeHit): string => sourceLangOf(h.text, h.lang);
 
@@ -436,7 +462,8 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (u.intent === "unclear") return done({ kind: "ESCALATE", tier: 2, reason: "AI không hiểu được tin nhắn", sourceTemplateId: last?.id }, lang);
 
   // Tin nối tiếp: AI nhận ra LOẠI phản hồi (mọi ngôn ngữ), luật nghiệp vụ của template quyết định bước tiếp theo
-  if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks")) {
+  const pending = (req.ctx.pendingClarify?.items ?? []).map((id) => index.get(id)).filter((t): t is Template => !!t);
+  if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks") && !pending.length) {
     const target = resolveFollowUp(u.follow_up, last);
     trace.followUp = u.follow_up;
     if (target === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: `follow-up (${u.follow_up}) sau template ${last?.id ?? "-"}`, sourceTemplateId: last?.id }, lang);
@@ -462,6 +489,22 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   queryEnOut = queryEn;
   if (queryEn) trace.notes.push(`truy vấn (en): "${queryEn}"`);
   if (queryKb && queryKb !== queryEn) trace.notes.push(`truy vấn (${settings.knowledgeLang}): "${queryKb}"`);
+
+  // ---- Khách đang trả lời câu hỏi lại của bot: chỉ chọn trong các mục đã hỏi; vẫn không rõ thì chuyển nhân viên (không hỏi lại lần 2) ----
+  if (pending.length) {
+    trace.candidates = pending.map((t) => t.id);
+    trace.notes.push(`khách trả lời câu hỏi lại giữa: ${pending.map((t) => t.id).join(", ")}`);
+    let pick;
+    try {
+      pick = await llm.select({ text: req.text, queryEn: queryEn ?? "", lang, candidates: selectCandidates(pending, [], index), context: pack });
+    } catch (e) {
+      return done(llmFailure(e, 2, trace, last?.id), lang);
+    }
+    trace.notes.push(`AI chọn: ${pick.ref}${pick.reason ? ` — ${pick.reason.slice(0, 120)}` : ""}`);
+    const chosen = pending.find((t) => `T:${t.id}` === pick.ref.trim());
+    if (chosen) return done({ kind: "TEMPLATE", templateId: chosen.id, tier: 2, via: "clarified" }, lang);
+    return done({ kind: "ESCALATE", tier: 2, reason: "đã hỏi lại khách nhưng vẫn chưa phân biệt được khách cần mục nào", sourceTemplateId: pending[0]!.id }, lang);
+  }
 
   // ---- ROUTER (chỉ ở luồng hai nhánh): FAST PATH nếu khớp CHẮC CHẮN bằng luật/điều kiện/từ khoá trên câu đã chuẩn hoá ----
   // Khách viết tiếng Anh/Việt: dùng nguyên câu. Ngôn ngữ khác: dùng bản tiếng Anh do AI dịch (đã qua kiểm tra con số, tên sản phẩm).
@@ -535,10 +578,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   }
 
   // ---- 3. AI CHỌN KẾT QUẢ ĐÚNG ----
-  const candidates = [
-    ...templates.map((t) => ({ ref: `T:${t.id}`, topic: `${t.group} — ${t.match.examples[0] ?? t.match.keywords[0] ?? t.sets_context.issue ?? t.id}`, text: (index.resolveAnswerSource(t).answers.en ?? "").slice(0, 600) })),
-    ...chunks.map((c) => ({ ref: `K:${c.chunkId}`, topic: `${c.docSlug} — ${c.heading}`, text: c.text.slice(0, 1800) })),
-  ];
+  const candidates = selectCandidates(templates, chunks, index);
   let pick;
   try {
     pick = await llm.select({ text: req.text, queryEn: queryEn ?? "", lang, candidates, context: pack });
@@ -549,6 +589,19 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   const ref = pick.ref.trim();
   if (ref === "OFFTOPIC") return done({ kind: "OFFTOPIC", tier: 2, reason: "AI xác định tin ngoài phạm vi InterLink" }, lang);
   if (ref === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: "AI: không tìm được ứng viên nào trả lời đúng câu hỏi", sourceTemplateId: last?.id }, lang);
+  if (/^CLARIFY:/i.test(ref)) {
+    const ids = ref.slice(8).split(",").map((x) => x.trim().replace(/^T:/, ""));
+    const decl = ids.length === 2 && ids.every((id) => templates.some((t) => t.id === id)) ? index.distinctPair(ids[0]!, ids[1]!) : undefined;
+    if (!decl?.clarify) {
+      trace.notes.push(`AI muốn hỏi lại khách nhưng cặp ${ids.join(", ")} chưa được khai báo là khác nhau -> chuyển nhân viên`);
+      return done({ kind: "ESCALATE", tier: 2, reason: "mơ hồ giữa nhiều template", sourceTemplateId: last?.id }, lang);
+    }
+    if (!settings.askWhenUnclear) {
+      trace.notes.push("AI muốn hỏi lại khách nhưng tính năng hỏi lại đang tắt (episode.ask_when_unclear) -> chuyển nhân viên");
+      return done({ kind: "ESCALATE", tier: 2, reason: "mơ hồ giữa nhiều template", sourceTemplateId: last?.id }, lang);
+    }
+    return done({ kind: "CLARIFY", tier: 2, question: decl.clarify, items: ids }, lang);
+  }
 
   const t = ref.startsWith("T:") ? templates.find((x) => `T:${x.id}` === ref) : undefined;
   const c = ref.startsWith("K:") ? chunks.find((x) => `K:${x.chunkId}` === ref) : undefined;
