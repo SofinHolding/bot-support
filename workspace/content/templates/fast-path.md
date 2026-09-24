@@ -439,7 +439,7 @@ sets_context:
 <!-- answer:en -->
 I'm sorry, I don't have enough information to answer this question.
 
-Please contact our support team directly on Telegram: @interlink_technicalsupport for further assistance.
+Please contact our support team directly on Telegram: @interlink_technicalsupport for further assistance.{SUPPORT_SUMMARY}
 <!-- next -->
 ---
 id: esc-wallet-create

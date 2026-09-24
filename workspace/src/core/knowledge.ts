@@ -5,6 +5,7 @@
  *   slug: whitepaper-data
  *   title: InterLink Whitepaper Data
  *   response_mode: GROUNDED_GENERATION
+ *   lang: vi                  # ngôn ngữ của tài liệu (vi | en). Bot dịch sang ngôn ngữ của khách khi trả lời; không khai thì tự nhận diện
  *   source_url: https://whitepaper.interlinklabs.ai
  *   section_links:            # tuỳ chọn: heading chứa cụm này -> gắn link này
  *     - { match: "InterLink Token ($ITL)", url: https://... }
@@ -13,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { ParseIssue } from "../domain/types";
+import { sourceLangOf } from "./language";
 import { normalize } from "./text";
 
 export interface KnowledgeChunk {
@@ -22,12 +24,16 @@ export interface KnowledgeChunk {
   url?: string;
   searchText: string;
   hash: string;
+  /** Ngôn ngữ THẬT của đoạn (vi | en | ...): quyết định có phải dịch trước khi gửi khách hay không */
+  lang: string;
 }
 
 export interface KnowledgeDoc {
   slug: string;
   title: string;
   responseMode: "GROUNDED_GENERATION";
+  /** Ngôn ngữ người nạp khai trong frontmatter (`lang: vi`); có thể không có */
+  lang?: string;
   sourceUrl?: string;
   chunks: KnowledgeChunk[];
 }
@@ -87,6 +93,12 @@ export function parseKnowledgeDoc(md: string, fallbackSlug?: string): { doc?: Kn
     issues.push({ level: "error", message: `tài liệu tri thức phải có response_mode: GROUNDED_GENERATION (đang là ${mode})` });
     return { issues };
   }
+  const declaredRaw = meta.lang === undefined || meta.lang === null ? undefined : String(meta.lang).trim().toLowerCase();
+  if (declaredRaw !== undefined && !/^[a-z]{2}$/.test(declaredRaw)) {
+    issues.push({ level: "error", message: `lang không hợp lệ: "${declaredRaw}" (dùng mã 2 chữ cái như vi, en)` });
+    return { issues };
+  }
+  const declared = declaredRaw;
   const sourceUrl = meta.source_url ? String(meta.source_url) : undefined;
   const links = Array.isArray(meta.section_links) ? (meta.section_links as { match: string; url: string }[]) : [];
 
@@ -125,9 +137,18 @@ export function parseKnowledgeDoc(md: string, fallbackSlug?: string): { doc?: Kn
         url: link,
         searchText: normalize(`${s.heading} ${part}`),
         hash: sha1(full),
+        lang: sourceLangOf(full, declared),
       });
     }
   }
   if (!chunks.length) issues.push({ level: "error", message: "tài liệu không có nội dung để chunk (cần các mục ## / ###)" });
-  return { doc: { slug, title: String(meta.title ?? slug), responseMode: "GROUNDED_GENERATION", sourceUrl, chunks }, issues };
+  else {
+    const counts = new Map<string, number>();
+    for (const c of chunks) counts.set(c.lang, (counts.get(c.lang) ?? 0) + 1);
+    const summary = [...counts].map(([l, n]) => `${l}: ${n}`).join(", ");
+    const other = declared ? chunks.filter((c) => c.lang !== declared).length : 0;
+    if (declared && other) issues.push({ level: "warning", message: `tài liệu khai lang: ${declared} nhưng ${other}/${chunks.length} đoạn có vẻ thuộc ngôn ngữ khác (${summary})` });
+    else if (!declared && counts.size > 1) issues.push({ level: "warning", message: `tài liệu trộn nhiều ngôn ngữ (${summary}); nên khai lang trong frontmatter hoặc tách tài liệu` });
+  }
+  return { doc: { slug, title: String(meta.title ?? slug), responseMode: "GROUNDED_GENERATION", lang: declared, sourceUrl, chunks }, issues };
 }

@@ -1,6 +1,6 @@
 /**
- * Provider dự phòng: endpoint tương thích OpenAI (`/chat/completions`) — dùng cho gateway hiện có (9router...), OpenRouter,
- * Ollama, vLLM... Đây là NHÀ CUNG CẤP KHÁC, không phải cách gọi Claude.
+ * Provider chính: endpoint tương thích OpenAI (`/chat/completions`) — 9router, OpenRouter, Ollama, vLLM...
+ * Model (nhanh/mạnh) do gateway định tuyến; bot chỉ gửi tên model đã chọn trong Admin Web.
  */
 import { z, type ZodType } from "zod";
 import { LlmBadOutputError, ProviderUnavailableError, type JsonRequest, type JsonResult, type LlmProvider, type ModelTier } from "./types";
@@ -14,17 +14,21 @@ export interface OpenAICompatConfig {
   fetchImpl?: typeof fetch;
 }
 
+/** Nguồn cấu hình: giá trị cố định, hoặc hàm đọc lại mỗi lần gọi (cấu hình chỉnh được từ Admin Web). null = chưa cấu hình. */
+export type OpenAICompatSource = OpenAICompatConfig | (() => Promise<OpenAICompatConfig | null>);
+
 export class OpenAICompatProvider implements LlmProvider {
   readonly name: string;
-  private readonly f: typeof fetch;
 
-  constructor(private readonly cfg: OpenAICompatConfig) {
-    this.name = cfg.name ?? "openai-compat";
-    this.f = cfg.fetchImpl ?? fetch;
+  constructor(private readonly source: OpenAICompatSource, name?: string) {
+    this.name = name ?? (typeof source === "function" ? "openai-compat" : (source.name ?? "openai-compat"));
   }
 
   async generateJson<T>(req: JsonRequest<T>): Promise<JsonResult<T>> {
-    const model = this.cfg.models[req.tier];
+    const cfg = typeof this.source === "function" ? await this.source() : this.source;
+    if (!cfg) throw new ProviderUnavailableError("gateway LLM chưa được cấu hình");
+    const f = cfg.fetchImpl ?? fetch;
+    const model = cfg.models[req.tier];
     const started = Date.now();
     const schemaHint = safeJsonSchema(req.schema);
     const system = req.system.map((b) => b.text).join("\n\n") + `\n\nRespond with ONLY a JSON object that matches this JSON Schema, no prose:\n${schemaHint}`;
@@ -32,9 +36,9 @@ export class OpenAICompatProvider implements LlmProvider {
 
     let res: Response;
     try {
-      res = await this.f(`${this.cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      res = await f(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...(this.cfg.apiKey ? { authorization: `Bearer ${this.cfg.apiKey}` } : {}) },
+        headers: { "content-type": "application/json", ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}) },
         body: JSON.stringify({
           model,
           max_tokens: req.maxTokens,
@@ -44,14 +48,16 @@ export class OpenAICompatProvider implements LlmProvider {
             { role: "user", content: userContent },
           ],
         }),
-        signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 30_000),
+        signal: AbortSignal.timeout(cfg.timeoutMs ?? 30_000),
       });
     } catch {
       throw new ProviderUnavailableError("connection error");
     }
-    if (res.status === 429 || res.status >= 500) throw new ProviderUnavailableError(`status ${res.status}`);
-    if (res.status === 401 || res.status === 403 || res.status === 404) throw new ProviderUnavailableError(`status ${res.status}`);
-    if (!res.ok) throw new LlmBadOutputError(`status ${res.status}`);
+    if (!res.ok) {
+      const detail = `status ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`;
+      if (res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403 || res.status === 404) throw new ProviderUnavailableError(detail);
+      throw new LlmBadOutputError(detail);
+    }
 
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const content = body.choices?.[0]?.message?.content ?? "";

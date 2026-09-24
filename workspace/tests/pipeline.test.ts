@@ -12,7 +12,8 @@ beforeAll(async () => {
 afterAll(async () => w.close());
 
 const last = (chat: number) => w.channel.textsTo(chat).at(-1);
-const tplOf = (id: string) => w.live.index.get(id)!.answers.en!;
+// Không có episode đang mở (escalate ngay câu đầu) -> {SUPPORT_SUMMARY} được thay bằng rỗng, giống resolver.forTemplate.
+const tplOf = (id: string) => w.live.index.get(id)!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd();
 
 describe("FP-0: lộ key / seed", () => {
   it("cảnh báo nguyên văn, KHÔNG lưu key, chỉ ghi security-alert-key-leak, báo owner", async () => {
@@ -83,7 +84,10 @@ describe("FAST-PATH và ngữ cảnh", () => {
     await w.sayPhoto(u, "kyc2"); // thêm ảnh: cùng case, gửi lại cùng template
     expect(last(u)).toBe(tplOf("fp-5b-kyc-email-queue"));
     await w.say(u, "Nooo");
-    expect(last(u)).toBe(tplOf("fp-12-escalate"));
+    // episode đã có bước hướng dẫn trước đó (2 lần gửi fp-5b-kyc-email-queue) -> khối "sao chép gửi hỗ trợ" xuất hiện
+    expect(last(u)).toContain(tplOf("fp-12-escalate"));
+    expect(last(u)).toContain("Summary to send to support");
+    expect(last(u)).toContain("fp-5b-kyc-email-queue");
     const t = (await w.conv.listTickets({ limit: 5, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toBeDefined();
     expect(t.status).toBe("open");
@@ -105,7 +109,9 @@ describe("FAST-PATH và ngữ cảnh", () => {
     await w.say(u, "why ITLG reduce");
     expect(last(u)).toContain("The token burn mechanism is now active");
     await w.say(u, "not burn");
-    expect(last(u)).toBe(tplOf("fp-12-escalate"));
+    // episode đã có bước hướng dẫn trước đó (fp-4-itlg-burn) -> khối "sao chép gửi hỗ trợ" xuất hiện
+    expect(last(u)).toContain(tplOf("fp-12-escalate"));
+    expect(last(u)).toContain("Summary to send to support");
     const t = (await w.conv.listTickets({ limit: 20, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toMatchObject({ error_code: "M02", pic: "Quang" });
   });
@@ -247,19 +253,52 @@ describe("độ bền", () => {
 });
 
 describe("đa ngôn ngữ", () => {
-  it("dịch MỘT lần, lưu chờ duyệt, lần sau dùng bản đã lưu (không gọi LLM lại)", async () => {
+  it("trả lời bằng ngôn ngữ của khách: dịch MỘT lần, lưu chờ duyệt, lần sau dùng bản đã lưu; bản admin sửa và duyệt thay thế bản máy", async () => {
     let calls = 0;
     const llm = fakeLlm({ translate: async (r) => { calls++; return `[${r.lang}] ${r.text}`; } });
     const w2 = await makeWorld({ llm });
     try {
+      const en = w2.live.index.get("fp-2-withdraw")!.answers.en;
       await w2.say(700, "tôi muốn rút tiền");
-      expect(w2.channel.textsTo(700).at(-1)).toBe("[vi] you can not withdraw now, it will be withdrawn in the future when ITLG token is listed on exchanges and it will be a big surprise");
+      expect(w2.channel.textsTo(700).at(-1)).toBe(`[vi] ${en}`);
       expect(calls).toBe(1);
-      const tr = await w2.kb.getTranslation("fp-2-withdraw", "vi");
-      expect(tr?.status).toBe("pending");
+      expect((await w2.kb.getTranslation("fp-2-withdraw", "vi"))?.status).toBe("pending");
       await w2.say(700, "rút tiền khi nào");
       expect(calls).toBe(1);
       expect((await w2.conv.getUser(700))?.language).toBe("vi");
+
+      await w2.kb.approveTranslation("fp-2-withdraw", "vi", "admin#9002", "Bản admin đã sửa");
+      await w2.say(700, "rút tiền thế nào");
+      expect(w2.channel.textsTo(700).at(-1)).toBe("Bản admin đã sửa");
+      expect(calls).toBe(1);
+    } finally {
+      await w2.close();
+    }
+  });
+
+  it("bản dịch máy làm đổi @handle/URL thì KHÔNG được gửi: khách nhận nguyên văn tiếng Anh", async () => {
+    const llm = fakeLlm({ translate: async () => { throw new Error("bản dịch làm thay đổi URL hoặc handle"); } }); // LlmClient ném lỗi này khi token bảo vệ bị đổi
+    const w2 = await makeWorld({ llm });
+    try {
+      await w2.say(703, "câu hỏi rất lạ về quantum banana zebra");
+      expect(w2.channel.textsTo(703).at(-1)).toBe(w2.live.index.get("fp-12-escalate")!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd());
+      expect(await w2.kb.getTranslation("fp-12-escalate", "vi")).toBeNull();
+    } finally {
+      await w2.close();
+    }
+  });
+
+  it("chế độ chặt (translation.send_unapproved = false): chỉ gửi bản đã duyệt, chưa duyệt thì gửi nguyên văn tiếng Anh", async () => {
+    const w2 = await makeWorld({ llm: fakeLlm() });
+    try {
+      await w2.ops.setSetting("translation.send_unapproved", false, "test");
+      const en = w2.live.index.get("fp-2-withdraw")!.answers.en;
+      await w2.say(702, "tôi muốn rút tiền");
+      expect(w2.channel.textsTo(702).at(-1)).toBe(en);
+      expect((await w2.kb.getTranslation("fp-2-withdraw", "vi"))?.status).toBe("pending");
+      await w2.kb.approveTranslation("fp-2-withdraw", "vi", "admin#9002");
+      await w2.say(702, "rút tiền thế nào");
+      expect(w2.channel.textsTo(702).at(-1)).toBe(`[vi] ${en}`);
     } finally {
       await w2.close();
     }

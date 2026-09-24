@@ -6,21 +6,33 @@
   <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="no-referrer">
   <title>InterLink Support - Quản trị</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e3a30'/%3E%3Ccircle cx='12.5' cy='16' r='6.5' fill='none' stroke='%238fe0c4' stroke-width='2.6'/%3E%3Ccircle cx='19.5' cy='16' r='6.5' fill='none' stroke='%238fe0c4' stroke-width='2.6'/%3E%3C/svg%3E">
+  <link rel="preload" href="/fonts/be-vietnam-pro-vietnamese-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <!-- Toàn bộ giao diện được dựng bằng app.js (không có script/style/handler inline: CSP). -->
-  <header id="topbar" class="topbar" hidden>
-    <div class="topbar-in">
-      <div class="brand">InterLink Support<small>quản trị</small></div>
-      <div class="spacer"></div>
-      <div class="who" id="who"></div>
+  <div class="shell">
+    <aside id="topbar" class="rail" hidden>
+      <div class="rail-head">
+        <div class="brand">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="12.5" cy="16" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="19.5" cy="16" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>
+          <div>InterLink Support<small>Quản trị</small></div>
+        </div>
+      </div>
+      <nav id="nav" class="nav" aria-label="Điều hướng chính"></nav>
+      <div class="rail-foot"><div class="who" id="who"></div></div>
+    </aside>
+    <div class="content">
+      <div id="mobilebar" class="mobilebar">
+        <button type="button" id="menu-btn" aria-label="Mở menu" aria-expanded="false">☰</button>
+        <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="12.5" cy="16" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="19.5" cy="16" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>InterLink Support</div>
+      </div>
+      <main id="app" aria-live="polite"><div class="loading">Đang tải...</div></main>
+      <div class="footer" id="footer"></div>
     </div>
-    <nav id="nav" class="nav" aria-label="Điều hướng"></nav>
-  </header>
-  <main id="app" aria-live="polite"><div class="loading">Đang tải...</div></main>
-  <div class="footer" id="footer"></div>
+    <div class="scrim" id="scrim"></div>
+  </div>
   <div id="toasts" role="status" aria-live="polite"></div>
   <noscript><p class="notice notice-err">Trang quản trị cần bật JavaScript.</p></noscript>
   <script src="/app.js" defer></script>

@@ -84,6 +84,7 @@ const BKK = "Asia/Bangkok";
 /** Các cron của hệ thống mới, thay thế 3 cron OpenClaw + việc Heartbeat cũ. */
 export const CRONS: CronDef[] = [
   { name: "maintenance", spec: { kind: "every", minutes: 10 }, replaces: "Heartbeat: dọn context bỏ dở (episode dormant/abandoned), hàng đợi kẹt" },
+  { name: "reindex-embeddings", spec: { kind: "every", minutes: 10 }, replaces: "(mới) embed lại chunk tri thức khi đổi embedding model hoặc khi dịch vụ embedding từng lỗi lúc publish" },
   { name: "outbox-flush", spec: { kind: "every", minutes: 1 }, replaces: "delivery-queue/failed (1.083 tin lỗi không ai gửi lại)" },
   { name: "usage-aggregate", spec: { kind: "hourly", minute: 5 }, replaces: "cron usage-aggregator-daily `5 * * * *` UTC" },
   { name: "escalation-alert", spec: { kind: "daily", at: "23:59", tz: BKK }, replaces: "cron daily-escalate-threshold-alert 23:59 Asia/Bangkok" },

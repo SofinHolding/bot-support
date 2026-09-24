@@ -49,7 +49,8 @@ export interface ParityReport {
 export function checkParity(contentRoot = "content"): ParityReport {
   const bundle = loadContentDir(contentRoot);
   const allAnswers = new Set<string>();
-  for (const t of bundle.templates) for (const a of Object.values(t.answers)) allAnswers.add(a);
+  // {SUPPORT_SUMMARY} (core/handoff.ts): khối "sao chép gửi hỗ trợ" chèn thêm vào FP-12, không có trong luật cũ -> bỏ khi đối chiếu.
+  for (const t of bundle.templates) for (const a of Object.values(t.answers)) allAnswers.add(a.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd());
   const allKeywords = new Set<string>();
   for (const t of bundle.templates) for (const k of [...t.match.keywords, ...t.match.exact]) allKeywords.add(normalize(k));
 

@@ -35,6 +35,19 @@ export function opsRepo(db: Db) {
     async setProtected(key: string, value: unknown, by: string) {
       await db.query("INSERT INTO protected_settings (key, value, updated_by) VALUES ($1, $2::jsonb, $3) ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_by = $3, updated_at = now()", [key, JSON.stringify(value), by]);
     },
+    async getSecret(key: string): Promise<string | null> {
+      const r = await db.query<{ value: string }>("SELECT value FROM secrets WHERE key = $1", [key]);
+      return r.rows[0]?.value ?? null;
+    },
+    async setSecret(key: string, value: string, by: string) {
+      await db.query("INSERT INTO secrets (key, value, updated_by) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = $2, updated_by = $3, updated_at = now()", [key, value, by]);
+    },
+    async deleteSecret(key: string) {
+      await db.query("DELETE FROM secrets WHERE key = $1", [key]);
+    },
+    async deleteSetting(key: string) {
+      await db.query("DELETE FROM settings WHERE key = $1", [key]);
+    },
     async kbVersion(): Promise<number> {
       const r = await db.query<{ value: unknown }>("SELECT value FROM settings WHERE key = 'kb_version'");
       return r.rows[0] ? Number(r.rows[0].value) : 0;
@@ -140,13 +153,20 @@ export function opsRepo(db: Db) {
       const x = r.rows[0];
       return x ? { id: num(x.id), type: String(x.type), payload: x.payload as Record<string, unknown>, attempts: num(x.attempts), max_attempts: num(x.max_attempts) } : null;
     },
+    /** Còn việc loại này đang chờ/đang chạy không (để giao diện báo "đang đánh chỉ mục lại"). */
+    async hasPendingJob(type: string): Promise<boolean> {
+      const r = await db.query("SELECT 1 FROM jobs WHERE type = $1 AND status IN ('queued', 'running') LIMIT 1", [type]);
+      return r.rowCount > 0;
+    },
+    // Xong (done/dead) thì trả lại dedupe_key: khoá này nghĩa là "mỗi lúc chỉ một việc như vậy đang chờ", không phải "chỉ một lần trong đời".
+    // (Trước đây key UNIQUE không được trả lại nên vd "reindex:model-change" chỉ xếp được đúng một lần; các lần đổi model sau bị bỏ qua im lặng.)
     async completeJob(id: number) {
-      await db.query("UPDATE jobs SET status = 'done', finished_at = now(), last_error = NULL WHERE id = $1", [id]);
+      await db.query("UPDATE jobs SET status = 'done', finished_at = now(), last_error = NULL, dedupe_key = NULL WHERE id = $1", [id]);
     },
     /** Lỗi: thử lại với backoff luỹ thừa; quá số lần -> 'dead' (dead-letter). Trả về trạng thái mới. */
     async failJob(job: JobRow, error: string): Promise<"queued" | "dead"> {
       if (job.attempts >= job.max_attempts) {
-        await db.query("UPDATE jobs SET status = 'dead', finished_at = now(), last_error = $2 WHERE id = $1", [job.id, error.slice(0, 2000)]);
+        await db.query("UPDATE jobs SET status = 'dead', finished_at = now(), last_error = $2, dedupe_key = NULL WHERE id = $1", [job.id, error.slice(0, 2000)]);
         return "dead";
       }
       const delaySec = Math.min(3600, 30 * 2 ** (job.attempts - 1));

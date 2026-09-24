@@ -4,7 +4,22 @@ export interface Embedder {
   /** Định danh phiên bản (ghi cùng vector để biết khi nào phải re-index / hiệu chỉnh lại ngưỡng). */
   readonly version: string;
   embed(texts: string[]): Promise<number[][]>;
+  /**
+   * Như embed nhưng trả kèm model THẬT SỰ đã tạo vector. Với embedder có dự phòng, model có thể khác `version` đọc trước đó
+   * (API ngoài vừa lỗi -> vector do model cục bộ tạo). Vector của hai model không so sánh được nên bên gọi phải dùng `model` này.
+   */
+  embedTagged?(texts: string[]): Promise<{ vectors: number[][]; model: string }>;
+  /** Embedder sẽ được dùng NGAY BÂY GIỜ theo lựa chọn của người vận hành (không gọi mạng). Không có = chính nó. */
+  active?(): Promise<Embedder>;
 }
+
+export async function embedTagged(e: Embedder, texts: string[]): Promise<{ vectors: number[][]; model: string }> {
+  if (e.embedTagged) return e.embedTagged(texts);
+  return { vectors: await e.embed(texts), model: e.version };
+}
+
+/** Model đang được chọn để đánh chỉ mục / tìm kiếm (kho chỉ được đánh chỉ mục cho ĐÚNG model này). */
+export const activeEmbedder = async (e: Embedder): Promise<Embedder> => (e.active ? e.active() : e);
 
 export function cosine(a: number[], b: number[]): number {
   let dot = 0;

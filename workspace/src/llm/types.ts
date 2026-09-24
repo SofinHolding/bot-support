@@ -8,8 +8,10 @@ export interface SystemBlock {
   cache?: boolean;
 }
 
-export type ModelTier = "fast" | "strong";
-export type Purpose = "vision" | "classify" | "grounded" | "translate" | "summarize";
+/** "intake": tầng riêng cho trợ lý nạp nội dung mới (Admin Web → Nạp nội dung mới) — admin có thể trỏ sang model khác hẳn
+ * model nhanh/mạnh đang phục vụ khách để tách quota; chưa cấu hình thì tự dùng lại model nhanh (xem GatewayConfig.resolve). */
+export type ModelTier = "fast" | "strong" | "intake";
+export type Purpose = "vision" | "understand" | "select" | "verify" | "review" | "classify" | "grounded" | "translate" | "summarize" | "intake";
 
 export interface JsonRequest<T> {
   tier: ModelTier;

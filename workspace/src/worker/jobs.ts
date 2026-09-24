@@ -1,6 +1,7 @@
 /** Việc nền. Chạy trực tiếp bằng code (không gọi LLM chỉ để "chạy script" như cron cũ). */
-import type { LlmPort } from "../core/ports";
+import { usableLlm, type LlmPort } from "../core/ports";
 import { maskSensitive } from "../core/sanitize";
+import { cleanSummary, degradedSummary, readSummary } from "../core/summary";
 import { normalize } from "../core/text";
 import { sha1 } from "../core/knowledge";
 import type { Channel } from "../bot/types";
@@ -71,6 +72,10 @@ export const HANDLERS: Record<string, JobHandler> = {
     const requeued = await ctx.ops.requeueStuckJobs(15);
     await ctx.ops.purgeExpiredAuth(now);
     return { dormant, closed, requeued };
+  },
+
+  async "reindex-embeddings"(ctx) {
+    return ctx.kbService.reindexChunks();
   },
 
   /** Gửi lại tin Telegram lỗi (thay delivery-queue/failed của OpenClaw). */
@@ -184,18 +189,27 @@ export const HANDLERS: Record<string, JobHandler> = {
 
   /** Tóm tắt cuộn cho episode dài. Chạy nền sau khi đã trả lời khách. */
   async "summarize-episode"(ctx, p) {
-    if (!ctx.llm) return { skipped: "chưa cấu hình LLM" };
+    const llm = usableLlm(ctx.llm);
+    if (!llm) return { skipped: "chưa cấu hình LLM" };
     const id = Number(p.episodeId);
     const ep = await ctx.conv.getEpisode(id);
     if (!ep) return { skipped: "không có episode" };
     const msgs = await ctx.conv.messagesAfter(id, ep.summary_upto_message_id, 40);
     if (!msgs.length) return { skipped: "không có tin mới" };
-    const prev = ep.summary as { issue?: string; user_reported?: string; unresolved_points?: string } | null;
-    const out = await ctx.llm.summarize({ previous: prev ?? undefined, messages: msgs.map((m) => ({ role: m.direction === "in" ? ("user" as const) : ("bot" as const), text: m.text ?? "" })) });
-    // Lớp chặn cuối: tóm tắt không được chứa ID/email/khoá dù LLM có lỡ chép vào
-    const clean = { issue: maskSensitive(out.issue).slice(0, 160), user_reported: maskSensitive(out.user_reported).slice(0, 500), unresolved_points: maskSensitive(out.unresolved_points).slice(0, 260), model_note: "LLM viết; chỉ để hiểu ngữ cảnh, không dùng để quyết định nghiệp vụ" };
-    await ctx.conv.saveSummary(id, clean, msgs[msgs.length - 1]!.id);
-    return { episodeId: id, upTo: msgs[msgs.length - 1]!.id };
+    const prev = readSummary(ep.summary);
+    const messages = msgs.map((m) => ({ role: m.direction === "in" ? ("user" as const) : ("bot" as const), text: m.text ?? "" }));
+    let out;
+    try {
+      out = await llm.summarize({ previous: prev ? { issue: prev.issue, user_reported: prev.user_reported, unresolved_points: prev.unresolved_points, exact_facts: prev.exact_facts, degraded: prev.degraded } : undefined, messages });
+    } catch (e) {
+      // Không để ngữ cảnh trống: lưu bản cắt thô từ lời khách, KHÔNG dời mốc -> lần chạy lại (retry/lượt sau) tóm tắt đúng các tin này.
+      if (!prev?.degraded) await ctx.conv.saveSummary(id, { ...degradedSummary(prev, messages) }, ep.summary_upto_message_id);
+      throw e;
+    }
+    // Lớp chặn cuối: che ID/email/khoá, cắt theo giới hạn, và bỏ mọi "giá trị nguyên văn" không có trong tin nhắn nguồn
+    const { summary, droppedFacts } = cleanSummary(out, messages.filter((m) => m.role === "user").map((m) => m.text), prev) // nguồn của "giá trị khách nêu" chỉ là lời khách, không phải câu bot;
+    await ctx.conv.saveSummary(id, { ...summary }, msgs[msgs.length - 1]!.id);
+    return { episodeId: id, upTo: msgs[msgs.length - 1]!.id, facts: summary.exact_facts.length, droppedFacts };
   },
 
   /** Xoá ảnh quá thời hạn lưu (báo cáo cũ: 8.884/11.004 ảnh > 30 ngày vẫn còn). */

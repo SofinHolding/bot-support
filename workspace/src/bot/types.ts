@@ -24,10 +24,12 @@ export interface InboundBatch {
 export interface Channel {
   send(chatId: number, text: string): Promise<{ messageId?: number }>;
   downloadImage(fileId: string): Promise<{ mime: string; base64: string }>;
+  /** Báo "đang soạn" (tuỳ chọn). Telegram hiển thị ~5 giây mỗi lần gọi. */
+  typing?(chatId: number): Promise<void>;
 }
 
 export interface PipelineResult {
-  status: "ok" | "ignored" | "duplicate" | "error";
+  status: "ok" | "ignored" | "duplicate" | "in_progress" | "error";
   replies: string[];
   decisionKind?: string;
   templateId?: string | null;

@@ -7,10 +7,36 @@ export type VersionStatus = "draft" | "pending_approval" | "published" | "archiv
 export interface DocumentRow {
   slug: string;
   title: string;
-  kind: "templates" | "knowledge";
+  kind: "templates" | "knowledge" | "guide";
   created_at: Date;
   published_version: number | null;
   latest_version: number;
+}
+
+/** Một cặp nội dung ĐÃ PUBLISH mà bước kiểm tra lúc publish cờ là xung đột (xem migrations/005 + KbRepo.syncConflicts). */
+export interface ConflictRow {
+  id: number;
+  pairKey: string;
+  a: { kind: "template" | "chunk"; id: string; doc: string; title: string };
+  b: { kind: "template" | "chunk"; id: string; doc: string; title: string };
+  score: number;
+  signals: string[];
+  narrow: { templateId: string; phrase: string } | null;
+  verdict: string | null;
+  reason: string | null;
+  suggestion: string | null;
+  createdAt: Date;
+}
+
+export interface ConflictInput {
+  a: { kind: "template" | "chunk"; id: string; doc: string; title: string };
+  b: { kind: "template" | "chunk"; id: string; doc: string; title: string };
+  score: number;
+  signals: string[];
+  narrow?: { templateId: string; phrase: string } | null;
+  verdict?: string | null;
+  reason?: string | null;
+  suggestion?: string | null;
 }
 
 export interface VersionRow {
@@ -36,6 +62,7 @@ export interface ChunkInsert {
   url?: string;
   searchText: string;
   hash: string;
+  lang?: string;
   embedding?: number[];
   embeddingModel?: string;
 }
@@ -46,6 +73,7 @@ export interface ChunkHit {
   heading: string;
   text: string;
   url?: string;
+  lang?: string;
   searchText: string;
   vectorScore: number | null;
   lexicalRank: number;
@@ -56,7 +84,7 @@ const vecLiteral = (v: number[]) => `[${v.map((x) => Number(x.toFixed(6))).join(
 export function kbRepo(db: Db) {
   return {
     // ---- Tài liệu và phiên bản ----
-    async upsertDocument(slug: string, title: string, kind: "templates" | "knowledge") {
+    async upsertDocument(slug: string, title: string, kind: "templates" | "knowledge" | "guide") {
       await db.query("INSERT INTO kb_documents (slug, title, kind) VALUES ($1,$2,$3) ON CONFLICT (slug) DO UPDATE SET title = EXCLUDED.title", [slug, title, kind]);
     },
     async listDocuments(): Promise<DocumentRow[]> {
@@ -70,7 +98,12 @@ export function kbRepo(db: Db) {
     },
     async getDocument(slug: string) {
       const r = await db.query("SELECT * FROM kb_documents WHERE slug = $1", [slug]);
-      return r.rows[0] as { slug: string; title: string; kind: "templates" | "knowledge" } | undefined;
+      return r.rows[0] as { slug: string; title: string; kind: "templates" | "knowledge" | "guide" } | undefined;
+    },
+    /** Xoá hẳn tài liệu + mọi phiên bản (cascade xoá templates/kb_chunks của từng phiên bản). Gọi sau khi kb/service.ts đã kiểm tra chưa từng publish. */
+    async deleteDocument(slug: string) {
+      await db.query("DELETE FROM kb_document_versions WHERE slug = $1", [slug]);
+      await db.query("DELETE FROM kb_documents WHERE slug = $1", [slug]);
     },
     async listVersions(slug: string): Promise<VersionRow[]> {
       const r = await db.query("SELECT * FROM kb_document_versions WHERE slug = $1 ORDER BY version DESC", [slug]);
@@ -103,6 +136,15 @@ export function kbRepo(db: Db) {
     async activateVersion(id: number, slug: string, approvedBy: string | null, now: Date) {
       await db.query("UPDATE kb_document_versions SET status = 'archived' WHERE slug = $1 AND status = 'published' AND id <> $2", [slug, id]);
       await db.query("UPDATE kb_document_versions SET status = 'published', published_at = $2, approved_by = COALESCE($3, approved_by) WHERE id = $1", [id, iso(now), approvedBy]);
+    },
+    /**
+     * Dọn dữ liệu (template/chunk + vector — kb_chunk_embeddings cascade theo kb_chunks) của MỌI phiên bản đã archived
+     * của tài liệu này. `source_md` của các phiên bản đó vẫn giữ nguyên (xem lại được, Rollback vẫn dựng lại được
+     * template/chunk từ đó) — chỉ xoá phần đã tách sẵn để đỡ tích luỹ rác. Gọi ngay sau `activateVersion` trong cùng transaction.
+     */
+    async clearArchivedContent(slug: string) {
+      await db.query("DELETE FROM templates WHERE version_id IN (SELECT id FROM kb_document_versions WHERE slug = $1 AND status = 'archived')", [slug]);
+      await db.query("DELETE FROM kb_chunks WHERE version_id IN (SELECT id FROM kb_document_versions WHERE slug = $1 AND status = 'archived')", [slug]);
     },
 
     // ---- Template ----
@@ -147,17 +189,24 @@ export function kbRepo(db: Db) {
       await db.query("DELETE FROM kb_chunks WHERE version_id = $1", [versionId]);
       for (const c of chunks) {
         await db.query(
-          `INSERT INTO kb_chunks (version_id, doc_slug, chunk_index, chunk_hash, heading, text, url, search_text, tsv, embedding, embedding_model)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8, to_tsvector('simple', $8), $9::vector, $10)`,
-          [versionId, slug, c.index, c.hash, c.heading, c.text, c.url ?? null, c.searchText, c.embedding ? vecLiteral(c.embedding) : null, c.embeddingModel ?? null],
+          `INSERT INTO kb_chunks (version_id, doc_slug, chunk_index, chunk_hash, heading, text, url, search_text, tsv, embedding, embedding_model, metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8, to_tsvector('simple', $8), $9::vector, $10, $11::jsonb)`,
+          [versionId, slug, c.index, c.hash, c.heading, c.text, c.url ?? null, c.searchText, c.embedding ? vecLiteral(c.embedding) : null, c.embeddingModel ?? null, JSON.stringify(c.lang ? { lang: c.lang } : {})],
         );
       }
+      // bảng vector theo model (kb_chunks.embedding chỉ còn là bản sao của model lúc publish)
+      await db.query(
+        `INSERT INTO kb_chunk_embeddings (chunk_id, model, embedding)
+         SELECT id, embedding_model, embedding FROM kb_chunks WHERE version_id = $1 AND embedding IS NOT NULL AND embedding_model IS NOT NULL
+         ON CONFLICT (chunk_id, model) DO UPDATE SET embedding = EXCLUDED.embedding`,
+        [versionId],
+      );
     },
     /** Tìm chunk trong các tài liệu đang publish: gộp kết quả từ khoá (tsvector) và vector (pgvector). */
     async searchChunks(opts: { tsQuery: string; embedding?: number[]; embeddingModel?: string; limit: number }): Promise<ChunkHit[]> {
       const lex = opts.tsQuery
         ? await db.query(
-            `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, ts_rank(c.tsv, to_tsquery('simple', $1))::float8 AS rank
+            `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, c.metadata->>'lang' AS lang, ts_rank(c.tsv, to_tsquery('simple', $1))::float8 AS rank
              FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
              WHERE v.status = 'published' AND c.tsv @@ to_tsquery('simple', $1) ORDER BY rank DESC LIMIT $2`,
             [opts.tsQuery, opts.limit],
@@ -166,10 +215,10 @@ export function kbRepo(db: Db) {
       const vec =
         opts.embedding && opts.embeddingModel
           ? await db.query(
-              `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, (1 - (c.embedding <=> $1::vector))::float8 AS sim
-               FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
-               WHERE v.status = 'published' AND c.embedding IS NOT NULL AND c.embedding_model = $2
-               ORDER BY c.embedding <=> $1::vector LIMIT $3`,
+              `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, c.metadata->>'lang' AS lang, (1 - (e.embedding <=> $1::vector))::float8 AS sim
+               FROM kb_chunk_embeddings e JOIN kb_chunks c ON c.id = e.chunk_id JOIN kb_document_versions v ON v.id = c.version_id
+               WHERE v.status = 'published' AND e.model = $2
+               ORDER BY e.embedding <=> $1::vector LIMIT $3`,
               [vecLiteral(opts.embedding), opts.embeddingModel, opts.limit],
             )
           : { rows: [] as Record<string, unknown>[] };
@@ -180,15 +229,126 @@ export function kbRepo(db: Db) {
         if (cur) {
           cur.lexicalRank = Math.max(cur.lexicalRank, lexicalRank);
           if (vectorScore !== null) cur.vectorScore = vectorScore;
-        } else byId.set(id, { chunkId: id, docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), url: (x.url as string | null) ?? undefined, searchText: String(x.search_text), lexicalRank, vectorScore });
+        } else byId.set(id, { chunkId: id, docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), url: (x.url as string | null) ?? undefined, lang: (x.lang as string | null) ?? undefined, searchText: String(x.search_text), lexicalRank, vectorScore });
       };
       for (const x of lex.rows) put(x, num(x.rank), null);
       for (const x of vec.rows) put(x, 0, num(x.sim));
       return [...byId.values()];
     },
+    /** Chunk đang publish mà chưa có vector của `embeddingModel` (model mới cấu hình, model dự phòng, hoặc lúc publish dịch vụ đang lỗi). */
+    async listStaleChunks(embeddingModel: string, limit: number): Promise<{ id: string; text: string }[]> {
+      const r = await db.query<{ id: string; text: string }>(
+        `SELECT c.id::text AS id, c.text FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
+         WHERE v.status = 'published' AND NOT EXISTS (SELECT 1 FROM kb_chunk_embeddings e WHERE e.chunk_id = c.id AND e.model = $1) ORDER BY c.id LIMIT $2`,
+        [embeddingModel, limit],
+      );
+      return r.rows;
+    },
+    async setChunkEmbedding(id: string, embedding: number[], embeddingModel: string) {
+      await db.query("INSERT INTO kb_chunk_embeddings (chunk_id, model, embedding) VALUES ($1::bigint, $2, $3::vector) ON CONFLICT (chunk_id, model) DO UPDATE SET embedding = EXCLUDED.embedding", [id, embeddingModel, vecLiteral(embedding)]);
+    },
+    /** Số chunk đang publish có vector theo từng model: Admin Web thấy kho đã được đánh chỉ mục đủ cho model chính lẫn dự phòng chưa. */
+    async chunkEmbeddingCoverage(): Promise<{ model: string; n: number }[]> {
+      const r = await db.query<{ model: string; n: number }>("SELECT e.model, count(*)::int AS n FROM kb_chunk_embeddings e JOIN kb_chunks c ON c.id = e.chunk_id JOIN kb_document_versions v ON v.id = c.version_id WHERE v.status = 'published' GROUP BY e.model ORDER BY n DESC");
+      return r.rows.map((x) => ({ model: x.model, n: num(x.n) }));
+    },
     async countChunks(): Promise<number> {
       const r = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id WHERE v.status = 'published'");
       return num(r.rows[0]!.n);
+    },
+
+    /** Mọi đoạn tri thức đang publish (cho máy quét chồng lấn kb/overlap.ts). */
+    async listPublishedChunks(): Promise<{ chunkId: string; docSlug: string; heading: string; text: string; searchText: string; lang?: string }[]> {
+      const r = await db.query(
+        `SELECT c.id::text AS id, c.doc_slug, c.heading, c.text, c.search_text, c.metadata->>'lang' AS lang
+         FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id WHERE v.status = 'published' ORDER BY c.doc_slug, c.chunk_index`,
+      );
+      return r.rows.map((x) => ({ chunkId: String(x.id), docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), searchText: String(x.search_text), lang: (x.lang as string | null) ?? undefined }));
+    },
+
+    /** Vector đã lưu của mọi đoạn đang publish theo `model` (máy quét chồng lấn dùng lại, không gọi API embed). */
+    async listPublishedChunkVectors(model: string): Promise<Map<string, number[]>> {
+      const r = await db.query<{ id: string; v: string }>(
+        `SELECT e.chunk_id::text AS id, e.embedding::text AS v FROM kb_chunk_embeddings e JOIN kb_chunks c ON c.id = e.chunk_id
+         JOIN kb_document_versions v ON v.id = c.version_id WHERE v.status = 'published' AND e.model = $1`,
+        [model],
+      );
+      return new Map(r.rows.map((x) => [String(x.id), JSON.parse(x.v) as number[]]));
+    },
+
+    /**
+     * Chốt lại bộ xung đột ĐANG MỞ của một tài liệu tại thời điểm nó vừa publish (bước 3 đã cảnh báo nhưng người dùng vẫn
+     * đưa lên). Mọi dòng cũ liên quan tới `doc` (là `a_doc` hoặc `b_doc`) chuyển 'resolved', rồi ghi lại đúng bộ hiện tại —
+     * cách này tự dọn xung đột đã hết (ví dụ sau khi gỡ từ khoá) mà không cần việc dọn riêng.
+     */
+    async syncConflicts(doc: string, pairs: ConflictInput[]): Promise<void> {
+      await db.query("UPDATE kb_conflicts SET status = 'resolved', resolved_at = now() WHERE status = 'open' AND (a_doc = $1 OR b_doc = $1)", [doc]);
+      for (const p of pairs) {
+        const pairKey = [`${p.a.kind}:${p.a.id}`, `${p.b.kind}:${p.b.id}`].sort().join("|");
+        await db.query(
+          `INSERT INTO kb_conflicts (pair_key, a_kind, a_id, a_doc, a_title, b_kind, b_id, b_doc, b_title, score, signals, narrow, verdict, reason, suggestion, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open')`,
+          [
+            pairKey,
+            p.a.kind,
+            p.a.id,
+            p.a.doc,
+            p.a.title,
+            p.b.kind,
+            p.b.id,
+            p.b.doc,
+            p.b.title,
+            p.score,
+            JSON.stringify(p.signals),
+            p.narrow ? JSON.stringify(p.narrow) : null,
+            p.verdict ?? null,
+            p.reason ?? null,
+            p.suggestion ?? null,
+          ],
+        );
+      }
+    },
+
+    /** Số xung đột đang mở chạm tới mỗi tài liệu, kèm cặp điểm cao nhất (cho dấu chấm đỏ + tooltip trên danh sách Tài liệu). */
+    async listOpenConflictCounts(): Promise<Map<string, { count: number; topOtherDoc: string; topOtherTitle: string; topScore: number }>> {
+      const r = await db.query<{ doc: string; other_doc: string; other_title: string; score: number }>(
+        `SELECT a_doc AS doc, b_doc AS other_doc, b_title AS other_title, score FROM kb_conflicts WHERE status = 'open'
+         UNION ALL
+         SELECT b_doc AS doc, a_doc AS other_doc, a_title AS other_title, score FROM kb_conflicts WHERE status = 'open'`,
+      );
+      const out = new Map<string, { count: number; topOtherDoc: string; topOtherTitle: string; topScore: number }>();
+      for (const row of r.rows) {
+        const score = Number(row.score);
+        const cur = out.get(row.doc);
+        if (!cur) out.set(row.doc, { count: 1, topOtherDoc: row.other_doc, topOtherTitle: row.other_title, topScore: score });
+        else {
+          cur.count++;
+          if (score > cur.topScore) {
+            cur.topOtherDoc = row.other_doc;
+            cur.topOtherTitle = row.other_title;
+            cur.topScore = score;
+          }
+        }
+      }
+      return out;
+    },
+
+    /** Toàn bộ xung đột đang mở chạm tới một tài liệu (cả khi tài liệu đó là bên A hay bên B), điểm cao nhất trước. */
+    async listConflicts(doc: string): Promise<ConflictRow[]> {
+      const r = await db.query(`SELECT * FROM kb_conflicts WHERE status = 'open' AND (a_doc = $1 OR b_doc = $1) ORDER BY score DESC`, [doc]);
+      return r.rows.map((x) => ({
+        id: num(x.id),
+        pairKey: String(x.pair_key),
+        a: { kind: x.a_kind as "template" | "chunk", id: String(x.a_id), doc: String(x.a_doc), title: String(x.a_title) },
+        b: { kind: x.b_kind as "template" | "chunk", id: String(x.b_id), doc: String(x.b_doc), title: String(x.b_title) },
+        score: Number(x.score),
+        signals: (x.signals as string[] | null) ?? [],
+        narrow: (x.narrow as { templateId: string; phrase: string } | null) ?? null,
+        verdict: (x.verdict as string | null) ?? null,
+        reason: (x.reason as string | null) ?? null,
+        suggestion: (x.suggestion as string | null) ?? null,
+        createdAt: new Date(String(x.created_at)),
+      }));
     },
 
     // ---- Cache embedding ----

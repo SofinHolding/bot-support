@@ -26,14 +26,17 @@ const Env = z.object({
   COOKIE_SECURE: z.enum(["true", "false"]).default("false"),
   TRUST_PROXY: z.enum(["true", "false"]).default("false"), // true khi Admin API nằm sau reverse proxy
 
+  // LLM chính: gateway tương thích OpenAI (9router). Các giá trị này là mặc định; Admin Web có thể ghi đè (lưu trong DB).
+  LLM_BASE_URL: z.string().optional(), // vd http://localhost:20128/v1
+  LLM_API_KEY: z.string().optional(),
+  LLM_MODEL_FAST: z.string().default(""), // phân loại tầng 2, vision, tóm tắt
+  LLM_MODEL_STRONG: z.string().default(""), // dịch template, tri thức tầng 3
+  SECRETS_KEY: z.string().min(32, "SECRETS_KEY phải dài ≥ 32 ký tự").optional(), // khoá mã hoá bí mật lưu trong DB (khoá API nhập từ web)
+  // Dự phòng tuỳ chọn: gọi thẳng API Anthropic khi gateway lỗi
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_BASE_URL: z.string().optional(),
-  LLM_MODEL_FAST: z.string().default("claude-haiku-4-5"),
-  LLM_MODEL_STRONG: z.string().default("claude-opus-5"),
-  OPENAI_COMPAT_BASE_URL: z.string().optional(),
-  OPENAI_COMPAT_API_KEY: z.string().optional(),
-  OPENAI_COMPAT_MODEL_FAST: z.string().optional(),
-  OPENAI_COMPAT_MODEL_STRONG: z.string().optional(),
+  ANTHROPIC_MODEL_FAST: z.string().default("claude-haiku-4-5"),
+  ANTHROPIC_MODEL_STRONG: z.string().default("claude-opus-5"),
 
   EMBEDDING_URL: z.string().optional(), // endpoint tương thích OpenAI /embeddings
   EMBEDDING_API_KEY: z.string().optional(),

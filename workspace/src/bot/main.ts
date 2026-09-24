@@ -21,9 +21,12 @@ export async function startBot(svc: Services) {
     () => 2000, // gateway cũ debounce 2000ms
     (e) => log("error", "xử lý lượt lỗi", { err: (e as Error).message }),
   );
-  const ingest = (u: TgUpdate) => {
+  /** true = đã xử lý xong (hoặc không cần xử lý); false = update này còn dang dở ở lượt khác, Telegram cần gửi lại sau. */
+  const ingest = async (u: TgUpdate): Promise<boolean> => {
     const b = parseUpdate(u, bot);
-    if (b) coalescer.push(b);
+    if (!b) return true;
+    const res = (await coalescer.push(b)) as { status?: string } | undefined;
+    return res?.status !== "in_progress";
   };
 
   const app = Fastify({ logger: false, bodyLimit: 1_000_000 });
@@ -37,7 +40,9 @@ export async function startBot(svc: Services) {
       // Chống giả mạo webhook: Telegram gửi kèm secret token đã đăng ký
       const got = String(req.headers["x-telegram-bot-api-secret-token"] ?? "");
       if (!safeEq(got, secret)) return reply.code(401).send({ ok: false });
-      ingest(req.body as TgUpdate); // trả 200 ngay; xử lý chạy nền, idempotency đảm bảo gửi lại không gây trùng
+      // Chỉ trả 200 SAU KHI lượt đã xử lý và ghi DB xong. Tiến trình chết giữa chừng => Telegram không nhận 200 và gửi lại;
+      // claimUpdate nhận lại update bị bỏ dở (xem repo-conv), update đã xong thì bị bỏ qua nên không trả lời trùng.
+      if (!(await ingest(req.body as TgUpdate))) return reply.code(503).send({ ok: false });
       return { ok: true };
     });
     if (cfg.PUBLIC_BOT_URL) await svc.telegram.setWebhook(`${cfg.PUBLIC_BOT_URL.replace(/\/$/, "")}/telegram/webhook`, secret);
@@ -48,10 +53,11 @@ export async function startBot(svc: Services) {
       while (!stopPolling) {
         try {
           const updates = await svc.telegram!.getUpdates(offset, 25);
-          for (const u of updates) {
-            offset = u.update_id + 1;
-            ingest(u);
-          }
+          // offset chỉ tiến sau khi cả lô đã xử lý xong: chết giữa chừng thì lần chạy sau nhận lại đúng các update này
+          const done = await Promise.all(updates.map((u) => ingest(u)));
+          const firstPending = done.indexOf(false);
+          for (const u of firstPending < 0 ? updates : updates.slice(0, firstPending)) offset = u.update_id + 1;
+          if (firstPending >= 0) await new Promise((r) => setTimeout(r, 5000)); // chờ lượt dang dở xong hoặc quá hạn rồi nhận lại
         } catch (e) {
           log("warn", "polling lỗi, thử lại sau 3s", { err: (e as Error).message });
           await new Promise((r) => setTimeout(r, 3000));

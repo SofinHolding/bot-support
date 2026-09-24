@@ -5,8 +5,12 @@ export interface Settings {
   "router.semantic_confident": number;
   "router.semantic_margin": number;
   "router.semantic_suggest": number;
+  "router.mode": "hybrid" | "llm_first" | "code_first"; // hybrid (theo sơ đồ workflow): FAST PATH khi khớp chắc chắn bằng luật/từ khoá, còn lại đi AI/RAG. llm_first: mọi tin có chữ đi qua AI (hiểu -> tìm -> AI chọn -> dịch). code_first: luật/từ khoá trước, AI chỉ khi chưa rõ (rẻ, nhanh; cũng là chế độ dự phòng khi AI lỗi)
+  "router.fast_verify": boolean; // hybrid: câu trả lời khớp bằng luật/từ khoá ở FAST PATH phải được AI (model nhanh) xác nhận là trả lời đúng câu hỏi; không thì sang nhánh AI/RAG
   "router.tier3_mode": "extractive" | "generative";
   "router.tier3_min_score": number;
+  "router.tier3_verify": boolean; // true: LLM phải xác nhận đoạn tri thức TRẢ LỜI ĐƯỢC câu hỏi rồi mới gửi (nguyên văn); không xác nhận được -> chuyển người thật
+  "router.knowledge_lang": "vi" | "en"; // ngôn ngữ CHÍNH của kho tri thức: câu hỏi của khách được dịch sang ngôn ngữ này để tìm (SKILL translate-query)
   "router.too_short_max_chars": number;
 
   "episode.t_gap_minutes": number; // im lặng quá ngưỡng này thì open -> dormant
@@ -21,6 +25,9 @@ export interface Settings {
   "alerts.new_questions_threshold": number; // HEARTBEAT.md: "nhiều câu hỏi mới" thì báo owner cập nhật skill
   "alerts.whitepaper_stale_days": number; // HEARTBEAT.md: sync quá 2 ngày thì báo
 
+  "translation.send_unapproved": boolean;
+  "approval.second_person": boolean; // true: publish luật bảo mật / Hướng dẫn AI / SKILL, đổi quản trị viên, cấu hình bảo vệ cần người thứ hai duyệt. false: người đề xuất (đủ quyền) áp dụng ngay // true (yêu cầu gốc: trả lời bằng ngôn ngữ của khách): gửi bản dịch máy đã qua kiểm tra URL/handle/tên sản phẩm, admin duyệt/sửa sau. false: chỉ gửi bản ĐÃ DUYỆT, chưa duyệt thì gửi tiếng Anh
+
   "limits.tokens_per_user_day": number; // chống đốt token: vượt thì không gọi LLM cho khách đó trong ngày
   "batching.window_ms": number; // gom tin nhắn liên tiếp (gateway cũ: debounce 2000ms)
   "retention.media_days": number;
@@ -30,8 +37,12 @@ export const DEFAULT_SETTINGS: Settings = {
   "router.semantic_confident": 0.82,
   "router.semantic_margin": 0.08,
   "router.semantic_suggest": 0.35,
-  "router.tier3_mode": "extractive",
+  "router.mode": "hybrid",
+  "router.fast_verify": true,
+  "router.tier3_mode": "generative",
   "router.tier3_min_score": 0.25,
+  "router.tier3_verify": true,
+  "router.knowledge_lang": "vi",
   "router.too_short_max_chars": 2,
 
   "episode.t_gap_minutes": 60,
@@ -45,6 +56,9 @@ export const DEFAULT_SETTINGS: Settings = {
   "alerts.escalation_daily_threshold": 100,
   "alerts.new_questions_threshold": 5,
   "alerts.whitepaper_stale_days": 2,
+
+  "translation.send_unapproved": true,
+  "approval.second_person": true,
 
   "limits.tokens_per_user_day": 200_000,
   "batching.window_ms": 2000,
@@ -76,6 +90,8 @@ export function validateSetting(key: string, value: unknown): string | null {
   if (typeof value !== typeof def) return `sai kiểu dữ liệu (cần ${typeof def})`;
   if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) return "giá trị phải là số không âm";
   if (key === "router.tier3_mode" && value !== "extractive" && value !== "generative") return "chỉ nhận extractive | generative";
+  if (key === "router.mode" && value !== "hybrid" && value !== "llm_first" && value !== "code_first") return "chỉ nhận hybrid | llm_first | code_first";
+  if (key === "router.knowledge_lang" && value !== "vi" && value !== "en") return "chỉ nhận vi | en";
   if (key.startsWith("router.semantic") && (value as number) > 1) return "ngưỡng phải trong khoảng 0..1";
   return null;
 }

@@ -8,21 +8,28 @@ type Handler = (b: InboundBatch) => Promise<unknown>;
  * và xử lý tuần tự theo từng khách để không có hai lượt của cùng một người chạy song song.
  */
 export class Coalescer {
-  private pending = new Map<string, { batch: InboundBatch; timer: ReturnType<typeof setTimeout> }>();
+  private pending = new Map<string, { batch: InboundBatch; timer: ReturnType<typeof setTimeout>; done: Promise<unknown>; settle: (v: unknown) => void }>();
   private chains = new Map<string, Promise<unknown>>();
 
   constructor(private readonly handler: Handler, private readonly windowMs: () => number, private readonly onError: (e: unknown) => void = () => undefined) {}
 
-  push(b: InboundBatch): void {
+  /**
+   * Promise trả về hoàn tất (kèm kết quả của handler) khi lượt chứa tin này đã được xử lý; handler lỗi -> undefined, lỗi đã được ghi nhận.
+   * Bên nhận (webhook/polling) chỉ xác nhận với Telegram SAU promise này, để tiến trình chết giữa chừng thì Telegram gửi lại.
+   */
+  push(b: InboundBatch): Promise<unknown> {
     const key = `${b.chatId}:${b.userId}`;
     const cur = this.pending.get(key);
     if (cur) {
       cur.batch.items.push(...b.items);
       cur.batch.isMention ||= b.isMention;
-      return;
+      return cur.done;
     }
     const timer = setTimeout(() => this.fire(key), this.windowMs());
-    this.pending.set(key, { batch: { ...b, items: [...b.items] }, timer });
+    let settle!: (v: unknown) => void;
+    const done = new Promise<unknown>((r) => (settle = r));
+    this.pending.set(key, { batch: { ...b, items: [...b.items] }, timer, done, settle });
+    return done;
   }
 
   private fire(key: string) {
@@ -30,7 +37,13 @@ export class Coalescer {
     if (!p) return;
     this.pending.delete(key);
     const prev = this.chains.get(key) ?? Promise.resolve();
-    const next = prev.then(() => this.handler(p.batch)).catch(this.onError);
+    const next = prev
+      .then(() => this.handler(p.batch))
+      .then((res) => p.settle(res))
+      .catch((e) => {
+        this.onError(e);
+        p.settle(undefined);
+      });
     this.chains.set(key, next);
     void next.finally(() => {
       if (this.chains.get(key) === next) this.chains.delete(key);

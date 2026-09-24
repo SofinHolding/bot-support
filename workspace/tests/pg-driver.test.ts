@@ -44,9 +44,13 @@ describe("driver pg thật", () => {
     expect(t).toMatchObject({ error_code: "SWAP", pic: "Quang" });
     const eps = await w.ops.listEpisodes({ userId: 5001, limit: 5, offset: 0 });
     expect(typeof (eps[0] as { id: unknown }).id).toBe("number");
-    const detail = await w.ops.episodeDetail((eps[0] as { id: number }).id);
-    expect(detail.messages.length).toBeGreaterThanOrEqual(4);
-    expect(detail.decisions.length).toBeGreaterThanOrEqual(2);
+    // "swap fail" là vấn đề KHÁC với episode rút tiền đang mở: có episode riêng, episode rút tiền không bị đánh dấu escalated
+    expect(eps.length).toBe(2);
+    const statuses = (eps as unknown as { status: string; topic_group: string | null }[]).map((e) => `${e.topic_group ?? "-"}:${e.status}`).sort();
+    expect(statuses).toEqual(["-:escalated", "Withdraw:open"]);
+    const details = await Promise.all((eps as { id: number }[]).map((e) => w.ops.episodeDetail(e.id)));
+    expect(details.reduce((n, d) => n + d.messages.length, 0)).toBeGreaterThanOrEqual(4);
+    expect(details.reduce((n, d) => n + d.decisions.length, 0)).toBeGreaterThanOrEqual(2);
   });
 
   it("mảng, jsonb, ON CONFLICT, idempotency và transaction qua PoolClient", async () => {

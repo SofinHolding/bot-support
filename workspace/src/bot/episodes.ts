@@ -2,10 +2,12 @@
  * EpisodeManager: mỗi vấn đề của khách là một episode. Quyết định nối tiếp / tách / mở lại, và dựng gói ngữ cảnh
  * gửi LLM (kích thước gần cố định). Trạng thái nghiệp vụ lấy từ `events` do CODE ghi, không từ tóm tắt của LLM.
  */
-import type { ContextPack } from "../core/ports";
+import type { ContextPack, LlmPort } from "../core/ports";
 import type { Settings } from "../core/settings";
 import type { Template } from "../domain/types";
+import { mergeFacts, type CustomerFact } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
+import { cleanSummary, degradedSummary, readSummary, summaryForContext, type EpisodeSummary } from "../core/summary";
 import type { ConvRepo, EpisodeRow, EventRow, UserRow } from "../db/repo-conv";
 
 const NON_TOPIC_GROUPS = new Set(["Greeting", "FollowUp", "System", "Image", "Security", "AntiSpam", "Escalate"]);
@@ -31,6 +33,10 @@ export interface FinalizeInput {
   /** tier của quyết định: chỉ tin chuyển chủ đề khi khớp chắc chắn (tầng 0-1) */
   tier: number;
   escalateReason?: string;
+  /** false: lượt này KHÔNG thuộc vấn đề của episode đang mở (vd câu lạ sau thời gian im lặng) => mở episode riêng, giữ nguyên episode cũ. */
+  relatedToActive?: boolean;
+  /** Mô tả ngắn (đã che dữ liệu) dùng làm issue khi template không mang chủ đề (vd FP-12). */
+  issueHint?: string;
 }
 
 export interface FinalizeResult {
@@ -71,11 +77,48 @@ export class EpisodeManager {
 
     const a = loaded.active;
     if (!a) return { profile, events: [], recent: [] };
-    const events = (await this.conv.episodeEvents(a.id)).slice(-8).map((e) => fmtEvent(e, now));
-    const summary = a.summary ? `issue: ${String((a.summary as Record<string, unknown>).issue ?? "")}; reported: ${String((a.summary as Record<string, unknown>).user_reported ?? "")}; open points: ${String((a.summary as Record<string, unknown>).unresolved_points ?? "")}` : undefined;
+    const all = await this.conv.episodeEvents(a.id);
+    // customer_fact đi riêng: không chiếm chỗ của 8 sự kiện gần nhất và không mất khi tin gốc đã được tóm tắt
+    const events = all.filter((e) => e.type !== "customer_fact").slice(-8).map((e) => fmtEvent(e, now));
+    const facts = mergeFacts(all.filter((e) => e.type === "customer_fact").map((e) => ((e.payload as { facts?: CustomerFact[] }).facts ?? [])));
+    const s = readSummary(a.summary);
     const msgs = await this.conv.messagesAfter(a.id, a.summary_upto_message_id, 6);
     if (loaded.gapMs > 60 * 60_000) events.push(`(the customer was silent for ${Math.round(loaded.gapMs / 3_600_000)} hours before this message)`);
-    return { profile, events, summary, recent: msgs.map((m) => ({ role: m.direction === "in" ? "user" : "bot", text: (m.text ?? "").slice(0, 400) })) };
+    return { profile, events, facts, summary: s ? summaryForContext(s) : undefined, recent: msgs.map((m) => ({ role: m.direction === "in" ? "user" : "bot", text: (m.text ?? "").slice(0, 400) })) };
+  }
+
+  /**
+   * Tóm tắt cuộn NGAY (không chờ tới ngưỡng `episode.summary_every_k` của job nền): dùng khi cần bản tóm tắt đáng
+   * tin cậy trước khi job nền chạy tới, ví dụ dựng nội dung chuyển người thật cho khách sao chép (core/handoff.ts).
+   * Không có tin mới nào chưa tóm tắt -> trả về bản đã lưu (không gọi LLM). LLM lỗi -> bản dự phòng cắt từ tin khách,
+   * KHÔNG ném lỗi (khác job `summarize-episode`: nơi đó cố tình ném lại để hạ tầng job retry, còn đường chuyển người
+   * thật không được phép làm hỏng lượt trả lời khách vì lý do này).
+   */
+  async summarizeNow(llm: LlmPort, episodeId: number, maxMessages = 40): Promise<EpisodeSummary | undefined> {
+    const ep = await this.conv.getEpisode(episodeId);
+    if (!ep) return undefined;
+    const prev = readSummary(ep.summary);
+    const msgs = await this.conv.messagesAfter(episodeId, ep.summary_upto_message_id, maxMessages);
+    if (!msgs.length) return prev;
+    const messages = msgs.map((m) => ({ role: m.direction === "in" ? ("user" as const) : ("bot" as const), text: m.text ?? "" }));
+    let out;
+    try {
+      out = await llm.summarize({ previous: prev ? { issue: prev.issue, user_reported: prev.user_reported, unresolved_points: prev.unresolved_points, exact_facts: prev.exact_facts, degraded: prev.degraded } : undefined, messages });
+    } catch {
+      if (prev?.degraded) return prev; // đã là bản dự phòng: không ghi đè, giữ mốc cũ để job nền tóm tắt lại đúng các tin này
+      const d = degradedSummary(prev, messages);
+      await this.conv.saveSummary(episodeId, { ...d }, ep.summary_upto_message_id); // không dời mốc: job nền sẽ tóm tắt lại các tin này khi LLM lại dùng được
+      return d;
+    }
+    const { summary } = cleanSummary(out, messages.filter((m) => m.role === "user").map((m) => m.text), prev);
+    await this.conv.saveSummary(episodeId, { ...summary }, msgs[msgs.length - 1]!.id);
+    return summary;
+  }
+
+  /** Các bước bot đã hướng dẫn trong episode này, theo thời gian (code ghi, không LLM) — dùng cho handoff.ts. */
+  async stepsSent(episodeId: number): Promise<string[]> {
+    const events = await this.conv.episodeEvents(episodeId);
+    return events.filter((e) => e.type === "template_sent").map((e) => String((e.payload as { template_id?: unknown }).template_id ?? "")).filter(Boolean);
   }
 
   /** Sau khi định tuyến: chọn / tạo / cập nhật episode cho lượt này. */
@@ -84,7 +127,7 @@ export class EpisodeManager {
     const group = t && !NON_TOPIC_GROUPS.has(t.group) ? t.group : undefined;
     const escalating = inp.kind === "ESCALATE" || isEscalationTemplate(t);
     const directive = escalating ? "escalated" : t?.sets_context.status ?? (inp.kind === "GROUNDED" ? "pending" : "none");
-    const issue = t?.sets_context.issue;
+    const issue = group ? t?.sets_context.issue : undefined; // chỉ template có chủ đề mới đặt/đổi issue: FP-12, chào, cảm ơn không xoá vấn đề gốc
     const opensCase = escalating || directive === "pending" || directive === "resolved";
 
     let active = inp.active;
@@ -98,11 +141,15 @@ export class EpisodeManager {
       active = null;
     }
 
+    // Chuyển người thật cho một câu KHÔNG thuộc vấn đề đang mở: không đóng/ghi đè episode đó
+    // (nếu không, chủ đề cũ bị coi là "đã escalate" và mọi câu hỏi sau về chủ đề đó đều bị ép chuyển support).
+    if (active && escalating && inp.relatedToActive === false) active = null;
+
     if (!active) {
       if (!opensCase) return { episode: null, switchedFrom, reopened };
       const since = new Date(inp.now.getTime() - 30 * DAY);
       const parent = group ? await this.conv.getRecentClosedEpisode(inp.userId, group, since) : null;
-      const ep = await this.conv.openEpisode({ userId: inp.userId, parentId: parent?.id ?? null, issue: issue ?? null, topicGroup: group ?? null }, inp.now);
+      const ep = await this.conv.openEpisode({ userId: inp.userId, parentId: parent?.id ?? null, issue: issue ?? inp.issueHint ?? t?.sets_context.issue ?? null, topicGroup: group ?? null }, inp.now);
       active = ep;
     } else if (active.status === "dormant") {
       reopened = true;
@@ -138,7 +185,7 @@ function fmtEvent(e: EventRow, now: Date): string {
     case "template_sent":
       return `bot sent template ${String(p.template_id)} (${ago} min ago)`;
     case "image_received":
-      return `customer sent an image of type ${String(p.image_type)} (${ago} min ago)`;
+      return `customer sent an image of type ${String(p.image_type)}${p.error_text ? ` showing the text "${String(p.error_text)}"` : ""} (${ago} min ago)`;
     case "ticket_created":
       return `a support ticket was created (${ago} min ago)`;
     default:

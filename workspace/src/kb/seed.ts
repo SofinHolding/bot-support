@@ -2,6 +2,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { GUIDE_SLUG, GUIDE_TITLE } from "../core/guide";
 import { loadPredicates } from "../core/predicates";
 import type { Db } from "../db/db";
 import type { KbRepo } from "../db/repo-kb";
@@ -63,6 +64,14 @@ export async function seedContent(kbService: KbService, kb: KbRepo, ops: OpsRepo
     await kbService.publishBundle(bundle, "seed");
     result.templatesSeeded = true;
     result.docs = bundle.length;
+  }
+
+  // "Hướng dẫn AI làm việc": nạp bản mặc định khi CHƯA từng có tài liệu này (kể cả với DB đã chạy từ trước khi có tính năng).
+  // Đã có (dù đang Draft hay đã publish) thì không đụng tới: bản của quản trị viên là bản đúng.
+  const guideFile = join(opt.contentDir, "guide", "agent-guide.md");
+  if (existsSync(guideFile) && !(await kb.getDocument(GUIDE_SLUG))) {
+    await kbService.publishBundle([{ slug: GUIDE_SLUG, kind: "guide", title: GUIDE_TITLE, md: readFileSync(guideFile, "utf8") }], "seed");
+    result.docs++;
   }
 
   // Bộ câu hỏi mẫu cho hồi quy

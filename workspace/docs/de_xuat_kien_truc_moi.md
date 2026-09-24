@@ -542,8 +542,42 @@ Bản đã dựng theo tài liệu này; các chỗ lệch so với thiết kế
 | Tầng 3 sinh có trích dẫn | Mặc định **trích nguyên văn** chunk khớp + link (`router.tier3_mode = extractive`); chế độ `generative` có sẵn, qua bộ lọc đầu ra | `SKILL.md` cũ yêu cầu "copy nguyên văn section khớp"; giữ đúng ràng buộc, không tốn token |
 | Trạng thái episode: open/dormant/resolved/escalated | Thêm `security_alerted` | Bảo toàn trạng thái `security-alerted` của FP-0 |
 | ASK khi không rõ chủ đề | Mặc định **tắt** (`episode.ask_when_unclear`) | Đúng quyết định ở mục 11 |
-| Provider LLM | **Anthropic (SDK chính thức)** là chính, endpoint **tương thích OpenAI** làm dự phòng; model qua biến môi trường | Provider chưa được chốt trong thiết kế |
+| Provider LLM | **9router** (gateway tương thích OpenAI, cổng 20128) là provider chính; Anthropic trực tiếp chỉ là dự phòng tuỳ chọn (`ANTHROPIC_API_KEY`). Đặt lại ngày 2026-09-21 | Chủ hệ thống chọn dùng 9router; không còn cố định một nhà cung cấp trong `.env` |
+| Model LLM và khoá API | `LLM_MODEL_FAST`/`LLM_MODEL_STRONG`/`LLM_BASE_URL`/`LLM_API_KEY` trong `.env` chỉ là mặc định; **Admin Web → Cấu hình → Mô hình LLM** ghi đè, lưu trong DB. Admin chọn model (danh sách lấy từ `GET /v1/models` của 9router, có nút Thử); **chỉ owner** đổi URL và khoá (đổi URL là đổi nơi nhận toàn bộ tin nhắn khách). Khoá mã hoá AES-256-GCM bằng `SECRETS_KEY`, không trả về trình duyệt, không vào audit | Mục 6.1 nói "model đang dùng… không cần deploy lại". Bot/admin/worker đọc lại từ DB theo TTL ~10 s nên đổi có hiệu lực không cần khởi động lại |
+| Embedding | **`BAAI/bge-m3`** (1024 chiều) tự host bằng Text Embeddings Inference (service `embedding` trong compose, CPU). Cấu hình `EMBEDDING_URL/MODEL` trong `.env`; chưa cho đổi trên web vì đổi model buộc embed lại và hiệu chỉnh ngưỡng | Xem bảng chọn model bên dưới |
 
 Đã có nhưng **chưa nằm trong thiết kế gốc**: giới hạn tốc độ đăng nhập theo IP, hạn mức token theo khách/ngày, broadcast có xác nhận số người nhận, bảng `outbox` gửi lại tin Telegram lỗi, đồng bộ whitepaper tạo Draft để duyệt.
 
 Chưa làm (đúng như mục 11): agent/tool gateway, `user_memories`, engine policy tổng quát, canary release.
+
+### Chọn embedding model (2026-09-21)
+
+Yêu cầu rút ra từ hệ thống: khách nhắn ≥ 17 ngôn ngữ (vi, en, zh, ko, ja, ru, ar…) nhưng câu hỏi mẫu của template chủ yếu là tiếng Anh/Việt ngắn, nên cần khớp **chéo ngôn ngữ**; cùng một model phải phục vụ cả câu hỏi khách ↔ câu hỏi mẫu (đối xứng, ngắn) lẫn câu hỏi ↔ đoạn tri thức 200–500 token (bất đối xứng); tự host trên VPS không GPU (khách gửi PII, tránh gửi ra ngoài); có API tương thích OpenAI để dùng `HttpEmbedder` sẵn có.
+
+Đo trên máy này (TEI CPU, 168 câu hỏi = 14 template × 12 ngôn ngữ do tôi viết; 27 câu hỏi cho 50 đoạn tri thức). Bộ đo nhỏ, chỉ để so sánh tương đối:
+
+| Model | Khớp template top-1 | top-5 | Đoạn tri thức top-3 / top-5 | Ghi chú |
+|---|---|---|---|---|
+| **bge-m3** (568M, 1024 chiều) | 78,6% | 95,2% | **81,5% / 85,2%** | Không cần tiền tố; chọn |
+| Qwen3-Embedding-0.6B, không tiền tố | **85,1%** | **98,2%** | 77,8% / 77,8% | Khuyến nghị của tác giả là thêm chỉ dẫn cho câu hỏi |
+| Qwen3-Embedding-0.6B, có chỉ dẫn cho câu hỏi | 72,0% | 88,7% | 59,3% / 77,8% | Chất lượng đổi mạnh theo câu chỉ dẫn |
+
+Vì sao bge-m3: (1) hai model hơn kém nhau trong khoảng nhiễu của bộ đo nhỏ, không có bên nào thắng rõ; (2) bge-m3 tốt hơn ở truy xuất tri thức (đoạn tri thức top-5 là thứ được đưa cho tầng 3) và **không phụ thuộc chuỗi chỉ dẫn**: Qwen3 tụt 13 điểm khi đổi cách viết chỉ dẫn, một điểm dễ hỏng khi vận hành; (3) trưởng thành hơn với TEI và hybrid RAG, giấy phép MIT, và đã được tài liệu này nêu ở mục 4.3. Qwen3-0.6B vẫn là phương án thay thế hợp lý: đổi `EMBEDDING_HF_MODEL`/`EMBEDDING_MODEL`, chạy `npm run bench:embedding`.
+
+Phần lớn lỗi top-1 của cả hai model nằm ở nhóm KYC (`fp-5`, `fp-6`, `fp-6b`, `fp-5b`) vì câu hỏi mẫu của các template này gần nghĩa nhau; đó là chuyện của `excludes`/cổng quyết định và tầng 2, không phải của embedding. Ngưỡng mặc định `semantic_confident=0.82`, `semantic_margin=0.08` giữ nguyên: trên bộ đo, cặp này đạt 100% chính xác nhưng chỉ phủ 11% số câu, tức thiên về chuyển xuống tầng 2. Hạ xuống ~0,75 có thể phủ ~35% với cùng độ chính xác trên bộ đo này, nhưng chỉ nên làm sau khi đo trên traffic thật ở giai đoạn shadow.
+
+### Siết các bảo đảm nghiệp vụ sau rà soát luồng (2026-09-21)
+
+| Bảo đảm | Trước | Sau |
+|---|---|---|
+| Bản dịch | Bản dịch máy được gửi ngay, admin không có cách chặn; bản sửa tay không qua kiểm tra | Giữ yêu cầu gốc: **trả lời bằng ngôn ngữ của khách**. Bản dịch máy chỉ được gửi khi giữ nguyên URL/@handle/tên sản phẩm và URL trong whitelist; được lưu chờ duyệt, bản admin duyệt/sửa thay thế bản máy. Thêm chế độ chặt `translation.send_unapproved = false` (chỉ gửi bản đã duyệt, còn lại gửi tiếng Anh) cho khi chủ hệ thống muốn |
+| Không đủ cơ sở thì chuyển người thật | Tầng 3 gửi đoạn có điểm truy xuất cao nhất. Đo với bge-m3: **không ngưỡng nào** tách được câu có/không có tài liệu trả lời (ngưỡng 0,5 vẫn trả nhầm 6/15) | `router.tier3_verify` (mặc định bật): LLM chỉ **xác nhận** đoạn nào trả lời được câu hỏi; khách vẫn nhận nguyên văn đoạn đã duyệt. Không xác nhận được, hoặc không có LLM, thì escalate. Thử thật qua 9router: 8/8 đúng |
+| Lỗi LLM | Từ chối / đầu ra sai schema / lỗi bất ngờ → "high traffic", không ticket; 3 đầu ra sai mở circuit breaker cho mọi khách | Chỉ quá tải/mất kết nối mới trả "high traffic". Còn lại → escalate + ticket. Lượt xử lý hỏng giữa chừng để lại ticket `system-error` và bản ghi quyết định. Đầu ra sai không mở circuit breaker |
+| Ngữ cảnh không lây | Câu lạ bị escalate ghi đè episode đang mở (mất issue, chủ đề cũ bị coi là "đã escalate" 30 ngày); FP-0 ghi đè episode đang mở | Escalate không thuộc vấn đề đang mở → episode riêng, episode cũ giữ nguyên. FP-0 mở episode bảo mật riêng. Template không mang chủ đề (FP-12, chào, cảm ơn) không đổi `issue`. Cổng ngữ cảnh áp dụng cả đường LLM và ngữ nghĩa |
+| Ticket | Ca không có danh mục bị gộp vào ticket bất kỳ đang mở; admin lưu ghi chú có thể ghi đè dòng bot vừa nối | Chỉ gộp khi cùng danh mục; lưu ghi chú có kiểm tra xung đột (409) và nhật ký giữ giá trị trước |
+| Hồi quy khi Publish | Chỉ chặn khi tổng độ chính xác giảm | Chặn khi **bất kỳ** câu mẫu đang đúng bị làm sai |
+| Không mất tin | Webhook trả 200 rồi mới xử lý; update dang dở không bao giờ được nhận lại | Chỉ xác nhận với Telegram sau khi đã xử lý và ghi DB; update dang dở quá 2 phút được nhận lại; update đã xong bị bỏ qua (không trả lời trùng) |
+| Dữ liệu nhạy cảm | Seed có dấu phẩy / đánh số / viết hoa lọt qua FP-0 và bước che; viewer thấy Telegram ID qua mảng `tickets` | Đã phát hiện và che; đã che ID cho viewer |
+| Truy vết | Xoá câu hỏi mẫu không ghi nhật ký; bản dịch sửa tay không kiểm tra, nhật ký không có nội dung | Có nhật ký kèm nội dung; bản dịch sửa tay qua cùng bộ kiểm tra URL/@handle/tên sản phẩm với bản dịch máy |
+
+Còn để ngỏ: tài liệu tri thức (`knowledge`) chưa có bước kiểm tra tác động khi Publish như template; khi chạy nhiều bản Bot Service song song, việc xử lý tuần tự theo từng khách chỉ được bảo đảm trong một tiến trình.

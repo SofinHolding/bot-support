@@ -25,23 +25,25 @@ interface Run {
   tokens: string[];
 }
 
-/** Các dãy token liên tiếp toàn chữ thường 3-8 ký tự, không dấu câu. */
-function seedRuns(text: string): Run[] {
+/**
+ * Các dãy "từ" liên tiếp dạng 3-8 chữ cái. Khách hay dán seed kèm dấu phẩy, viết hoa đầu câu hoặc đánh số ("1. abandon 2. ability"),
+ * nên token được bỏ dấu câu bao quanh và đưa về chữ thường trước khi xét; token chỉ là số thứ tự thì bỏ qua, không làm đứt dãy.
+ * strict = true khi mọi token của dãy vốn đã là chữ thường không dấu câu (đúng luật gốc 12/24 từ).
+ */
+function seedRuns(text: string): (Run & { strict: boolean })[] {
   const re = /\S+/g;
-  const toks: { t: string; i: number }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) toks.push({ t: m[0], i: m.index });
-  const runs: Run[] = [];
-  let cur: { t: string; i: number }[] = [];
+  const runs: (Run & { strict: boolean })[] = [];
+  let cur: { t: string; i: number; end: number; strict: boolean }[] = [];
   const flush = () => {
-    if (cur.length) {
-      const last = cur[cur.length - 1]!;
-      runs.push({ start: cur[0]!.i, end: last.i + last.t.length, tokens: cur.map((c) => c.t) });
-    }
+    if (cur.length) runs.push({ start: cur[0]!.i, end: cur[cur.length - 1]!.end, tokens: cur.map((c) => c.t), strict: cur.every((c) => c.strict) });
     cur = [];
   };
-  for (const tk of toks) {
-    if (/^[a-z]{3,8}$/.test(tk.t)) cur.push(tk);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const raw = m[0];
+    if (/^[\[(]?\d{1,2}[.):\]-]*$/.test(raw)) continue; // "1." "2)" "[3]"
+    const word = raw.replace(/^[\[(]?\d{1,2}[.):\]-]+/, "").replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
+    if (/^[A-Za-z]{3,8}$/.test(word)) cur.push({ t: word.toLowerCase(), i: m.index, end: m.index + raw.length, strict: /^[a-z]{3,8}$/.test(raw) });
     else flush();
   }
   flush();
@@ -59,13 +61,13 @@ function maxBipRun(tokens: string[]): number {
   return best;
 }
 
-function isSeedRun(run: Run, wholeMessageTokens: number): boolean {
+function isSeedRun(run: Run & { strict: boolean }, wholeMessageTokens: number): boolean {
   // "Có thể match nếu >= 10 từ dạng BIP39 liên tiếp"
   if (maxBipRun(run.tokens) >= 10) return true;
   // Luật gốc: đúng 12 hoặc 24 từ liên tiếp, thường, 3-8 chữ cái, không dấu câu. Để tránh báo nhầm câu hỏi bình thường,
   // chỉ nhận khi dãy chiếm cả tin nhắn và ít nhất một nửa số từ nằm trong danh sách BIP39.
   const n = run.tokens.length;
-  if ((n === 12 || n === 24) && wholeMessageTokens === n) {
+  if (run.strict && (n === 12 || n === 24) && wholeMessageTokens === n) {
     const inList = run.tokens.filter((t) => BIP39.has(t)).length;
     return inList / n >= 0.5;
   }

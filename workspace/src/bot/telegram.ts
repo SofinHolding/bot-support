@@ -67,6 +67,10 @@ export class TelegramClient implements Channel {
     return { messageId: first };
   }
 
+  async typing(chatId: number): Promise<void> {
+    await this.api("sendChatAction", { chat_id: chatId, action: "typing" });
+  }
+
   async downloadImage(fileId: string): Promise<{ mime: string; base64: string }> {
     const file = await this.api<{ file_path?: string; file_size?: number }>("getFile", { file_id: fileId });
     if (!file.file_path) throw new TelegramError("không có file_path", 400);

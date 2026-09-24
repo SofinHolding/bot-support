@@ -3,7 +3,8 @@
  * Quyết định gửi hay không thuộc về DecisionGate (gate.ts).
  */
 import type { Template, VisionScreenType } from "../domain/types";
-import { cosine, type Embedder } from "./embedding";
+import { ESCALATE_TEMPLATE_ID } from "../domain/types";
+import { cosine, embedTagged, type Embedder } from "./embedding";
 import { containsPhrase, containsPhraseLoose, normalize } from "./text";
 import type { Evaluator } from "./predicates";
 import { makeInput } from "./predicates";
@@ -50,6 +51,8 @@ export class TemplateIndex {
     private readonly evaluator: Evaluator,
     private readonly embedder?: Embedder,
     private readonly vectors: ExampleVectors = new Map(),
+    /** model đã tạo `vectors`; mặc định = embedder.version lúc dựng. Câu hỏi embed bằng model khác thì không so được. */
+    readonly vectorsModel: string | undefined = embedder?.version,
   ) {
     for (const t of templates) this.byId.set(t.id, t);
     // SECURITY_RULE và GROUNDED không tham gia khớp template; code gọi chúng theo id.
@@ -132,18 +135,46 @@ export class TemplateIndex {
     return hits;
   }
 
+  /**
+   * Lối tắt chuyển nhân viên: template mà câu trả lời trỏ về câu chung FP-12 (các `esc-*` của luật cũ: một mẫu lỗi cụ thể -> chuyển
+   * nhân viên kèm mã lỗi). Chúng CHỈ được là ứng viên khi khớp XÁC ĐỊNH (từ khoá / luật / exact), KHÔNG qua gợi ý ngữ nghĩa —
+   * sự cố thật: "I cannot log in" bị hút vào esc-login-fail (câu mẫu "login fail") và thắng tài liệu hướng dẫn nhiều bước.
+   */
+  isEscalateShortcut(id: string): boolean {
+    const t = this.byId.get(id);
+    return !!t && t.id !== ESCALATE_TEMPLATE_ID && this.resolveAnswerSource(t).id === ESCALATE_TEMPLATE_ID;
+  }
+
+  /** Vector câu mẫu đã tính sẵn của một template (theo thứ tự `match.examples`, model = `vectorsModel`). Máy quét chồng lấn dùng lại, không embed lại. */
+  vectorsOf(id: string): number[][] {
+    return this.vectors.get(id) ?? [];
+  }
+
   /** Xếp hạng ngữ nghĩa: chỉ để gợi ý ứng viên cho tầng 2, không tự tạo quyền trả lời. */
   async suggest(text: string, k = 5): Promise<Suggestion[]> {
     if (!this.embedder || this.vectors.size === 0 || !text.trim()) return [];
     let q: number[] | undefined;
     try {
-      [q] = await this.embedder.embed([text]);
+      const t = await embedTagged(this.embedder, [text]);
+      // Câu hỏi vừa được embed bằng model khác với model của vector câu mẫu -> cosine vô nghĩa, bỏ qua
+      // (LiveContent thấy model đang chọn đổi sẽ dựng lại index với vector của model đó).
+      if (this.vectorsModel && t.model !== this.vectorsModel) return [];
+      q = t.vectors[0];
     } catch {
       return []; // dịch vụ embedding lỗi: bỏ qua gợi ý ngữ nghĩa, các tầng còn lại vẫn chạy
     }
     if (!q) return [];
+    return this.suggestVector(q, k);
+  }
+
+  /**
+   * Xếp hạng theo vector đã tính sẵn (cùng model với `vectorsModel`). Mặc định bỏ lối tắt chuyển nhân viên (xem isEscalateShortcut);
+   * máy quét chồng lấn (kb/overlap.ts) bật `includeShortcuts` để vẫn cờ chúng cho admin.
+   */
+  suggestVector(q: number[], k = 5, opts: { includeShortcuts?: boolean } = {}): Suggestion[] {
     const scored: Suggestion[] = [];
     for (const [id, vecs] of this.vectors) {
+      if (!opts.includeShortcuts && this.isEscalateShortcut(id)) continue;
       let best = 0;
       for (const v of vecs) best = Math.max(best, cosine(q, v));
       if (best > 0) scored.push({ templateId: id, score: best });

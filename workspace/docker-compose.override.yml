@@ -1,0 +1,7 @@
+# Ghi đè cho máy phát triển/test (Compose tự nạp file này). Production dùng webhook: xoá file này hoặc chạy `docker compose -f docker-compose.yml up`.
+# Lý do: .env đang để TELEGRAM_WEBHOOK_SECRET rỗng và PUBLIC_BOT_URL là địa chỉ mẫu, nên webhook không thể hoạt động ở máy này.
+services:
+  bot:
+    environment:
+      TELEGRAM_MODE: polling
+      TELEGRAM_WEBHOOK_SECRET: ""

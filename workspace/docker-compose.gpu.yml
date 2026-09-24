@@ -1,0 +1,38 @@
+# Override cho máy có GPU NVIDIA: thay TEI (CPU) bằng Ollama chạy bge-m3 trên GPU. Ollama (llama.cpp) chạy được cả card đời cũ (Pascal/GTX 10xx) mà TEI bản GPU không hỗ trợ.
+# Chạy: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Ollama nghe cổng 80 và giữ nguyên tên service `embedding` => KHÔNG phải đổi EMBEDDING_URL/EMBEDDING_MODEL trong .env (vẫn http://embedding:80/v1, ngoài Docker vẫn http://localhost:8081/v1).
+# Lần đầu tải image Ollama + model (~1,2 GB) vào volume ollama-models. Vector của Ollama (GGUF) lệch nhẹ so với TEI: khi chuyển qua lại nên xoá embedding_cache + chạy job reindex-embeddings rồi chạy lại bộ eval.
+services:
+  embedding:
+    # Ghim 0.12.11: bản mới (0.34+) đòi driver NVIDIA >= 570 và tự rơi về CPU nếu driver cũ hơn (máy này driver 560). Cập nhật driver rồi mới đổi sang :latest.
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.12.11}
+    entrypoint: ["/bin/sh", "-c"]
+    # Bật server, chờ sẵn sàng, kéo model (đã có thì bỏ qua) rồi giữ tiến trình server.
+    command:
+      - |
+        ollama serve &
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$$EMBED_MODEL"
+        wait
+    environment:
+      OLLAMA_HOST: 0.0.0.0:80
+      OLLAMA_KEEP_ALIVE: "-1" # giữ model trong VRAM, không nạp lại sau 5 phút rảnh
+      EMBED_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+    volumes:
+      - ollama-models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show \"$$EMBED_MODEL\" >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+
+volumes:
+  ollama-models:

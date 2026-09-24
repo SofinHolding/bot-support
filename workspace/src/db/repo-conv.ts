@@ -89,8 +89,20 @@ export function convRepo(db: Db) {
     // ---- Idempotency webhook ----
     /** true nếu update này CHƯA từng được nhận (và đã được đánh dấu là đã nhận). */
     async claimUpdate(updateId: number): Promise<boolean> {
-      const r = await db.query("INSERT INTO inbound_updates (telegram_update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING telegram_update_id", [updateId]);
+      // Update đã claim nhưng chưa xử lý xong sau 2 phút = tiến trình trước đã chết giữa chừng: cho nhận lại (at-least-once).
+      const r = await db.query(
+        `INSERT INTO inbound_updates (telegram_update_id) VALUES ($1)
+         ON CONFLICT (telegram_update_id) DO UPDATE SET received_at = now(), status = 'retried'
+           WHERE inbound_updates.processed_at IS NULL AND inbound_updates.received_at < now() - interval '2 minutes'
+         RETURNING telegram_update_id`,
+        [updateId],
+      );
       return r.rowCount === 1;
+    },
+    /** true khi update đã được nhận nhưng CHƯA xử lý xong (một lượt khác đang chạy, hoặc tiến trình trước vừa chết). */
+    async updateUnfinished(updateId: number): Promise<boolean> {
+      const r = await db.query("SELECT 1 FROM inbound_updates WHERE telegram_update_id = $1 AND processed_at IS NULL", [updateId]);
+      return r.rowCount > 0;
     },
     async finishUpdate(updateId: number, status: string) {
       await db.query("UPDATE inbound_updates SET processed_at = now(), status = $2 WHERE telegram_update_id = $1", [updateId, status]);
@@ -196,7 +208,7 @@ export function convRepo(db: Db) {
       }
       if (sets.length) await db.query(`UPDATE episodes SET ${sets.join(", ")} WHERE id = $1`, vals);
     },
-    async saveSummary(id: number, summary: Record<string, unknown>, uptoMessageId: number) {
+    async saveSummary(id: number, summary: Record<string, unknown>, uptoMessageId: number | null) {
       await db.query("UPDATE episodes SET summary = $2::jsonb, summary_version = summary_version + 1, summary_upto_message_id = $3 WHERE id = $1", [id, JSON.stringify(summary), uptoMessageId]);
     },
     async recentEpisodes(userId: number, limit = 5): Promise<EpisodeRow[]> {
@@ -304,7 +316,7 @@ export function convRepo(db: Db) {
     },
     /** Ticket còn mở của khách (nối tiếp thay vì tạo trùng khi khách quay lại chủ đề đã escalate). */
     async openTicketFor(userId: number, category: string | null): Promise<TicketRow | null> {
-      const r = await db.query("SELECT * FROM tickets WHERE user_id = $1 AND status <> 'closed' AND ($2::text IS NULL OR category = $2) ORDER BY created_at DESC LIMIT 1", [userId, category]);
+      const r = await db.query("SELECT * FROM tickets WHERE user_id = $1 AND status <> 'closed' AND category IS NOT DISTINCT FROM $2::text ORDER BY created_at DESC LIMIT 1", [userId, category]);
       return r.rows[0] ? mapTicket(r.rows[0]) : null;
     },
     async appendTicketNote(id: number, note: string) {

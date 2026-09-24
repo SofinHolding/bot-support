@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KbError, type Actor } from "../src/kb/service";
-import { makeWorld, type World } from "./helpers";
+import type { GroundedChunk, GroundedResult } from "../src/core/ports";
+import { fakeLlm, makeWorld, type World } from "./helpers";
 
 let w: World;
+let verdict: (chunks: GroundedChunk[]) => GroundedResult = () => ({ answerable: false, answer: "", cited: [] });
 const owner: Actor = { id: 9001, role: "owner", label: "owner#9001" };
 const admin: Actor = { id: 9002, role: "admin", label: "admin#9002" };
 const viewer: Actor = { id: 9003, role: "viewer", label: "viewer#9003" };
 
 beforeAll(async () => {
-  w = await makeWorld({ adminIds: [9001, 9002], ownerId: 9001 });
+  w = await makeWorld({ adminIds: [9001, 9002], ownerId: 9001, llm: fakeLlm({ grounded: async (r) => verdict(r.chunks) }) });
 });
 afterAll(async () => w.close());
 
@@ -65,6 +67,14 @@ describe("Draft -> kiểm tra -> Publish", () => {
     expect(c.report.steps[1]!.details.join(" ")).toContain("new-host.example.org");
   });
 
+  it("template dùng answer_from (câu trả lời thật ở template khác, như các lối tắt esc-* dùng chung câu của fp-12-escalate) không bị báo sai 'câu trả lời rỗng'", async () => {
+    const md = "---\nid: test-shortcut-answer-from\ngroup: Test\nresponse_mode: EXACT_TEMPLATE\npriority: 300\nmatch:\n  keywords:\n    - test shortcut answer from phrase\nanswer_from: fp-12-escalate\n---\n<!-- next -->\n";
+    const { report } = await w.kbService.createDraft({ slug: "test-answer-from-doc", kind: "templates", md, author: admin });
+    const step2 = report.steps.find((s) => s.name.startsWith("2."))!;
+    expect(step2.status).toBe("ok");
+    expect(step2.details.join(" ")).not.toContain("rỗng");
+  });
+
   it("hồi quy: template mới che khuất template cũ bị phát hiện và chặn publish", async () => {
     const md = tpl("test-shadow", { priority: 5000, keywords: ["withdraw", "how to withdraw"], answer: "Totally different answer" });
     const { version, report } = await w.kbService.createDraft({ slug: "test-shadow", kind: "templates", md, author: admin });
@@ -115,6 +125,33 @@ describe("Draft -> kiểm tra -> Publish", () => {
     expect(versions.length).toBe(3);
     expect(versions.filter((v) => v.status === "published").length).toBe(1);
   });
+
+  it("xoá tài liệu: xoá được ở MỌI trạng thái (kể cả đang publish), bot ngừng dùng ngay; không xoá được Hướng dẫn AI làm việc", async () => {
+    // chưa từng publish -> xoá được
+    const draftOnly = await w.kbService.createDraft({ slug: "test-del-draft", kind: "templates", md: tpl("test-del-draft", { keywords: ["xoá nháp phrase"] }), author: admin });
+    expect(draftOnly.report.ok).toBe(true);
+    await w.kbService.deleteDocument("test-del-draft", admin);
+    expect(await w.kb.getDocument("test-del-draft")).toBeUndefined();
+    // xoá xong tạo lại đúng slug đó với LOẠI KHÁC phải được (đây là mục đích chính của tính năng)
+    const redo = await w.kbService.createDraft({ slug: "test-del-draft", kind: "knowledge", md: "---\nslug: test-del-draft\ntitle: t\nresponse_mode: GROUNDED_GENERATION\n---\n# t\n\n## Mục 1\n\nĐây là nội dung đủ dài để không bị coi là chỉ có tiêu đề.\n", author: admin });
+    expect(redo.report.ok).toBe(true);
+
+    // ĐÃ publish rồi (đang chạy thật) -> vẫn xoá được, và bot ngừng dùng ngay (không cần publish/khởi động lại)
+    const v1 = await w.kbService.createDraft({ slug: "test-del-live", kind: "templates", md: tpl("test-del-live", { keywords: ["xoá đã publish phrase"] }), author: admin });
+    await w.kbService.publish(v1.version.id, admin);
+    await w.say(9301, "xoá đã publish phrase");
+    expect(w.channel.textsTo(9301).at(-1)).toBe("This is a test answer");
+    await w.kbService.deleteDocument("test-del-live", admin);
+    expect(await w.kb.getDocument("test-del-live")).toBeUndefined();
+    await w.say(9302, "xoá đã publish phrase");
+    expect(w.channel.textsTo(9302).at(-1)).not.toBe("This is a test answer"); // template không còn nữa -> không khớp được nữa
+
+    // tài liệu "Hướng dẫn AI làm việc" là bắt buộc duy nhất -> không xoá được
+    await expect(w.kbService.deleteDocument("agent-guide", admin)).rejects.toThrow(/tài liệu bắt buộc duy nhất/);
+
+    // không có tài liệu -> lỗi 404
+    await expect(w.kbService.deleteDocument("test-del-khong-ton-tai", admin)).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe("duyệt hai người cho luật bảo mật (SECURITY_RULE)", () => {
@@ -162,7 +199,13 @@ An unrelated paragraph about ambassadors and their monthly points.
 
     const hits = await w.pipeline["d"].knowledge!.search("tokenomics vesting schedule", 3);
     expect(hits[0]!.heading).toContain("Vesting");
+    // fakeLlm mặc định trả "không trả lời được" => bot KHÔNG gửi đoạn tri thức chưa được xác nhận, mà chuyển người thật
+    await w.say(4300, "explain tokenomics vesting schedule");
+    expect(w.channel.textsTo(4300).at(-1)).toContain("@interlink_technicalsupport");
+
+    verdict = (chunks) => ({ answerable: true, answer: "paraphrase must not be sent", cited: [chunks.find((c) => c.heading.includes("Vesting"))!.id] });
     await w.say(4301, "explain tokenomics vesting schedule");
+    expect(w.channel.textsTo(4301).at(-1)).not.toContain("paraphrase");
     expect(w.channel.textsTo(4301).at(-1)).toContain("linearly over a maximum period of one hundred eighty months");
     expect(w.channel.textsTo(4301).at(-1)).toContain("https://whitepaper.interlinklabs.ai");
   });

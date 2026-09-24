@@ -37,6 +37,19 @@ export class FakeChannel implements Channel {
 
 export function fakeLlm(over: Partial<LlmPort> = {}): LlmPort {
   return {
+    understand: async (r) => ({ language: "unknown", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }),
+    select: async () => ({ ref: "ESCALATE", reason: "fake" }),
+    verify: async () => ({ ok: true }),
+    verifyHandoff: async () => ({ ok: true }),
+    reviewOverlap: async () => ({ verdict: "distinct" as const }),
+    draftIntake: async (r) => ({
+      kind: r.kindHint ?? "templates",
+      slug: "fake-intake-doc",
+      title: "Fake intake doc",
+      templates: r.kindHint === "knowledge" ? [] : [{ id: "fake-intake-tpl", group: "Test", keywords: ["fake intake phrase"], examples: ["fake intake phrase", "this is a fake intake example"], answer_en: r.rawText.slice(0, 200) || "Fake answer." }],
+      knowledge: r.kindHint === "knowledge" ? { lang: "en", sections: [{ heading: "Fake section", body: r.rawText.slice(0, 200) || "Fake body long enough to pass validation checks here." }] } : null,
+    }),
+    reviewEval: async (r) => r.cases.map((c) => ({ n: c.n, verdict: "ok" as const })),
     classify: async () => ({ action: "escalate" }),
     grounded: async () => ({ answerable: false, answer: "", cited: [] }),
     vision: async (req) => {
@@ -44,6 +57,7 @@ export function fakeLlm(over: Partial<LlmPort> = {}): LlmPort {
       return { screen_type: "app_screen", error_text: "", has_secret: false, readable: true, ...preset };
     },
     translate: async (r) => `[${r.lang}] ${r.text}`,
+    translateQuery: async (r) => ({ query: r.text }),
     summarize: async () => ({ issue: "i", user_reported: "u", unresolved_points: "p" }),
     ...over,
   };
@@ -67,7 +81,8 @@ export interface World {
 
 let updateSeq = 1;
 
-export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[]; ownerId?: number; databaseUrl?: string } = {}): Promise<World> {
+/** `mode`: luồng xử lý. Mặc định code_first để các test cũ kiểm đúng luồng dự phòng (luật/từ khoá); test của luồng "AI hiểu trước" truyền llm_first. */
+export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[]; ownerId?: number; databaseUrl?: string; mode?: "hybrid" | "llm_first" | "code_first" } = {}): Promise<World> {
   const db = await openDb(opts.databaseUrl ?? "pglite:memory");
   await migrate(db);
   const conv = convRepo(db);
@@ -76,16 +91,19 @@ export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[
   const embedder = new HashEmbedder();
   const clock = { now: new Date("2026-09-21T03:00:00Z"), advance(ms: number) { clock.now = new Date(clock.now.getTime() + ms); } };
   const live = new LiveContent(db, kb, ops, embedder, "content/config/predicates.yml", () => clock.now.getTime());
-  const kbService = new KbService({ db, kb, ops, embedder, live, predicatesFallback: () => loadPredicates("content/config/predicates.yml"), now: () => clock.now });
+  const settings = new SettingsService(ops, 0);
+  const llm = opts.llm === null ? undefined : opts.llm ?? fakeLlm();
+  const kbService = new KbService({ db, kb, ops, embedder, live, llm, predicatesFallback: () => loadPredicates("content/config/predicates.yml"), now: () => clock.now, secondApproval: async () => (await settings.get())["approval.second_person"] });
   const adminIds = opts.adminIds ?? [9001];
   const ownerId = opts.ownerId ?? 9001;
   await seedContent(kbService, kb, ops, db, { contentDir: "content", adminIds, ownerId });
   await live.rebuild();
 
   const channel = new FakeChannel();
-  const llm = opts.llm === null ? undefined : opts.llm ?? fakeLlm();
-  const settings = new SettingsService(ops, 0);
-  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
+  await ops.setSetting("router.mode", opts.mode ?? "code_first", "test");
+  await ops.setSetting("router.tier3_mode", "extractive", "test"); // test kiểm luồng trích nguyên văn; chế độ sinh có test riêng
+  settings.invalidate();
+  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);
   const pipeline = new BotPipeline({
     db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge: new PgKnowledge(kb, embedder),
     ownerId, adminWebUrl: "https://admin.example.test", now: () => clock.now,

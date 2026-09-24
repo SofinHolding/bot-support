@@ -7,6 +7,7 @@ Bot hỗ trợ khách hàng InterLink trên Telegram, xây lại từ hệ thố
 - **Admin Web**: xem lịch sử theo từng vấn đề, ticket, dashboard/usage; **Admin tự nạp file `.md`** (Draft → 6 bước kiểm tra → Publish, rollback), không cần lập trình viên.
 - Toàn bộ dữ liệu ở **PostgreSQL + pgvector** thay cho ~20.000 file JSON.
 - Ràng buộc của hệ thống cũ được truy vết đầy đủ ở [docs/RANG_BUOC.md](docs/RANG_BUOC.md).
+- Hướng dẫn dùng Admin Web cho người vận hành (không cần biết code): [docs/HUONG_DAN_ADMIN_WEB.md](docs/HUONG_DAN_ADMIN_WEB.md).
 
 ## Kiến trúc
 
@@ -27,7 +28,7 @@ src/
   core/     luật quyết định thuần (không I/O): sanitize (FP-0), antispam, language, router, gate, follow-up, templates
   bot/      pipeline xử lý tin, Telegram, gom tin, episode, resolver (dịch một lần)
   kb/       kho tri thức: parse, kiểm tra, publish, rollback, eval, seed
-  llm/      Anthropic SDK + provider dự phòng OpenAI-compatible, circuit breaker, embedding
+  llm/      gateway LLM (9router, OpenAI-compatible) cấu hình được từ Admin Web + Anthropic dự phòng tuỳ chọn, circuit breaker, embedding
   db/       migration SQL, repository (pg và PGlite dùng chung một bộ SQL)
   admin/    Admin API (Fastify) + web tĩnh (src/admin/web)
   worker/   lịch, job, runner
@@ -91,6 +92,10 @@ Sáu bước kiểm tra trước khi Publish: cấu trúc · quét an toàn (sec
 
 Tài liệu tri thức (whitepaper...) dùng `response_mode: GROUNDED_GENERATION`, xem `content/knowledge/`.
 
+### Hướng dẫn AI làm việc
+
+Kho tri thức → tab **Hướng dẫn AI làm việc**: một tài liệu duy nhất (slug `agent-guide`, bản mặc định ở `content/guide/agent-guide.md`) cho AI biết bối cảnh, nhiệm vụ, cách giao tiếp, mục tiêu, giới hạn và quy trình. Bắt buộc đủ 6 mục `## 1.` … `## 6.`; mỗi việc của AI chỉ nhận mục liên quan (phân loại: 1, 2, 5 · tri thức: 1, 3, 5 · tóm tắt: 1, 4 · dịch: 3). Admin soạn và đề xuất, **một người khác phải duyệt** thì mới có hiệu lực (không cần khởi động lại). Tài liệu này là bối cảnh: nó không đổi được luật do code cưỡng chế, và bước Kiểm tra chặn câu cho phép điều hệ thống cấm (dự đoán giá, lộ công thức HCS, xin seed/mật khẩu, dùng kiến thức chung, bỏ qua luật).
+
 ## Lệnh hữu ích
 
 | Lệnh | Việc |
@@ -99,12 +104,20 @@ Tài liệu tri thức (whitepaper...) dùng `response_mode: GROUNDED_GENERATION
 | `npm run typecheck` | Kiểm tra kiểu |
 | `npm run parity` | Đối chiếu nguyên văn mọi câu trả lời cố định với `legacy/` |
 | `npm run eval` | Độ chính xác tầng 0–1 trên bộ câu hỏi mẫu (không tốn token) |
+| `npm run eval:live -- [tệp.jsonl] [--mode=hybrid]` | Eval **qua LLM và embedding thật** (cấu hình trong `.env`), báo cáo đúng/sai theo nhánh FAST PATH / AI-RAG, theo ngôn ngữ, độ trễ, token. DB tạm, không gửi tin cho ai. Mặc định chạy `content/eval/handwritten.jsonl` |
+| `npm run check:live` | 13 tình huống đa ngôn ngữ qua LLM thật, in từng bước quyết định |
+| `npm run bench:embedding` | Đo embedding model đang chạy trên câu hỏi 12 ngôn ngữ (cần service `embedding` đang chạy) |
 | `npm run build` | Đóng gói vào `dist/` |
 | `npm run migrate` | Áp dụng migration SQL |
 
 ## Không có LLM thì sao?
 
-Bot vẫn chạy: FP-0, chống spam, mọi template khớp từ khoá/rule/ảnh (cần vision để đọc ảnh), follow-up. Câu không khớp được chuyển người thật (FP-12 + ticket). Có `ANTHROPIC_API_KEY` (hoặc endpoint OpenAI-compatible) thì bật thêm phân loại câu diễn đạt tự nhiên, đọc ảnh, dịch template, tóm tắt cuộn.
+Bot vẫn chạy: FP-0, chống spam, mọi template khớp từ khoá/rule/ảnh (cần vision để đọc ảnh), follow-up. Câu không khớp được chuyển người thật (FP-12 + ticket). Có gateway LLM (9router: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_FAST`, `LLM_MODEL_STRONG` trong `.env`, hoặc nhập trong Admin Web → Cấu hình → Mô hình LLM) thì bật thêm phân loại câu diễn đạt tự nhiên, đọc ảnh, dịch template, tóm tắt cuộn.
+
+## LLM và embedding
+
+- **LLM** đi qua 9router. Giá trị trong `.env` chỉ là mặc định; admin đổi `LLM_MODEL_FAST`/`LLM_MODEL_STRONG` (chọn từ danh sách model 9router đang cung cấp, có nút Thử) trên web, owner đổi URL và khoá API (khoá được mã hoá bằng `SECRETS_KEY`, không hiển thị lại). Bot/admin/worker đọc lại cấu hình từ DB mỗi ~10 giây nên không cần khởi động lại.
+- **Embedding**: người vận hành **chọn đúng một model** trong Admin Web → Cấu hình → Embedding — **API ngoài** tương thích OpenAI (vd `https://platform.beeknoee.com/v1`, model `gemini-embedding-001`; owner đặt URL và khoá mã hoá bằng `SECRETS_KEY`, admin đổi model/số chiều, có nút Thử) hoặc **cục bộ** `BAAI/bge-m3` trong service `embedding` của docker-compose (`EMBEDDING_URL`/`EMBEDDING_MODEL` trong `.env`). Kho tri thức và câu hỏi của khách luôn dùng cùng model đã chọn; vector của hai model không so sánh được nên kho phân vùng vector theo model (bảng `kb_chunk_embeddings`) và job `reindex-embeddings` chỉ đánh chỉ mục cho model đang chọn (mỗi 10 phút, hoặc bấm "Đánh chỉ mục lại"). **Không có dự phòng ngầm**: API ngoài lỗi hẳn thì hệ thống tự chuyển hẳn sang cục bộ, đánh chỉ mục lại toàn bộ nội dung đã publish, **khoá** lựa chọn API và hiện cảnh báo đỏ; admin kiểm tra rồi bấm "Thử API & mở khoá" mới chọn lại được API. Đổi model nên chạy `npm run bench:embedding` để hiệu chỉnh ngưỡng `router.semantic_*`.
 
 ## Cần biết trước khi chuyển kênh
 

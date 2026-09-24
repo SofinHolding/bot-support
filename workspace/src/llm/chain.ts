@@ -79,11 +79,14 @@ export class ProviderChain {
 
   async generateJson<T>(req: JsonRequest<T>): Promise<JsonResult<T>> {
     const errors: string[] = [];
+    let badOutputs = 0;
+    let attempts = 0;
     for (const p of this.providers) {
       if (this.isOpen(p.name)) {
         errors.push(`${p.name}: circuit open`);
         continue;
       }
+      attempts++;
       try {
         const res = await p.generateJson(req);
         this.ok(p.name);
@@ -95,10 +98,10 @@ export class ProviderChain {
         await this.record({ purpose: req.purpose, provider: p.name, model: null, usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0, latencyMs: 0, ok: false, error: msg.slice(0, 300) });
         if (e instanceof LlmRefusalError) throw e; // không thử lại chỗ khác
         if (e instanceof ProviderUnavailableError) this.fail(p.name, e.retryAfterMs);
-        else if (e instanceof LlmBadOutputError) this.fail(p.name);
+        else if (e instanceof LlmBadOutputError) badOutputs++; // lỗi của riêng câu này: thử provider khác, KHÔNG mở circuit breaker cho mọi khách
         else throw e; // lỗi lập trình: đừng nuốt
       }
     }
-    throw new LlmUnavailableError(errors.join(" | ") || "no providers configured");
+    throw new LlmUnavailableError(errors.join(" | ") || "no providers configured", attempts > 0 && badOutputs === attempts);
   }
 }
