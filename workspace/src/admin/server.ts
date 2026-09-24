@@ -263,7 +263,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   });
 
   app.post("/api/kb/documents", { preHandler: need("admin") }, async (req) => {
-    const b = z.object({ slug: z.string().min(2).max(80), kind: z.enum(["templates", "knowledge", "guide"]), title: z.string().max(200).optional(), md: z.string().min(10).max(1_000_000) }).parse(req.body);
+    const b = z.object({ slug: z.string().min(2).max(80), kind: z.enum(["templates", "knowledge", "guide", "items"]), title: z.string().max(200).optional(), md: z.string().min(10).max(1_000_000) }).parse(req.body);
     const r = await kbService.createDraft({ slug: b.slug, kind: b.kind, title: b.title, md: b.md, author: actor(req) });
     await audit(req, "kb.create_draft", b.slug, null, { version: r.version.version, ok: r.report.ok });
     return { version: { ...r.version, source_md: undefined }, report: r.report };
@@ -539,7 +539,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const v = await kb.getVersion(id);
     if (!v) return reply.code(404).send({ error: "không tìm thấy" });
     const doc = await kb.getDocument(v.slug);
-    if (!doc || doc.kind === "guide") return reply.code(404).send({ error: "không tìm thấy" });
+    if (!doc || doc.kind === "guide" || doc.kind === "items") return reply.code(404).send({ error: "không tìm thấy" });
     const llm = usableLlm(svc.llm);
     if (!llm) throw new KbError("chưa cấu hình LLM");
     const report = v.report as { overlapPairs?: import("../kb/overlap").OverlapPair[] } | null;

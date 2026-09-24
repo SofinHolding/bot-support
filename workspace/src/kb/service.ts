@@ -11,6 +11,8 @@ import { parseKnowledgeDoc, type KnowledgeChunk } from "../core/knowledge";
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
 import { parseTemplateFile, validateBundle } from "../core/templates";
+import { compileItems, parseItemsDoc, type ItemsDoc } from "../core/items";
+import { chunkKey, hasValidDecision, itemKey, templateHash, textHash } from "./pair-decisions";
 import { containsPhrase, normalize, wordCount } from "../core/text";
 import type { ParseIssue, Template } from "../domain/types";
 import type { Db } from "../db/db";
@@ -24,7 +26,9 @@ import { CONFUSION_FIX_HINT, confusionKey, confusionsOf, describeConfusion, find
 import type { Evaluator } from "../core/predicates";
 import type { TemplateIndex } from "../core/template-index";
 
-export type DocKind = "templates" | "knowledge" | "guide";
+export type DocKind = "templates" | "knowledge" | "guide" | "items";
+/** Tài liệu dịch ra template đang chạy: template soạn tay (cũ) và mục hỏi đáp (mới, src/core/items.ts). */
+const compiled = (k: DocKind) => k === "templates" || k === "items";
 
 export interface Actor {
   id: number;
@@ -68,6 +72,8 @@ interface Parsed {
   templates: Template[];
   chunks: KnowledgeChunk[];
   guide?: Guide;
+  /** chỉ với kind "items": tài liệu chủ đề gốc (templates ở trên là bản đã dịch) */
+  items?: ItemsDoc;
   issues: ParseIssue[];
 }
 
@@ -98,6 +104,10 @@ export class KbService {
     if (kind === "knowledge") {
       const r = parseKnowledgeDoc(md, slugHint);
       return { kind, slug: r.doc?.slug ?? slugHint ?? "", title: r.doc?.title ?? slugHint ?? "", templates: [], chunks: r.doc?.chunks ?? [], issues: r.issues };
+    }
+    if (kind === "items") {
+      const r = parseItemsDoc(md);
+      return { kind, slug: slugHint ?? "", title: r.doc?.title ?? slugHint ?? "", templates: r.doc ? compileItems(r.doc) : [], chunks: [], issues: r.issues, items: r.doc };
     }
     const r = parseTemplateFile(md, slugHint);
     return { kind, slug: slugHint ?? "", title: slugHint ?? "", templates: r.templates, chunks: [], issues: r.issues };
@@ -169,7 +179,7 @@ export class KbService {
     const hosts = this.d.live.urlHosts;
     const safety: string[] = [];
     const warnings: string[] = [];
-    const allTexts = kind === "templates" ? parsed.templates.flatMap((t) => Object.values(t.answers)) : kind === "guide" ? Object.values(parsed.guide?.sections ?? {}) : parsed.chunks.map((c) => c.text);
+    const allTexts = compiled(kind) ? parsed.templates.flatMap((t) => Object.values(t.answers)) : kind === "guide" ? Object.values(parsed.guide?.sections ?? {}) : parsed.chunks.map((c) => c.text);
     for (const txt of allTexts) {
       if (detectKeyLeak(txt)) safety.push("nội dung chứa chuỗi giống private key / seed phrase");
       if (/<\s*script|javascript:|on\w+\s*=\s*["']/i.test(txt)) safety.push("nội dung chứa HTML/script");
@@ -191,8 +201,8 @@ export class KbService {
     let afterEvaluator: Evaluator | undefined;
     const docOfLive = new Map(liveRows.map((r) => [r.template.id, r.docSlug]));
 
-    // 3. Trùng lặp và mâu thuẫn (chỉ template)
-    if (kind === "templates") {
+    // 3. Trùng lặp và mâu thuẫn (template và mục hỏi đáp)
+    if (compiled(kind)) {
       const predicates = await this.predicateMap();
       const union = [...others, ...parsed.templates];
       afterEvaluator = makeEvaluator(predicates);
@@ -214,7 +224,9 @@ export class KbService {
       const docOfAfter = new Map([...docOfLive, ...parsed.templates.map((t) => [t.id, slug] as const)]);
       const check = await this.routingCheck(pairs, { draftIds: new Set(parsed.templates.map((t) => t.id)), afterIdx, afterEvaluator, docOf: docOfAfter });
       report.overlapPairs = check.pairs;
-      steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length ? "error" : conflictWarn.length || check.warn ? "warning" : "ok", details: [...dup, ...conflictWarn, ...check.details] });
+      // Mục hỏi đáp: xung đột phải được xử lý XONG trước khi publish (không chỉ cảnh báo như template cũ).
+      const blocking = kind === "items" ? await this.itemGate(parsed, others, afterIdx, check.confusions) : [];
+      steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length || blocking.length ? "error" : conflictWarn.length || check.warn ? "warning" : "ok", details: [...dup, ...blocking, ...conflictWarn, ...check.details] });
     } else if (kind === "guide") {
       // Hướng dẫn không được CHO PHÉP điều hệ thống cấm (dự đoán giá, lộ công thức HCS, xin seed/mật khẩu, dùng kiến thức chung, bỏ qua luật)
       const bad = parsed.guide ? guidePolicyProblems(parsed.guide) : [];
@@ -226,14 +238,14 @@ export class KbService {
       const pairs = await this.overlapPairs(probes, slug, liveRows);
       const check = this.d.live.index
         ? await this.routingCheck(pairs, { draftIds: new Set(), afterIdx: this.d.live.index, afterEvaluator: this.d.live.evaluator, docOf: docOfLive, draftChunks: probes.map((p) => ({ ref: p.ref, heading: p.ref.title })) })
-        : { pairs, details: [], warn: false };
+        : { pairs, details: [], warn: false, confusions: [] as Confusion[] };
       report.overlapPairs = check.pairs;
       steps.push({ name: "3. Trùng và mâu thuẫn", status: check.warn ? "warning" : "ok", details: check.details });
     }
 
     // 4. Bản dịch
     const trans: string[] = [];
-    if (kind === "templates") {
+    if (compiled(kind)) {
       const langs = new Set(parsed.templates.flatMap((t) => Object.keys(t.answers)));
       langs.delete("en");
       for (const t of parsed.templates.filter((x) => x.response_mode !== "SECURITY_RULE")) {
@@ -254,7 +266,7 @@ export class KbService {
     steps.push({ name: "4. Bản dịch", status: trans.length || weak.length ? "warning" : "ok", details: [...trans.slice(0, 20), ...weak.slice(0, 20)] });
 
     // 5. Hồi quy + 6. Replay (chỉ template)
-    if (kind === "templates" && afterIdx && afterEvaluator) {
+    if (compiled(kind) && afterIdx && afterEvaluator) {
       const evaluator = afterEvaluator;
       const beforeIdx = this.d.live.index;
       const cases = await this.d.kb.listEvalCases();
@@ -323,7 +335,7 @@ export class KbService {
   private async routingCheck(
     pairs: OverlapPair[],
     ctx: { draftIds: Set<string>; afterIdx: TemplateIndex; afterEvaluator: Evaluator; docOf: Map<string, string>; draftChunks?: { ref: OverlapRef; heading: string }[] },
-  ): Promise<{ pairs: OverlapPair[]; details: string[]; warn: boolean }> {
+  ): Promise<{ pairs: OverlapPair[]; details: string[]; warn: boolean; confusions: Confusion[] }> {
     const settings = evalSettings(this.d.live.urlHosts);
     const draftChunkIds = new Set((ctx.draftChunks ?? []).map((c) => c.ref.id));
     const partnerIds = new Set(pairs.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "template").map((r) => r.id));
@@ -369,7 +381,56 @@ export class KbService {
     if (fresh.length || old.length) details.push(CONFUSION_FIX_HINT);
     const quiet = annotated.filter((p) => !p.confusions!.length && !p.updateHint).length;
     if (quiet) details.push(`${quiet} mục khác chỉ giống chữ với nội dung này — đã hỏi thử, bot vẫn trả lời đúng mục của từng câu, không cần sửa.`);
-    return { pairs: annotated, details, warn: fresh.length > 0 || near.length > 0 };
+    return { pairs: annotated, details, warn: fresh.length > 0 || near.length > 0, confusions: after };
+  }
+
+  /**
+   * Luật CHẶN PUBLISH riêng của mục hỏi đáp (src/core/items.ts): mọi xung đột dữ liệu phải được xử lý xong trước khi áp dụng —
+   * không chỉ cảnh báo như template cũ. Trả về các dòng lỗi viết cho người không rành kỹ thuật (có cách xử lý kèm theo).
+   *  1. Cụm nhận biết trùng với mục ở tài liệu khác.
+   *  2. "Khác với mục X" trỏ tới mục không tồn tại.
+   *  3. Hỏi thử bot: câu hỏi của mục này bị trả lời bằng mục khác / khớp ngang hàng với mục khác, mà hai mục CHƯA khai báo là
+   *     khác nhau (kèm câu hỏi lại khách) — khai báo rồi thì hợp lệ: khi mơ hồ, bot hỏi lại khách thay vì đoán.
+   *  4. Hỏi thử bot: câu hỏi về một đoạn tài liệu bị mục hỏi đáp này giành mất, mà chưa có quyết định còn hiệu lực
+   *     (kb_pair_decisions — hết hiệu lực khi một trong hai bên đổi nội dung).
+   */
+  private async itemGate(parsed: Parsed, others: Template[], afterIdx: TemplateIndex, confusions: Confusion[]): Promise<string[]> {
+    const out: string[] = [];
+    const draft = parsed.templates.filter((t) => t.item && t.item.step === 0);
+    const draftIds = new Set(parsed.templates.map((t) => t.id));
+    const meta = (id: string) => afterIdx.get(id)?.item;
+    const titleOf = (id: string) => meta(id)?.title ?? afterIdx.get(id)?.sets_context.issue ?? id;
+    const name = (id: string) => `"${titleOf(id)}"`;
+
+    const phraseOwner = new Map<string, string>();
+    for (const t of others) for (const k of t.match.keywords) phraseOwner.set(normalize(k), t.id);
+    for (const t of draft)
+      for (const k of t.match.keywords) {
+        const o = phraseOwner.get(normalize(k));
+        if (o && o !== t.id) out.push(`Cụm nhận biết "${k}" của mục ${name(t.id)} trùng với mục ${name(o)} — mỗi cụm chỉ được thuộc một mục.`);
+      }
+
+    for (const t of draft) for (const d of t.item!.distinct_from) if (!afterIdx.get(d.item)) out.push(`Mục ${name(t.id)} khai báo khác với "${d.item}" nhưng không có mục nào mã này.`);
+
+    const linked = (a: string, b: string) => !!(meta(a)?.distinct_from.some((d) => d.item === b) || meta(b)?.distinct_from.some((d) => d.item === a));
+    const hijack = confusions.some((c) => c.owner.kind === "chunk");
+    const decisions = hijack ? await this.d.kb.listPairDecisions() : [];
+    const chunkRows = new Map(hijack ? (await this.d.kb.listPublishedChunks()).map((c) => [c.chunkId, c]) : []);
+    for (const c of confusions) {
+      const touchesDraft = draftIds.has(c.got) || (c.owner.kind === "template" && draftIds.has(c.owner.id));
+      if (!touchesDraft) continue;
+      if (c.owner.kind === "template") {
+        if (linked(c.owner.id, c.got)) continue;
+        out.push(`${describeConfusion(c, titleOf, "sẽ")} Cần xử lý: nếu hai mục là một tình huống thì gộp lại; nếu là hai tình huống khác nhau thì khai báo "khác với" ở một trong hai mục, ghi khác nhau ở điểm nào và câu hỏi lại khách.`);
+      } else {
+        const chunk = chunkRows.get(c.owner.id);
+        const heading = chunk?.heading ?? c.owner.title;
+        const got = afterIdx.get(c.got);
+        if (got && hasValidDecision(decisions, { key: itemKey(c.got), hash: templateHash(got) }, { key: chunkKey(c.owner.doc, heading), hash: textHash(chunk?.text ?? "") })) continue;
+        out.push(`${describeConfusion(c, titleOf, "sẽ")} Cần xử lý: sửa cách hỏi / cụm nhận biết của mục ${name(c.got)} để câu hỏi về đoạn tài liệu này tới được tài liệu, hoặc ghi nhận quyết định giữ nguyên có chủ ý.`);
+      }
+    }
+    return [...new Set(out)];
   }
 
   /** Bao nhiêu cặp điểm cao nhất được hỏi AI mô tả khi CHỐT xung đột lúc publish (xem `syncConflictsAfterPublish`). Có giới hạn để một lần Publish không gọi AI hàng chục lần. */
@@ -386,7 +447,7 @@ export class KbService {
     if (kind === "guide") return;
     try {
       const parsed = this.parse(kind, md, slug);
-      const probes = kind === "templates" ? probesFromTemplates(parsed.templates, slug) : probesFromChunks(parsed.chunks, slug);
+      const probes = compiled(kind) ? probesFromTemplates(parsed.templates, slug) : probesFromChunks(parsed.chunks, slug);
       if (!probes.length) return void (await this.d.kb.syncConflicts(slug, []));
       const index = this.d.live.index;
       if (!index) return;
@@ -622,13 +683,13 @@ export class KbService {
       const kb = kbRepo(tx);
       const ops = opsRepo(tx);
       await kb.activateVersion(v.id, v.slug, by, at);
-      if (kind === "templates") await kb.replaceTemplates(v.id, v.slug, parsed.templates);
+      if (compiled(kind)) await kb.replaceTemplates(v.id, v.slug, parsed.templates);
       else if (kind === "knowledge") await kb.replaceChunks(v.id, v.slug, chunkRows); // guide: nội dung nằm ở source_md của phiên bản, LiveContent đọc lại
       await kb.clearArchivedContent(v.slug); // dọn template/chunk/vector của các phiên bản archived, đỡ tích rác qua nhiều lần publish
       await ops.bumpKbVersion(by);
     });
     await this.d.live.rebuild();
-    if (kind === "templates") await this.autoRegisterEvalCases(parsed.templates);
+    if (compiled(kind)) await this.autoRegisterEvalCases(parsed.templates);
   }
 
   /**
@@ -712,7 +773,7 @@ export class KbService {
       await this.d.db.tx(async (tx) => {
         const kb = kbRepo(tx);
         await kb.activateVersion(v.id, d.slug, author, this.now());
-        if (kind === "templates") await kb.replaceTemplates(v.id, d.slug, p.templates);
+        if (compiled(kind)) await kb.replaceTemplates(v.id, d.slug, p.templates);
         else if (kind === "knowledge") await kb.replaceChunks(v.id, d.slug, chunkRows);
       });
     }

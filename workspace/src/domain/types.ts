@@ -54,6 +54,27 @@ export interface Template {
   /** Thông tin cần xin khách khi escalate (hiển thị trong ticket cho support). */
   required_info?: string[];
   source?: string;
+  /** Có khi template được dịch từ "mục hỏi đáp" (src/core/items.ts): tên, ngữ cảnh, bước, mục tương tự đã xác nhận là khác. */
+  item?: TemplateItemMeta;
+}
+
+/** Một mục tương tự đã được người duyệt xác nhận là KHÁC, kèm câu hỏi lại khách khi không phân biệt được. */
+export interface ItemDistinctFrom {
+  item: string;
+  difference: string;
+  clarify: string;
+}
+
+export interface TemplateItemMeta {
+  id: string;
+  title: string;
+  topic: string;
+  kind: "answer" | "handoff" | "system";
+  /** 0 = bước đầu (tìm được bằng câu hỏi); n > 0 = bước sau, chỉ tới được qua tin nối tiếp */
+  step: number;
+  steps: number;
+  applies_when?: string;
+  distinct_from: ItemDistinctFrom[];
 }
 
 export interface ParseIssue {

@@ -1,13 +1,14 @@
 /** Truy cập kho tri thức: tài liệu + phiên bản, template đã publish, chunk vector, bản dịch, cache embedding, eval, settings. */
 import type { Template } from "../domain/types";
 import { iso, num, numOrNull, type Db } from "./db";
+import type { PairDecision, PairDecisionKind } from "../kb/pair-decisions";
 
 export type VersionStatus = "draft" | "pending_approval" | "published" | "archived" | "rejected";
 
 export interface DocumentRow {
   slug: string;
   title: string;
-  kind: "templates" | "knowledge" | "guide";
+  kind: "templates" | "knowledge" | "guide" | "items";
   created_at: Date;
   published_version: number | null;
   latest_version: number;
@@ -100,7 +101,7 @@ const vecLiteral = (v: number[]) => `[${v.map((x) => Number(x.toFixed(6))).join(
 export function kbRepo(db: Db) {
   return {
     // ---- Tài liệu và phiên bản ----
-    async upsertDocument(slug: string, title: string, kind: "templates" | "knowledge" | "guide") {
+    async upsertDocument(slug: string, title: string, kind: "templates" | "knowledge" | "guide" | "items") {
       await db.query("INSERT INTO kb_documents (slug, title, kind) VALUES ($1,$2,$3) ON CONFLICT (slug) DO UPDATE SET title = EXCLUDED.title", [slug, title, kind]);
     },
     async listDocuments(): Promise<DocumentRow[]> {
@@ -114,7 +115,7 @@ export function kbRepo(db: Db) {
     },
     async getDocument(slug: string) {
       const r = await db.query("SELECT * FROM kb_documents WHERE slug = $1", [slug]);
-      return r.rows[0] as { slug: string; title: string; kind: "templates" | "knowledge" | "guide" } | undefined;
+      return r.rows[0] as { slug: string; title: string; kind: "templates" | "knowledge" | "guide" | "items" } | undefined;
     },
     /** Xoá hẳn tài liệu + mọi phiên bản (cascade xoá templates/kb_chunks của từng phiên bản). Gọi sau khi kb/service.ts đã kiểm tra chưa từng publish. */
     async deleteDocument(slug: string) {
@@ -371,6 +372,20 @@ export function kbRepo(db: Db) {
       for (const e of entries) {
         await db.query("INSERT INTO embedding_cache (hash, embedder, vector) VALUES ($1,$2,$3::jsonb) ON CONFLICT DO NOTHING", [e.hash, embedder, JSON.stringify(e.vector)]);
       }
+    },
+
+    // ---- Quyết định về cặp nội dung chồng lấn (kb/pair-decisions.ts) ----
+    async listPairDecisions(): Promise<PairDecision[]> {
+      const r = await db.query("SELECT * FROM kb_pair_decisions ORDER BY decided_at DESC");
+      return r.rows.map((x) => ({ aKey: String(x.a_key), bKey: String(x.b_key), aHash: String(x.a_hash), bHash: String(x.b_hash), decision: x.decision as PairDecisionKind, note: (x.note as string | null) ?? null, decidedBy: String(x.decided_by), decidedAt: new Date(String(x.decided_at)) }));
+    },
+    /** Ghi (hoặc ghi đè) quyết định cho một cặp — `a`/`b` phải đã được sắp theo `orderPair`. */
+    async savePairDecision(d: { aKey: string; bKey: string; aHash: string; bHash: string; decision: PairDecisionKind; note?: string | null; decidedBy: string }) {
+      await db.query(
+        `INSERT INTO kb_pair_decisions (a_key, b_key, a_hash, b_hash, decision, note, decided_by) VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (a_key, b_key) DO UPDATE SET a_hash = EXCLUDED.a_hash, b_hash = EXCLUDED.b_hash, decision = EXCLUDED.decision, note = EXCLUDED.note, decided_by = EXCLUDED.decided_by, decided_at = now()`,
+        [d.aKey, d.bKey, d.aHash, d.bHash, d.decision, d.note ?? null, d.decidedBy],
+      );
     },
 
     // ---- Eval ----
