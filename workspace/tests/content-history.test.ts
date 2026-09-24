@@ -75,4 +75,30 @@ describe("ghi lịch sử khi publish (KbService)", () => {
     expect(n1).toBeGreaterThan(0); // các tài liệu seed
     expect(await w.kbService.ensureHistoryBaseline()).toBe(0); // chạy lại không ghi trùng
   });
+  it("xác nhận thay thế: ghi quan hệ có chiều, bản nháp bỏ nội dung cũ, bản đang chạy chưa đổi", async () => {
+    const kmd = `---
+slug: listing-doc
+title: Listing
+response_mode: GROUNDED_GENERATION
+---
+# Listing
+
+## Listing plan
+
+The token will be listed toward the end of 2025 or early 2026.
+
+## Vesting
+
+Vesting is linear over up to 180 months for large holders.
+`;
+    const k = await w.kbService.createDraft({ slug: "listing-doc", kind: "knowledge", md: kmd, author: admin });
+    await w.kbService.publish(k.version.id, admin);
+    const r = await w.kbService.supersede({ newKey: "item:reset-pin", oldKey: "chunk:listing-doc#Listing plan" }, admin);
+    const units = await w.kbService.versionUnits(r.version, "knowledge");
+    expect(units.find((u) => u.title === "Listing plan")?.change).toBe("removed");
+    expect(units.find((u) => u.title === "Vesting")?.change).toBe("same");
+    const d = (await w.kb.listPairDecisions()).find((x) => x.decision === "supersedes")!;
+    expect(d).toMatchObject({ winnerKey: "item:reset-pin" });
+    expect((await w.kb.listPublishedChunks()).some((c) => c.heading === "Listing plan")).toBe(true); // chưa publish: bot vẫn dùng bản cũ
+  });
 });

@@ -10,7 +10,7 @@ import { GUIDE_SLUG, guidePolicyProblems, parseGuide, type Guide } from "../core
 import { chunkEmbedText, parseKnowledgeDoc, sha1, type KnowledgeChunk } from "../core/knowledge";
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
-import { parseTemplateFile, validateBundle } from "../core/templates";
+import { parseTemplateFile, templatesToMarkdown, validateBundle } from "../core/templates";
 import { compileItems, ITEM_TOPICS, itemsDocToYaml, parseItemsDoc, type ItemsDoc, type KnowledgeItem } from "../core/items";
 import { chunkKey, hasValidDecision, itemKey, orderPair, templateHash, textHash, type PairDecisionKind } from "./pair-decisions";
 import { applyReview, type ReviewInput } from "./review-import";
@@ -795,6 +795,49 @@ export class KbService {
     // bản nháp đã kiểm tra TRƯỚC khi lưu quyết định cặp: kiểm tra lại để các chặn "giành đoạn tài liệu" đã quyết được gỡ
     if (saved) for (const d of drafts) d.ok = (await this.revalidate(d.versionId)).ok;
     return { drafts, applied: res.applied, todo, chunkChanges: res.chunkChanges, decisionsSaved: saved };
+  }
+
+  /**
+   * Người duyệt xác nhận nội dung mới `newKey` THAY THẾ nội dung đang dùng `oldKey` (yêu cầu §4.6): ghi quan hệ có chiều vào bảng
+   * quyết định và tạo bản nháp BỎ nội dung cũ (câu trả lời, template cũ hoặc đoạn tài liệu). Không publish; bản cũ vẫn còn trong
+   * lịch sử phiên bản, rollback được. Không bao giờ tự gọi chỉ vì một bên được nhập sau.
+   */
+  async supersede(input: { newKey: string; oldKey: string; note?: string }, actor: Actor): Promise<{ version: VersionRow; report: ValidationReport }> {
+    if (input.newKey === input.oldKey) throw new KbError("một nội dung không thể tự thay thế chính nó");
+    let result: { version: VersionRow; report: ValidationReport };
+    let oldHash = "";
+    if (input.oldKey.startsWith("item:")) {
+      const id = input.oldKey.slice(5);
+      const row = (await this.d.kb.loadPublishedTemplateRows()).find((r) => r.template.id === id);
+      if (!row) throw new KbError(`không tìm thấy nội dung đang dùng: ${id}`, 404);
+      oldHash = templateHash(row.template);
+      if (row.kind === "items") {
+        const r = await this.mutateItemsDoc(row.docSlug, row.template.item?.topic ?? row.docSlug.replace(/^items-/, ""), (doc) => {
+          const it = doc.items.find((i) => i.id === id);
+          if (!it) throw new KbError(`không tìm thấy mục ${id}`, 404);
+          if (it.kind === "system") throw new KbError("tin hệ thống do code gửi, không thay thế được");
+          doc.items = doc.items.filter((i) => i.id !== id);
+        }, actor);
+        result = { version: (await this.d.kb.getVersion(r.versionId))!, report: r.report };
+      } else {
+        const pub = (await this.d.kb.listVersions(row.docSlug)).find((v) => v.status === "published")!;
+        const left = parseTemplateFile(pub.source_md, row.docSlug).templates.filter((t) => t.id !== id);
+        result = await this.createDraft({ slug: row.docSlug, kind: "templates", md: templatesToMarkdown(left), author: actor });
+      }
+    } else {
+      const m = /^chunk:([^#]+)#(.+)$/.exec(input.oldKey);
+      if (!m) throw new KbError("khoá nội dung không hợp lệ");
+      const pub = (await this.d.kb.listVersions(m[1]!)).find((v) => v.status === "published");
+      if (!pub) throw new KbError(`tài liệu ${m[1]} hiện không có bản đang publish`, 404);
+      const chunk = (await this.d.kb.listPublishedChunks()).find((c) => c.docSlug === m[1] && c.heading === m[2]);
+      oldHash = chunk ? textHash(chunk.text) : "";
+      const r = replaceChunkSection(pub.source_md, m[2]!, ""); // mục còn tiêu đề nhưng không còn nội dung: không thành đoạn nào nữa
+      if (!r.replaced) throw new KbError(`không tìm thấy mục "${m[2]}" trong ${m[1]}`, 404);
+      result = await this.createDraft({ slug: m[1]!, kind: "knowledge", md: r.md, author: actor });
+    }
+    const p = orderPair({ key: input.newKey, hash: "chưa publish" }, { key: input.oldKey, hash: oldHash });
+    await this.d.kb.savePairDecision({ ...p, decision: "supersedes", winnerKey: input.newKey, note: input.note ?? `${input.newKey} thay thế ${input.oldKey}`, decidedBy: actor.label });
+    return result;
   }
 
   /** Ghi nhận quyết định cho cặp mục hỏi đáp (trong bản nháp `versionId`) ↔ đoạn tài liệu đang chạy, gắn với nội dung hiện tại của hai bên. */

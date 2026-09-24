@@ -1804,7 +1804,26 @@ Nội dung mục 2.
         h("div", { class: "actions" }, recheckBtn, saveBtn),
       );
     }
-    return h("div", null, head, aiNote, h("hr"), body);
+    // §4.6: nội dung mới THAY THẾ nội dung đang dùng — chỉ khi người duyệt xác nhận, không bao giờ vì nhập sau
+    const keyOf = (side) => (side.kind === "template" ? `item:${side.id}` : `chunk:${side.doc}#${side.title}`);
+    const supersede = can("admin") && !already
+      ? btn("Nội dung mới thay thế nội dung này", {
+          title: "Bỏ nội dung đang dùng, giữ nội dung mới (tạo bản nháp, chưa publish; khôi phục được bằng lịch sử phiên bản)",
+          on: {
+            click: (ev) => {
+              if (!confirm(`Xác nhận nội dung mới "${box.a.title}" THAY THẾ "${box.b.title}"?
+Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Chỉ xác nhận khi chắc chắn nội dung mới đúng hơn — thời gian nhập không phải căn cứ.`)) return;
+              run(ev.currentTarget, async () => {
+                const r = await post("/api/kb/supersede", { newKey: keyOf(box.a), oldKey: keyOf(box.b) });
+                resolvedDrafts.set(intakePairKey(box), { versionId: r.versionId, slug: r.slug });
+                toast("Đã ghi nhận thay thế và tạo bản nháp bỏ nội dung cũ.", "ok");
+                onChanged();
+              });
+            },
+          },
+        })
+      : null;
+    return h("div", null, head, aiNote, supersede ? h("div", { class: "actions" }, supersede) : null, h("hr"), body);
   }
 
   function openIntakeModal(box, resolvedDrafts, onChanged) {

@@ -318,6 +318,14 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     return kbService.tryQuestion(b.question, b.versionId);
   });
 
+  /** Người duyệt xác nhận nội dung mới thay thế nội dung đang dùng: ghi quan hệ + tạo bản nháp bỏ nội dung cũ (không publish). */
+  app.post("/api/kb/supersede", { preHandler: need("admin") }, async (req) => {
+    const b = z.object({ newKey: z.string().min(3).max(400), oldKey: z.string().min(3).max(400), note: z.string().max(1000).optional() }).parse(req.body);
+    const { version, report } = await kbService.supersede(b, actor(req));
+    await audit(req, "kb.supersede", b.oldKey, null, { newKey: b.newKey, draftVersion: version.id });
+    return { versionId: version.id, slug: version.slug, ok: report.ok };
+  });
+
   /** Ghi nhận "giữ nguyên có chủ ý" cho cặp mục hỏi đáp ↔ đoạn tài liệu mà bước kiểm tra chặn, rồi kiểm tra lại bản nháp. */
   app.post("/api/kb/decide", { preHandler: need("admin") }, async (req) => {
     const b = z.object({ versionId: z.number().int().positive(), itemId: z.string().max(120), chunkId: z.string().max(40), note: z.string().max(1000).optional() }).parse(req.body);

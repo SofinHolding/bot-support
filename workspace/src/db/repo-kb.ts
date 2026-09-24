@@ -405,14 +405,14 @@ export function kbRepo(db: Db) {
 
     async listPairDecisions(): Promise<PairDecision[]> {
       const r = await db.query("SELECT * FROM kb_pair_decisions ORDER BY decided_at DESC");
-      return r.rows.map((x) => ({ aKey: String(x.a_key), bKey: String(x.b_key), aHash: String(x.a_hash), bHash: String(x.b_hash), decision: x.decision as PairDecisionKind, note: (x.note as string | null) ?? null, decidedBy: String(x.decided_by), decidedAt: new Date(String(x.decided_at)) }));
+      return r.rows.map((x) => ({ aKey: String(x.a_key), bKey: String(x.b_key), aHash: String(x.a_hash), bHash: String(x.b_hash), decision: x.decision as PairDecisionKind, note: (x.note as string | null) ?? null, decidedBy: String(x.decided_by), decidedAt: new Date(String(x.decided_at)), winnerKey: (x.winner_key as string | null) ?? null }));
     },
     /** Ghi (hoặc ghi đè) quyết định cho một cặp — `a`/`b` phải đã được sắp theo `orderPair`. */
-    async savePairDecision(d: { aKey: string; bKey: string; aHash: string; bHash: string; decision: PairDecisionKind; note?: string | null; decidedBy: string }) {
+    async savePairDecision(d: { aKey: string; bKey: string; aHash: string; bHash: string; decision: PairDecisionKind; note?: string | null; decidedBy: string; winnerKey?: string | null }) {
       await db.query(
-        `INSERT INTO kb_pair_decisions (a_key, b_key, a_hash, b_hash, decision, note, decided_by) VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (a_key, b_key) DO UPDATE SET a_hash = EXCLUDED.a_hash, b_hash = EXCLUDED.b_hash, decision = EXCLUDED.decision, note = EXCLUDED.note, decided_by = EXCLUDED.decided_by, decided_at = now()`,
-        [d.aKey, d.bKey, d.aHash, d.bHash, d.decision, d.note ?? null, d.decidedBy],
+        `INSERT INTO kb_pair_decisions (a_key, b_key, a_hash, b_hash, decision, note, decided_by, winner_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (a_key, b_key) DO UPDATE SET a_hash = EXCLUDED.a_hash, b_hash = EXCLUDED.b_hash, decision = EXCLUDED.decision, note = EXCLUDED.note, decided_by = EXCLUDED.decided_by, winner_key = EXCLUDED.winner_key, decided_at = now()`,
+        [d.aKey, d.bKey, d.aHash, d.bHash, d.decision, d.note ?? null, d.decidedBy, d.winnerKey ?? null],
       );
     },
 

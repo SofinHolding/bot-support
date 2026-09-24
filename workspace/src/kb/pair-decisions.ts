@@ -6,7 +6,8 @@
 import { sha1 } from "../core/knowledge";
 import type { Template } from "../domain/types";
 
-export type PairDecisionKind = "distinct" | "keep_both" | "merged" | "fixed";
+/** supersedes: người duyệt xác nhận nội dung `winnerKey` thay thế bên còn lại (không bao giờ suy ra từ thời điểm nhập). */
+export type PairDecisionKind = "distinct" | "keep_both" | "merged" | "fixed" | "supersedes";
 
 export interface PairDecision {
   aKey: string;
@@ -17,6 +18,7 @@ export interface PairDecision {
   note: string | null;
   decidedBy: string;
   decidedAt: Date;
+  winnerKey?: string | null;
 }
 
 export const itemKey = (itemId: string) => `item:${itemId}`;
