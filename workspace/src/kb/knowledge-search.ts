@@ -8,6 +8,11 @@ import type { KbRepo } from "../db/repo-kb";
 export class PgKnowledge implements KnowledgePort {
   constructor(private readonly kb: KbRepo, private readonly embedder: Embedder) {}
 
+  async byIds(ids: string[]): Promise<KnowledgeHit[]> {
+    const want = new Set(ids);
+    return (await this.kb.listPublishedChunks()).filter((c) => want.has(c.chunkId)).map((c) => ({ chunkId: c.chunkId, docSlug: c.docSlug, heading: c.heading, text: c.text, url: c.url, lang: sourceLangOf(c.text, c.lang), score: 1 }));
+  }
+
   async search(query: string, k: number, queryLang?: string): Promise<KnowledgeHit[]> {
     const tokens = [...new Set(contentTokens(query))];
     if (!tokens.length) return [];

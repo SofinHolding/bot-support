@@ -68,6 +68,7 @@ export type Outcome =
   | { kind: "GROUNDED"; tier: 3; answer: string; /** ngôn ngữ thật của `answer` (khác ngôn ngữ khách => phải dịch trước khi gửi) */ sourceLang: string; /** sha1 của đoạn nguồn chính: khoá lưu câu trả lời đã gửi cho admin xem */ sourceHash?: string; sources: { chunkId: string; docSlug: string; heading: string; url?: string }[]; mode: "extractive" | "generative" }
   | { kind: "OFFTOPIC"; tier: Tier; reason: string }
   /** Hỏi lại khách (tối đa 1 lần) để phân biệt các mục đã khai báo là khác nhau. `question` là câu hỏi lại đã duyệt, tiếng Anh. */
+  /** `items`: các ứng viên được hỏi ("T:<id>" câu trả lời, "K:<chunkId>" đoạn tài liệu); `question`: câu hỏi lại dựng từ dữ liệu đã duyệt, tiếng Anh. */
   | { kind: "CLARIFY"; tier: 2; question: string; items: string[] }
   /** Không gọi được LLM (mất kết nối, quá tải, chưa cấu hình, hết ngân sách): gửi câu cố định tiếng Anh (core/fixed-messages.ts),
    * KHÔNG lấy nội dung trong kho trả thẳng cho khách. */
@@ -97,6 +98,8 @@ export interface RouterDeps {
   settings: RouterSettings;
   llm?: LlmPort;
   knowledge?: KnowledgePort;
+  /** Cặp nội dung đang xung đột CHƯA giải quyết ("template:<id>|chunk:<id>", sắp theo thứ tự) — không được hỏi lại khách giữa chúng. */
+  conflicts?: ReadonlySet<string>;
 }
 
 export async function route(req: RouteRequest, deps: RouterDeps): Promise<RouteResult> {
@@ -319,6 +322,28 @@ async function tier3(req: RouteRequest, deps: RouterDeps, trace: RouteTrace, don
 }
 
 /**
+ * Câu hỏi lại khách, DỰNG BẰNG CODE từ nội dung đã duyệt của chính các trường hợp tìm thấy (yêu cầu §2 — không để AI viết,
+ * không có điều kiện nghiệp vụ nào ngoài dữ liệu): hai câu trả lời có câu hỏi lại do người duyệt khai ("khác với") thì dùng
+ * câu đó; không thì liệt kê từng trường hợp bằng câu khách hay hỏi đã duyệt của mục (đoạn tài liệu: tiêu đề của đoạn).
+ * Tiếng Anh; pipeline dịch trung thành sang ngôn ngữ của khách như mọi câu đã duyệt.
+ */
+export function clarifyQuestion(refs: string[], templates: Template[], chunks: KnowledgeHit[], index: TemplateIndex): string {
+  if (refs.length === 2 && refs.every((r) => r.startsWith("T:"))) {
+    const decl = index.distinctPair(refs[0]!.slice(2), refs[1]!.slice(2));
+    if (decl?.clarify) return decl.clarify;
+  }
+  const label = (r: string) => {
+    if (r.startsWith("T:")) {
+      const t = templates.find((x) => x.id === r.slice(2)) ?? index.get(r.slice(2));
+      return t?.match.examples[0] ?? t?.item?.title ?? t?.sets_context.issue ?? r.slice(2);
+    }
+    const c = chunks.find((x) => x.chunkId === r.slice(2));
+    return c ? c.heading.split(" › ").pop()!.trim() : r.slice(2);
+  };
+  return ["To help you correctly, which of these is your case?", ...refs.map((r, i) => `${i + 1}) ${label(r)}`)].join("\n");
+}
+
+/**
  * Ứng viên gửi cho SKILL select-answer. Mục hỏi đáp mang thêm ngữ cảnh áp dụng và các lời khai "khác với" giữa các ứng viên
  * trong CÙNG danh sách — AI dựa vào đó để phân biệt, hoặc trả CLARIFY:<A>,<B> khi không phân biệt được.
  */
@@ -507,8 +532,12 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (u.intent === "unclear") return done({ kind: "ESCALATE", tier: 2, reason: "AI không hiểu được tin nhắn", sourceTemplateId: last?.id }, lang);
 
   // Tin nối tiếp: AI nhận ra LOẠI phản hồi (mọi ngôn ngữ), luật nghiệp vụ của template quyết định bước tiếp theo
-  const pending = (req.ctx.pendingClarify?.items ?? []).map((id) => index.get(id)).filter((t): t is Template => !!t);
-  if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks") && !pending.length) {
+  // Khách đang trả lời câu hỏi lại của bot: ứng viên là đúng các trường hợp đã hỏi (mã cũ không có tiền tố = câu trả lời)
+  const pendingRefs = (req.ctx.pendingClarify?.items ?? []).map((x) => (/^[TK]:/.test(x) ? x : `T:${x}`));
+  const pending = pendingRefs.filter((r) => r.startsWith("T:")).map((r) => index.get(r.slice(2))).filter((t): t is Template => !!t);
+  const pendingChunkIds = pendingRefs.filter((r) => r.startsWith("K:")).map((r) => r.slice(2));
+  const clarifying = pendingRefs.length > 0;
+  if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks") && !clarifying) {
     const target = resolveFollowUp(u.follow_up, last);
     trace.followUp = u.follow_up;
     if (target === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: `follow-up (${u.follow_up}) sau template ${last?.id ?? "-"}`, sourceTemplateId: last?.id }, lang);
@@ -539,26 +568,12 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (queryEn) trace.notes.push(`truy vấn (en): "${queryEn}"`);
   if (queryKb && queryKb !== queryEn) trace.notes.push(`truy vấn (${settings.knowledgeLang}): "${queryKb}"`);
 
-  // ---- Khách đang trả lời câu hỏi lại của bot: chỉ chọn trong các mục đã hỏi; vẫn không rõ thì chuyển nhân viên (không hỏi lại lần 2) ----
-  if (pending.length) {
-    trace.candidates = pending.map((t) => t.id);
-    trace.notes.push(`khách trả lời câu hỏi lại giữa: ${pending.map((t) => t.id).join(", ")}`);
-    let pick;
-    try {
-      pick = await llm.select({ text: req.text, queryEn: queryEn ?? "", lang, candidates: selectCandidates(pending, [], index), context: pack });
-    } catch (e) {
-      return done(llmFailure(e, 2, trace, last?.id), lang);
-    }
-    trace.notes.push(`AI chọn: ${pick.ref}${pick.reason ? ` — ${pick.reason.slice(0, 120)}` : ""}`);
-    const chosen = pending.find((t) => `T:${t.id}` === pick.ref.trim());
-    if (chosen) return done({ kind: "TEMPLATE", templateId: chosen.id, tier: 2, via: "clarified" }, lang);
-    return done({ kind: "ESCALATE", tier: 2, reason: "đã hỏi lại khách nhưng vẫn chưa phân biệt được khách cần mục nào", sourceTemplateId: pending[0]!.id }, lang);
-  }
+  if (clarifying) trace.notes.push(`khách trả lời câu hỏi lại giữa: ${pendingRefs.join(", ")} — chỉ chọn trong các trường hợp này`);
 
   // ---- ROUTER (chỉ ở luồng hai nhánh): FAST PATH nếu khớp CHẮC CHẮN bằng luật/điều kiện/từ khoá trên câu đã chuẩn hoá ----
   // Khách viết tiếng Anh/Việt: dùng nguyên câu. Ngôn ngữ khác: dùng bản tiếng Anh do AI dịch (đã qua kiểm tra con số, tên sản phẩm).
   // Không có bản chuẩn hoá đạt kiểm tra thì không được đi FAST PATH.
-  if (opts.fastPath) {
+  if (opts.fastPath && !clarifying) {
     const fastText = KEYWORD_LANGS.has(lang) ? req.text : queryEn;
     if (fastText) {
       const fastReq: RouteRequest = { ...req, text: fastText, norm: normalize(fastText), lang: KEYWORD_LANGS.has(lang) ? lang : "en" };
@@ -580,7 +595,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     } else trace.notes.push("nhánh: AI/RAG (không có bản chuẩn hoá đạt kiểm tra để khớp luật/từ khoá)");
   }
 
-  // ---- 2. TÌM TRONG KHO (code) ----
+  // ---- 2. TÌM TRONG KHO (code) — khi đang hỏi lại: ứng viên là đúng các trường hợp đã hỏi ----
   const texts = [...new Set([req.text, queryEn].filter((x): x is string => !!x))];
   const scores = new Map<string, number>();
   for (const t of texts) {
@@ -590,14 +605,17 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   // Cổng requires/excludes áp dụng cho mọi ứng viên, xét trên cả câu gốc lẫn câu tiếng Anh (điều kiện viết bằng tiếng Anh/Việt)
   const gateText = texts.join(" ");
   const gateInp = { ...inp, text: gateText, norm: normalize(gateText) };
-  const templates = [...scores.entries()]
+  if (clarifying) scores.clear();
+  const templates = clarifying ? pending : [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id]) => index.get(id))
     .filter((t): t is Template => !!t && t.response_mode === "EXACT_TEMPLATE" && !isExcluded(index, evaluator, t.id, gateInp) && !missingRequires(index, evaluator, t.id, gateInp))
     .slice(0, MAX_TEMPLATE_CANDIDATES);
 
   const chunkById = new Map<string, KnowledgeHit>();
-  if (knowledge) {
+  if (clarifying) {
+    for (const h of pendingChunkIds.length && knowledge?.byIds ? await knowledge.byIds(pendingChunkIds) : []) chunkById.set(h.chunkId, h);
+  } else if (knowledge) {
     const searches: [string, string][] = [[req.text, lang]];
     if (queryKb) searches.push([queryKb, settings.knowledgeLang]);
     if (queryEn && queryEn !== queryKb) searches.push([queryEn, "en"]);
@@ -623,20 +641,28 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   }
   trace.notes.push(`AI chọn: ${pick.ref}${pick.reason ? ` — ${pick.reason.slice(0, 120)}` : ""}`);
   const ref = pick.ref.trim();
+  if (clarifying && !candidates.some((c) => c.ref === ref)) {
+    // không hỏi lại lần 2: khách vẫn chưa làm rõ được -> chuyển nhân viên
+    return done({ kind: "ESCALATE", tier: 2, reason: "đã hỏi lại khách nhưng vẫn chưa phân biệt được khách cần mục nào", sourceTemplateId: pending[0]?.id ?? last?.id }, lang);
+  }
   if (ref === "OFFTOPIC") return done({ kind: "OFFTOPIC", tier: 2, reason: "AI xác định tin ngoài phạm vi InterLink" }, lang);
   if (ref === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: "AI: không tìm được ứng viên nào trả lời đúng câu hỏi", sourceTemplateId: last?.id }, lang);
   if (/^CLARIFY:/i.test(ref)) {
-    const ids = ref.slice(8).split(",").map((x) => x.trim().replace(/^T:/, ""));
-    const decl = ids.length === 2 && ids.every((id) => templates.some((t) => t.id === id)) ? index.distinctPair(ids[0]!, ids[1]!) : undefined;
-    if (!decl?.clarify) {
-      trace.notes.push(`AI muốn hỏi lại khách nhưng cặp ${ids.join(", ")} chưa được khai báo là khác nhau -> chuyển nhân viên`);
+    const refs = [...new Set(ref.slice(8).split(",").map((x) => x.trim()).filter(Boolean).map((x) => (/^[TK]:/.test(x) ? x : `T:${x}`)))];
+    const refused = (why: string) => {
+      trace.notes.push(`AI muốn hỏi lại khách nhưng ${why} -> chuyển nhân viên`);
       return done({ kind: "ESCALATE", tier: 2, reason: "mơ hồ giữa nhiều template", sourceTemplateId: last?.id }, lang);
-    }
-    if (!settings.askWhenUnclear) {
-      trace.notes.push("AI muốn hỏi lại khách nhưng tính năng hỏi lại đang tắt (episode.ask_when_unclear) -> chuyển nhân viên");
-      return done({ kind: "ESCALATE", tier: 2, reason: "mơ hồ giữa nhiều template", sourceTemplateId: last?.id }, lang);
-    }
-    return done({ kind: "CLARIFY", tier: 2, question: decl.clarify, items: ids }, lang);
+    };
+    if (!settings.askWhenUnclear) return refused("tính năng hỏi lại đang tắt (episode.ask_when_unclear)");
+    if (refs.length < 2 || refs.length > 4) return refused(`số trường hợp không hợp lệ (${refs.length})`);
+    if (!refs.every((r) => candidates.some((c) => c.ref === r))) return refused("có trường hợp không nằm trong kết quả tìm kiếm");
+    const conflictKey = (r: string) => (r.startsWith("T:") ? `template:${r.slice(2)}` : `chunk:${r.slice(2)}`);
+    for (let i = 0; i < refs.length; i++)
+      for (let k = i + 1; k < refs.length; k++) {
+        const pair = [conflictKey(refs[i]!), conflictKey(refs[k]!)].sort().join("|");
+        if (deps.conflicts?.has(pair)) return refused("các trường hợp này đang xung đột chưa giải quyết (không được đưa dữ liệu mâu thuẫn cho khách chọn)");
+      }
+    return done({ kind: "CLARIFY", tier: 2, question: clarifyQuestion(refs, templates, chunks, index), items: refs }, lang);
   }
 
   const t = ref.startsWith("T:") ? templates.find((x) => `T:${x.id}` === ref) : undefined;
@@ -644,7 +670,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (t) {
     // Cổng ngữ cảnh áp dụng cho MỌI đường: khách quay lại chủ đề đã chuyển support thì không lặp lại chuỗi template.
     if (req.ctx.parentEscalatedGroup && t.group === req.ctx.parentEscalatedGroup) return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id }, lang);
-    return done({ kind: "TEMPLATE", templateId: t.id === GREETING_TEMPLATE_ID ? greeting(req) : t.id, tier: 2, via: "llm_select" }, lang);
+    return done({ kind: "TEMPLATE", templateId: t.id === GREETING_TEMPLATE_ID ? greeting(req) : t.id, tier: 2, via: clarifying ? "clarified" : "llm_select" }, lang);
   }
   if (!c) {
     trace.notes.push(`AI chọn ref không có trong danh sách: ${ref.slice(0, 60)}`);

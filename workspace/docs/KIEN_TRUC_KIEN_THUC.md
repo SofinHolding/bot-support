@@ -78,13 +78,19 @@ tin nhắn ─ AI hiểu (ngôn ngữ, ý định) ─┬─ ĐƯỜNG NHANH: kh
 - **Mọi câu trả lời lấy từ kho đều qua AI.** Đường nhanh vẫn phải qua SKILL `verify-answer`, kể cả tin nối tiếp và luật theo ảnh có kèm chữ. Sticker/emoji cũng qua SKILL `understand`. Không có chế độ trả lời bằng từ khoá khi AI lỗi.
 - **Mất kết nối LLM** (hoặc chưa cấu hình, hết ngân sách token của khách) ở bất kỳ bước nào, kể cả lúc dịch: khách nhận một câu cố định bằng tiếng Anh ghi trong mã nguồn (`src/core/fixed-messages.ts`). Ngoại lệ do code xử lý, chạy cả khi mất kết nối, luôn tiếng Anh: cảnh báo lộ seed phrase / private key và cảnh báo chống spam.
 - Hai mục đã khai báo khác nhau cùng khớp thì cổng (`src/core/gate.ts`) trả "mơ hồ", không chọn theo thứ hạng.
-- **Hỏi lại khách** (`CLARIFY`) chỉ được nhận khi đủ ba điều kiện:
-  - hai mục nằm trong danh sách ứng viên;
-  - hai mục đã khai báo `distinct_from` có câu hỏi lại;
-  - bật `episode.ask_when_unclear`.
+- **Hỏi lại khách** (`CLARIFY`, yêu cầu §2): khi 2–4 ứng viên (câu trả lời và/hoặc đoạn tài liệu) đều có thể đúng mà tin nhắn
+  chưa đủ rõ, AI không chọn cái giống nhất mà trả `CLARIFY:<ref>,<ref>`. Code chỉ nhận khi:
+  - bật `episode.ask_when_unclear`;
+  - mọi ref nằm trong kết quả tìm kiếm của lượt đó;
+  - không cặp nào đang **xung đột chưa giải quyết** (`LiveContent.conflicts` — kb_conflicts mở, AI kết luận xung đột / mâu thuẫn trực tiếp).
 
-  Code ghi `episodes.pending_clarify`. Lượt sau chỉ chọn giữa hai mục đó; vẫn không rõ thì chuyển nhân viên. Mỗi vụ việc chỉ hỏi lại một lần.
-- SKILL `select-answer` bản 2 (quy tắc R3a) và câu sửa trong "Hướng dẫn AI làm việc" phải qua **duyệt hai người**. Nội dung đề xuất nằm ở [de-xuat/hoi-lai-khach-CLARIFY.md](de-xuat/hoi-lai-khach-CLARIFY.md). Khi chưa duyệt, `CLARIFY` được xử lý như chuyển nhân viên.
+  Câu hỏi lại **do code dựng từ dữ liệu đã duyệt** (`clarifyQuestion`, `src/core/router.ts`): câu hỏi lại người duyệt khai ở
+  "khác với" nếu có; không thì liệt kê từng trường hợp bằng câu khách hay hỏi của mục / tiêu đề đoạn. AI không viết câu này.
+  Code ghi `episodes.pending_clarify` (`T:<id>` / `K:<chunkId>`); lượt sau chỉ chọn trong các trường hợp đó; vẫn không rõ thì
+  chuyển nhân viên. Mỗi vụ việc chỉ hỏi lại một lần.
+- SKILL `select-answer` bản 2 (quy tắc R3a) và câu sửa trong "Hướng dẫn AI làm việc" phải qua **duyệt hai người**. Nội dung đề
+  xuất nằm ở [de-xuat/hoi-lai-khach-CLARIFY.md](de-xuat/hoi-lai-khach-CLARIFY.md). Khi chưa duyệt, AI không trả `CLARIFY`
+  nên bot vẫn chuyển nhân viên như luật hiện hành.
 
 ## 6. Chuyển từ hệ thống cũ
 

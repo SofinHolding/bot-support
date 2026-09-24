@@ -89,12 +89,45 @@ describe("mục hỏi đáp trong luồng chọn câu trả lời", () => {
     expect(d.kind).toBe("ESCALATE");
   });
 
-  it("cặp chưa khai báo khác nhau: CLARIFY bị từ chối → chuyển nhân viên", async () => {
+  it("các trường hợp chưa khai báo 'khác với': vẫn hỏi lại, câu hỏi DỰNG TỪ dữ liệu đã duyệt (câu khách hay hỏi của từng mục)", async () => {
     await setAsk(true);
-    select = (r) => (r.candidates.some((c) => c.ref === "T:sync-stuck") ? "CLARIFY:app-pin-reset,sync-stuck" : "ESCALATE");
-    const { d, pending } = await ask(7103, "my sync is stuck and I need to reset my pin");
+    select = (r) => (r.candidates.some((c) => c.ref === "T:sync-stuck") && r.candidates.some((c) => c.ref === "T:app-pin-reset") ? "CLARIFY:app-pin-reset,sync-stuck" : "ESCALATE");
+    const { d, reply, pending } = await ask(7103, "my sync is stuck and I need to reset my app pin");
+    expect(d.kind).toBe("CLARIFY");
+    expect(reply).toBe("To help you correctly, which of these is your case?\n1) how do I reset my app pin\n2) my sync is stuck");
+    expect(pending).toEqual({ items: ["T:app-pin-reset", "T:sync-stuck"] });
+  });
+
+  it("các trường hợp đang xung đột chưa giải quyết: không hỏi lại (không đưa dữ liệu mâu thuẫn cho khách chọn) → chuyển nhân viên", async () => {
+    await setAsk(true);
+    const before = w.live.conflicts;
+    w.live.conflicts = new Set(["template:app-pin-reset|template:sync-stuck"]);
+    select = () => "CLARIFY:app-pin-reset,sync-stuck";
+    const { d, pending } = await ask(7107, "my sync is stuck and I need to reset my app pin");
+    w.live.conflicts = before;
     expect(d.kind).toBe("ESCALATE");
     expect(pending).toBeNull();
+  });
+
+  it("hỏi lại giữa một câu trả lời và một đoạn tài liệu; khách chọn đoạn tài liệu → trích đúng đoạn đó", async () => {
+    await setAsk(true);
+    const kmd = `---\nslug: pin-guide\ntitle: PIN guide\nresponse_mode: GROUNDED_GENERATION\nlang: en\n---\n# PIN guide\n\n## App PIN security tips\n\nNever share your app PIN. Change the app PIN every few months and do not reuse it.\n`;
+    const k = await w.kbService.createDraft({ slug: "pin-guide", kind: "knowledge", md: kmd, author: admin });
+    await w.kbService.publish(k.version.id, admin);
+    let chunkRef = "";
+    select = (r) => {
+      const kr = r.candidates.find((c) => c.ref.startsWith("K:"));
+      chunkRef = kr?.ref ?? "";
+      return kr && r.candidates.some((c) => c.ref === "T:app-pin-reset") ? `CLARIFY:T:app-pin-reset,${kr.ref}` : "ESCALATE";
+    };
+    const first = await ask(7108, "app pin security tips and reset my app pin");
+    expect(first.d.kind).toBe("CLARIFY");
+    expect(first.reply).toBe("To help you correctly, which of these is your case?\n1) how do I reset my app pin\n2) App PIN security tips");
+    select = (r) => r.candidates.find((c) => c.ref === chunkRef)?.ref ?? "ESCALATE";
+    const second = await ask(7108, "the security tips");
+    expect(seen[0]!.candidates.map((c) => c.ref).sort()).toEqual(["T:app-pin-reset", chunkRef].sort());
+    expect(second.d.kind).toBe("GROUNDED");
+    expect(second.reply).toContain("Never share your app PIN");
   });
 
   it("hỏi lại 1 lần bằng câu đã duyệt; lượt sau chỉ chọn giữa hai mục và trả lời đúng mục khách nói", async () => {
@@ -103,7 +136,7 @@ describe("mục hỏi đáp trong luồng chọn câu trả lời", () => {
     const first = await ask(7104, "I need to reset my pin");
     expect(first.d.kind).toBe("CLARIFY");
     expect(first.reply).toBe(CLARIFY_Q);
-    expect(first.pending).toEqual({ items: ["app-pin-reset", "card-pin-reset"] });
+    expect(first.pending).toEqual({ items: ["T:app-pin-reset", "T:card-pin-reset"] });
 
     select = () => "T:card-pin-reset";
     const second = await ask(7104, "the card one");

@@ -16,6 +16,8 @@ export class LiveContent {
   evaluator!: Evaluator;
   predicates!: PredicateMap;
   urlHosts = new Set<string>();
+  /** Cặp nội dung đang xung đột CHƯA giải quyết (kb_conflicts mở, AI kết luận xung đột / mâu thuẫn trực tiếp): router không hỏi lại khách giữa chúng */
+  conflicts: ReadonlySet<string> = new Set();
   /** "Hướng dẫn AI làm việc" đang publish (undefined = chưa có): LlmClient đưa các mục liên quan vào prompt */
   guide: Guide | undefined;
   version = -1;
@@ -69,6 +71,7 @@ export class LiveContent {
     this.urlHosts = collectHosts(texts);
     // whitelist bổ sung (cấu hình được bảo vệ) là danh sách hostname trần, không phải URL
     for (const h of (prot.url_whitelist_extra as string[] | undefined) ?? []) this.urlHosts.add(h.toLowerCase());
+    this.conflicts = new Set((await this.kb.listAllConflicts()).filter((c) => c.verdict === "conflict" || c.verdict === "contradiction").map((c) => [`${c.a.kind}:${c.a.id}`, `${c.b.kind}:${c.b.id}`].sort().join("|")));
     const g = await this.kb.getPublished(GUIDE_SLUG);
     this.guide = g ? parseGuide(g.source_md).guide : undefined;
     this.version = v;

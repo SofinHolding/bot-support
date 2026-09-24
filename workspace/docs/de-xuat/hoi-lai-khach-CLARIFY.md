@@ -77,6 +77,5 @@ or `{"ref": "ESCALATE", "reason": "..."}` or `{"ref": "OFFTOPIC", "reason": "...
 or `{"ref": "CLARIFY:T:fp-8-forgot-id,T:forgot-login-id", "reason": "does not say which ID was forgotten"}` (only under R3a)
 ```
 
-**Lưu ý:** phần code dựng câu hỏi lại từ dữ liệu (bước 4) và cho phép hỏi lại giữa câu trả lời mẫu với đoạn tài liệu
-sẽ được làm cùng đợt thống nhất Kho tri thức. Không gửi duyệt bản này trước khi phần code đó xong, vì code hiện tại mới
-nhận `CLARIFY` cho hai mục đã khai báo trước.
+**Phần code đã sẵn sàng:** câu hỏi lại dựng từ dữ liệu (`clarifyQuestion`), hỏi lại giữa câu trả lời và đoạn tài liệu, chặn
+khi các trường hợp đang xung đột chưa giải quyết. Có thể gửi duyệt bản này.

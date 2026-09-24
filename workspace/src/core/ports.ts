@@ -236,4 +236,6 @@ export interface KnowledgeHit {
 export interface KnowledgePort {
   /** queryLang: ngôn ngữ của `query` (nếu biết). Khác ngôn ngữ của đoạn thì từ khoá không phải bằng chứng, chỉ tính điểm vector. */
   search(query: string, k: number, queryLang?: string): Promise<KnowledgeHit[]>;
+  /** Các đoạn đang publish theo id (dùng khi khách trả lời câu hỏi lại). Đoạn không còn thì bỏ qua. */
+  byIds?(ids: string[]): Promise<KnowledgeHit[]>;
 }
