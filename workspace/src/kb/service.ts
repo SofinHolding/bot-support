@@ -7,7 +7,7 @@ import { activeEmbedder, cosine, embedTagged } from "../core/embedding";
 import { checkOutput, collectHosts, urlHosts } from "../core/gate";
 import { buildIndex } from "../core/bundle";
 import { GUIDE_SLUG, guidePolicyProblems, parseGuide, type Guide } from "../core/guide";
-import { parseKnowledgeDoc, type KnowledgeChunk } from "../core/knowledge";
+import { chunkEmbedText, parseKnowledgeDoc, sha1, type KnowledgeChunk } from "../core/knowledge";
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
 import { parseTemplateFile, validateBundle } from "../core/templates";
@@ -652,14 +652,16 @@ export class KbService {
     if (kind === "knowledge") {
       // Vector luôn đi kèm model THẬT đã tạo ra nó (embedTagged): API lỗi giữa chừng -> phần còn lại do model cục bộ tạo và được gắn nhãn đúng
       let model = (await activeEmbedder(this.d.embedder)).version;
-      const cache = await this.d.kb.getEmbeddings(parsed.chunks.map((c) => c.hash), model);
-      const missing = parsed.chunks.filter((c) => !cache.has(c.hash));
+      // khoá cache = hash của câu dùng để embed (không phải của câu gửi khách): đổi cách embed thì tự tính lại vector
+      const key = (c: KnowledgeChunk) => sha1(c.embedText);
+      const cache = await this.d.kb.getEmbeddings(parsed.chunks.map(key), model);
+      const missing = parsed.chunks.filter((c) => !cache.has(key(c)));
       const tagged = new Map<string, string>(); // hash -> model của vector trong cache
-      for (const c of parsed.chunks) if (cache.has(c.hash)) tagged.set(c.hash, model);
+      for (const c of parsed.chunks) if (cache.has(key(c))) tagged.set(key(c), model);
       if (missing.length) {
         try {
-          const t = await embedTagged(this.d.embedder, missing.map((c) => c.text));
-          const entries = missing.map((c, i) => ({ hash: c.hash, vector: t.vectors[i]! }));
+          const t = await embedTagged(this.d.embedder, missing.map((c) => c.embedText));
+          const entries = missing.map((c, i) => ({ hash: key(c), vector: t.vectors[i]! }));
           await this.d.kb.putEmbeddings(entries, t.model);
           for (const e of entries) {
             cache.set(e.hash, e.vector);
@@ -670,7 +672,7 @@ export class KbService {
           /* không có embedding: chunk vẫn tìm được bằng từ khoá; worker bổ sung vector sau */
         }
       }
-      chunkRows = parsed.chunks.map((c) => ({ ...c, embedding: cache.get(c.hash), embeddingModel: tagged.get(c.hash) }));
+      chunkRows = parsed.chunks.map((c) => ({ ...c, embedding: cache.get(key(c)), embeddingModel: tagged.get(key(c)) }));
     } else {
       // kiểm tra chéo với phần còn lại của kho trước khi kích hoạt
       const live = (await this.d.kb.loadPublishedTemplateRows()).filter((r) => r.docSlug !== v.slug).map((r) => r.template);
@@ -729,7 +731,7 @@ export class KbService {
       if (!stale.length) break;
       let t: { vectors: number[][]; model: string };
       try {
-        t = await embedTagged(this.d.embedder, stale.map((c) => c.text));
+        t = await embedTagged(this.d.embedder, stale.map((c) => chunkEmbedText(c.heading, c.text)));
       } catch {
         remaining += stale.length; // cả model đang chọn cũng lỗi (vd dịch vụ cục bộ chưa lên): lần chạy sau làm tiếp
         break;
@@ -762,7 +764,7 @@ export class KbService {
         let vecs: number[][] = [];
         let model = "";
         try {
-          const t = await embedTagged(this.d.embedder, p.chunks.map((c) => c.text));
+          const t = await embedTagged(this.d.embedder, p.chunks.map((c) => c.embedText));
           vecs = t.vectors;
           model = t.model;
         } catch {

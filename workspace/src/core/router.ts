@@ -40,7 +40,7 @@ export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> =
   tier3Mode: "extractive",
   tier3MinScore: 0.25,
   tier3Verify: true,
-  knowledgeLang: "vi",
+  knowledgeLang: "en",
   fastVerify: true,
   tooShortMaxChars: 2,
   askWhenUnclear: false,

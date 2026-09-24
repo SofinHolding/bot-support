@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   "router.tier3_mode": "generative",
   "router.tier3_min_score": 0.25,
   "router.tier3_verify": true,
-  "router.knowledge_lang": "vi",
+  "router.knowledge_lang": "en", // 3 tài liệu tham khảo viết tiếng Anh (audit R5)
   "router.too_short_max_chars": 2,
 
   "episode.t_gap_minutes": 60,

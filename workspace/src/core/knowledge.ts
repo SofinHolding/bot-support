@@ -23,9 +23,22 @@ export interface KnowledgeChunk {
   text: string;
   url?: string;
   searchText: string;
+  /** sha1 của `text` (câu gửi khách): khoá của bản dịch đã lưu */
   hash: string;
+  /** Câu dùng để tính vector: như `text` nhưng mang đủ đường dẫn tiêu đề "A › B" (đoạn của mục con không mất ngữ cảnh mục cha) */
+  embedText: string;
   /** Ngôn ngữ THẬT của đoạn (vi | en | ...): quyết định có phải dịch trước khi gửi khách hay không */
   lang: string;
+}
+
+/**
+ * Câu dùng để tính vector của một đoạn. `text` (câu gửi khách) chỉ mở đầu bằng tiêu đề lá; đoạn thuộc mục con ("A › B") được
+ * embed kèm đủ đường dẫn để câu hỏi về "A" vẫn tìm tới đoạn "B". Đoạn của mục cấp cao nhất: đúng bằng `text`.
+ */
+export function chunkEmbedText(heading: string, text: string): string {
+  if (!heading.includes(" › ")) return text;
+  const i = text.indexOf("\n\n");
+  return `${heading}\n\n${i >= 0 ? text.slice(i + 2) : text}`;
 }
 
 export interface KnowledgeDoc {
@@ -137,6 +150,7 @@ export function parseKnowledgeDoc(md: string, fallbackSlug?: string): { doc?: Kn
         url: link,
         searchText: normalize(`${s.heading} ${part}`),
         hash: sha1(full),
+        embedText: chunkEmbedText(s.heading, full),
         lang: sourceLangOf(full, declared),
       });
     }

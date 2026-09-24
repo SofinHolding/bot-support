@@ -253,9 +253,9 @@ export function kbRepo(db: Db) {
       return [...byId.values()];
     },
     /** Chunk đang publish mà chưa có vector của `embeddingModel` (model mới cấu hình, model dự phòng, hoặc lúc publish dịch vụ đang lỗi). */
-    async listStaleChunks(embeddingModel: string, limit: number): Promise<{ id: string; text: string }[]> {
-      const r = await db.query<{ id: string; text: string }>(
-        `SELECT c.id::text AS id, c.text FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
+    async listStaleChunks(embeddingModel: string, limit: number): Promise<{ id: string; heading: string; text: string }[]> {
+      const r = await db.query<{ id: string; heading: string; text: string }>(
+        `SELECT c.id::text AS id, c.heading, c.text FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
          WHERE v.status = 'published' AND NOT EXISTS (SELECT 1 FROM kb_chunk_embeddings e WHERE e.chunk_id = c.id AND e.model = $1) ORDER BY c.id LIMIT $2`,
         [embeddingModel, limit],
       );

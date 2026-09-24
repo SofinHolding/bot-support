@@ -2563,7 +2563,7 @@ Nội dung mục 2.
     "router.tier3_mode": "Câu hỏi về dự án (tài liệu tri thức): generative (mặc định) = AI viết câu trả lời bằng ngôn ngữ của khách từ đoạn đã chọn, có trích dẫn; code kiểm số liệu, link, ngôn ngữ, không dự đoán giá; không đạt thì gửi nguyên văn đoạn. extractive = luôn gửi nguyên văn đoạn tài liệu (dịch trung thành nếu cần).",
     "router.tier3_min_score": "Điểm tối thiểu của đoạn tri thức để được dùng.",
     "router.tier3_verify": "Bật (khuyến nghị): LLM phải xác nhận đoạn tri thức trả lời đúng câu hỏi; khách vẫn nhận nguyên văn đoạn đã duyệt. Không xác nhận được thì chuyển người thật. Tắt: gửi đoạn có điểm cao nhất mà không kiểm tra.",
-    "router.knowledge_lang": "Ngôn ngữ chính của tài liệu tri thức (thường là vi). Câu hỏi của khách bằng ngôn ngữ khác được dịch sang ngôn ngữ này để tìm kiếm; câu trả lời luôn được dịch lại đúng ngôn ngữ khách đã hỏi.",
+    "router.knowledge_lang": "Ngôn ngữ chính của tài liệu tri thức (tài liệu hiện có viết tiếng Anh: en). Câu hỏi của khách bằng ngôn ngữ khác được dịch sang ngôn ngữ này để tìm kiếm; câu trả lời luôn được dịch lại đúng ngôn ngữ khách đã hỏi.",
     "router.too_short_max_chars": "Tin ngắn hơn hoặc bằng số ký tự này bị coi là lời chào/quá ngắn.",
     "episode.t_gap_minutes": "Im lặng quá số phút này thì hội thoại chuyển sang tạm lắng.",
     "episode.t_abandon_days": "Tạm lắng quá số ngày này thì tự đóng.",
