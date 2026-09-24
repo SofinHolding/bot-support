@@ -1558,7 +1558,10 @@
     if (!items.length) return null;
     const otherSide = (p) => (p.a.doc === slug ? p.b : p.a);
     const ownSide = (p) => (p.a.doc === slug ? p.a : p.b);
-    const refLine = (r) => h("div", null, badge(r.kind === "template" ? "template" : "đoạn tri thức", r.kind === "template" ? "info" : "muted"), " ", r.doc === slug ? h("code", null, r.id) : link(r.id, `/kb/doc/${enc(r.doc)}`, "mono"), r.doc !== slug ? h("span", { class: "muted small" }, " (", r.doc, ")") : null, h("div", { class: "small muted" }, r.title));
+    // Gợi ý AI (xem content/skills/review-overlap/SKILL.md) gọi tắt hai bên là "A"/"B" theo đúng thứ tự gửi cho AI
+    // (p.a / p.b) — GIỮ đúng thứ tự đó khi gắn nhãn, dù cột hiển thị có thể đảo (ownSide luôn ở cột trái) để dễ đọc.
+    const abLabel = (p, r) => (r === p.a ? "A" : "B");
+    const refLine = (r, label) => h("div", null, label ? badge(label, "muted") : null, " ", badge(r.kind === "template" ? "template" : "đoạn tri thức", r.kind === "template" ? "info" : "muted"), " ", r.doc === slug ? h("code", null, r.id) : link(r.id, `/kb/doc/${enc(r.doc)}`, "mono"), r.doc !== slug ? h("span", { class: "muted small" }, " (", r.doc, ")") : null, h("div", { class: "small muted" }, r.title));
     return card(
       "⚠ Xung đột nội dung",
       h("p", { class: "muted" }, `Tài liệu này đã được publish dù bước kiểm tra cảnh báo chồng lấn với nội dung khác — bot có thể chọn nhầm bên kia khi khách hỏi. ${fmtNum(items.length)} cặp đang mở.`),
@@ -1589,8 +1592,8 @@
           return h(
             "div",
             { class: "row-card" },
-            h("div", { class: "row-top" }, badge(`điểm ${p.score.toFixed(2)}`, "muted")),
-            h("div", { class: "form-row" }, h("div", { class: "field" }, refLine(ownSide(p))), h("div", { class: "field" }, refLine(otherSide(p)))),
+            h("div", { class: "row-top" }, badge(/^Khách hỏi/.test(p.signals[0] || "") ? "bot trả lời nhầm" : p.verdict === "conflict" ? "nội dung mâu thuẫn" : p.verdict === "duplicate" ? "nội dung trùng" : "cần xem", "err")),
+            h("div", { class: "form-row" }, h("div", { class: "field" }, refLine(ownSide(p), abLabel(p, ownSide(p)))), h("div", { class: "field" }, refLine(otherSide(p), abLabel(p, otherSide(p))))),
             h("div", { class: "small" }, h("ul", null, p.signals.slice(0, 2).map((x) => h("li", null, x)))),
             ai ? h("div", { class: "hint" }, badge(ai[0], ai[1]), " ", p.reason, p.suggestion ? h("div", null, "→ ", p.suggestion) : null) : h("div", { class: "hint" }, "Chưa có nhận xét của AI (chưa cấu hình LLM lúc publish, hoặc lời gọi lỗi)."),
             applyBtn ? h("div", { class: "actions" }, applyBtn) : null,
@@ -1793,6 +1796,17 @@ Nội dung mục 2.
     return idx < 0 ? -1 : text.slice(0, idx).split("\n").length - 1;
   };
   const intakePairKey = (box) => `${box.a.kind}:${box.a.id}|${box.b.kind}:${box.b.id}`;
+  /** Nhãn vấn đề bằng lời thường: bot trả lời nhầm (đã hỏi thử) / nội dung mâu thuẫn / trùng (AI đọc) — thay cho "điểm 0.73". */
+  const intakeProblemLabel = (box) =>
+    (box.explain || []).length
+      ? ["bot sẽ trả lời nhầm", "err"]
+      : box.updateHint
+        ? ["trùng gần nguyên văn", "err"]
+        : box.verdict === "conflict"
+          ? ["nội dung mâu thuẫn", "err"]
+          : box.verdict === "duplicate"
+            ? ["nội dung trùng", "warn"]
+            : ["cần xem", "warn"];
 
   /** Nội dung bên trong popup phóng to của một khung xung đột: mô tả AI + (gỡ máy móc, hoặc sửa tự do + Kiểm tra lại + Save). */
   function intakeBoxDetail(box, resolvedDrafts, onChanged) {
@@ -1801,11 +1815,15 @@ Nội dung mục 2.
     const head = h(
       "div",
       null,
-      h("div", { class: "row-top" }, badge(box.b.kind === "template" ? "template" : "đoạn tri thức", "muted"), h("code", null, box.b.id || box.b.title), h("span", { class: "muted small" }, " trong tài liệu ", box.b.doc), badge(`điểm ${box.score.toFixed(2)}`, "muted"), v ? badge(v[0], v[1]) : null),
-      h("div", { class: "small muted" }, box.b.title),
+      h("div", { class: "row-top" }, badge(intakeProblemLabel(box)[0], intakeProblemLabel(box)[1]), h("b", null, box.b.title), h("span", { class: "muted small" }, " (", box.b.kind === "template" ? `mã ${box.b.id}, ` : "", "tài liệu ", box.b.doc, ")"), v && !(box.explain || []).length ? badge(v[0], v[1]) : null),
+      (box.explain || []).length ? h("div", null, h("b", null, "Đã hỏi thử bot: "), h("ul", null, box.explain.map((x) => h("li", null, x)))) : null,
+      box.updateHint ? h("div", { class: "small" }, box.updateHint) : null,
     );
+    // Gợi ý AI có thể gọi tắt hai bên bằng "A"/"B" (xem content/skills/review-overlap/SKILL.md) — luôn giải thích rõ
+    // A/B là cái nào ngay phía trên, để không ai phải đoán "A" hay "B" đang nói tới nội dung nào.
+    const legend = box.reason && /\bA\b|\bB\b/.test(box.reason + " " + (box.suggestion || "")) ? h("div", { class: "small muted" }, "AI gọi tắt: A = nội dung bạn vừa đưa vào · B = ", h("code", null, box.b.id || box.b.title), " (đang dùng)") : null;
     const aiNote = box.reason
-      ? h("div", { class: "hint" }, h("b", null, "Gợi ý AI: "), box.reason, box.suggestion ? h("div", null, "→ ", box.suggestion) : null)
+      ? h("div", { class: "hint" }, legend, h("div", null, h("b", null, "Gợi ý AI: "), box.reason, box.suggestion ? h("div", null, "→ ", box.suggestion) : null))
       : h("p", { class: "muted" }, "Chưa có nhận xét của AI cho cặp này.");
     let body;
     if (already) {
@@ -1897,22 +1915,22 @@ Nội dung mục 2.
     return h(
       "div",
       { class: "intake-box", on: { click: () => openIntakeModal(box, resolvedDrafts, onChanged) } },
-      h("div", { class: "row-top" }, badge(box.b.kind === "template" ? "template" : "đoạn tri thức", "muted"), badge(`điểm ${box.score.toFixed(2)}`, "muted"), already ? badge("đã sửa", "ok") : null),
-      h("div", null, h("code", null, box.b.id || box.b.title)),
-      h("div", { class: "small muted" }, box.b.title, " · ", box.b.doc),
+      h("div", { class: "row-top" }, badge(intakeProblemLabel(box)[0], intakeProblemLabel(box)[1]), already ? badge("đã sửa", "ok") : null),
+      h("div", null, h("b", null, box.b.title), " ", h("span", { class: "small muted" }, "(", box.b.kind === "template" ? `mã ${box.b.id}` : `tài liệu ${box.b.doc}`, ")")),
+      (box.explain || []).length ? h("div", { class: "small" }, box.explain[0]) : box.reason ? h("div", { class: "small" }, box.reason) : null,
     );
   }
 
-  /** Kéo-thả (hoặc bấm để chọn) tệp .txt/.pdf/.doc/.docx/.xlsx — trích chữ qua server rồi đưa vào `targetTa`, không tự gửi đi. */
+  /** Kéo-thả (hoặc bấm để chọn) tệp .txt/.md/.pdf/.doc/.docx/.xlsx — trích chữ qua server rồi đưa vào `targetTa`, không tự gửi đi. */
   function intakeDropzone(targetTa) {
-    const ACCEPT = ".txt,.pdf,.doc,.docx,.xlsx,text/plain,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const ACCEPT = ".txt,.md,.markdown,.pdf,.doc,.docx,.xlsx,text/plain,text/markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const picker = h("input", { type: "file", accept: ACCEPT, style: "display:none" });
-    const label = h("div", { class: "intake-dropzone-label" }, h("b", null, "Kéo thả tệp vào đây"), h("div", { class: "small muted" }, "hoặc bấm để chọn — .txt, .pdf, .doc, .docx, .xlsx"));
+    const label = h("div", { class: "intake-dropzone-label" }, h("b", null, "Kéo thả tệp vào đây"), h("div", { class: "small muted" }, "hoặc bấm để chọn — .txt, .md, .pdf, .doc, .docx, .xlsx"));
     const zone = h("div", { class: "intake-dropzone", tabindex: "0", role: "button" }, label, picker);
     const setBusy = (busy, msg) => {
       zone.classList.toggle("busy", busy);
       clear(label);
-      label.append(busy ? h("div", { class: "small" }, msg || "Đang đọc tệp...") : h("b", null, "Kéo thả tệp vào đây"), busy ? null : h("div", { class: "small muted" }, "hoặc bấm để chọn — .txt, .pdf, .doc, .docx, .xlsx"));
+      label.append(busy ? h("div", { class: "small" }, msg || "Đang đọc tệp...") : h("b", null, "Kéo thả tệp vào đây"), busy ? null : h("div", { class: "small muted" }, "hoặc bấm để chọn — .txt, .md, .pdf, .doc, .docx, .xlsx"));
     };
     const handleFile = async (file) => {
       if (!file) return;
@@ -2304,21 +2322,38 @@ Nội dung mục 2.
       for (const x of res.results) reviews.set(`${x.a.kind}:${x.a.id}|${x.b.kind}:${x.b.id}`, x);
       draw();
     };
+    let showQuiet = false;
+    let fixHint = "";
     const draw = () => {
       clear(holder);
-      if (!pairs.length) {
-        holder.append(h("p", { class: "muted" }, "Chưa quét, hoặc không có cặp nào vượt ngưỡng."));
+      if (!scanned) {
+        holder.append(h("p", { class: "muted" }, "Chưa kiểm tra."));
         return;
       }
-      const all = btn(`Đánh giá bằng AI ${Math.min(pairs.length, 20)} cặp đầu`, { kind: "primary", small: true, on: { click: (ev) => run(ev.currentTarget, () => reviewPairs(pairs.slice(0, 20)), "Đã đánh giá") } });
+      const real = pairs.filter((p) => p.confirmed);
+      const quiet = pairs.filter((p) => !p.confirmed);
       holder.append(
-        h("div", { class: "actions" }, h("span", { class: "hint" }, `${fmtNum(pairs.length)} cặp${pairs.length >= 500 ? " (đã cắt ở 500 — nâng ngưỡng để xem cặp điểm thấp hơn)" : ""}. AI chỉ phán xét cặp bạn chọn — mỗi lời gọi đúng 2 mục, không đọc cả kho.`), all),
+        real.length
+          ? notice("err", `Bot đang trả lời nhầm ở ${fmtNum(real.length)} chỗ — cần sửa. ${fixHint}`)
+          : notice("ok", "Không có chỗ nào bot trả lời nhầm. Mọi câu ví dụ / từ khoá của từng mục đều được bot trả lời bằng đúng mục đó."),
+      );
+      if (quiet.length)
+        holder.append(
+          h(
+            "div",
+            { class: "actions" },
+            h("span", { class: "hint" }, `${fmtNum(quiet.length)} cặp chỉ giống chữ (cùng chủ đề) — đã hỏi thử, bot vẫn trả lời đúng, không cần sửa. Muốn AI đọc xem nội dung có nói mâu thuẫn nhau không thì bấm "Xem" rồi bấm "AI" ở cặp cần xem.`),
+            btn(showQuiet ? "Ẩn" : "Xem", { small: true, on: { click: () => ((showQuiet = !showQuiet), draw()) } }),
+          ),
+        );
+      const list = showQuiet ? pairs : real;
+      if (!list.length) return;
+      holder.append(
         table(
           [
-            { label: "A", cell: (p) => refCell(p.a) },
-            { label: "B", cell: (p) => refCell(p.b) },
-            { label: "Điểm", cell: (p) => p.score.toFixed(2), cls: "num" },
-            { label: "Tín hiệu", cell: (p) => h("div", { class: "small" }, h("ul", null, p.signals.slice(0, 3).map((x) => h("li", null, x))), p.updateHint ? h("div", { class: "hint" }, p.updateHint) : null) },
+            { label: "Mục", cell: (p) => refCell(p.a) },
+            { label: "Mục", cell: (p) => refCell(p.b) },
+            { label: "Vấn đề", cell: (p) => h("div", { class: "small" }, (p.explain || []).length ? h("ul", null, p.explain.map((x) => h("li", null, x))) : p.updateHint ? h("div", null, p.updateHint) : h("span", { class: "muted" }, "chỉ giống chữ, bot vẫn trả lời đúng")) },
             {
               label: "AI nhận xét",
               cell: (p) => {
@@ -2329,30 +2364,34 @@ Nội dung mục 2.
                 return h("div", null, badge(v[0], v[1]), x.review.reason ? h("div", { class: "hint" }, x.review.reason) : null, x.review.suggestion ? h("div", { class: "small" }, "→ ", x.review.suggestion) : null);
               },
             },
-            { label: "", cell: (p) => h("div", { class: "actions" }, btn("AI", { small: true, title: "Đánh giá cặp này bằng AI", on: { click: (ev) => run(ev.currentTarget, () => reviewPairs([p])) } }), fix(p.a), fix(p.b)) },
+            { label: "", cell: (p) => h("div", { class: "actions" }, btn("AI", { small: true, title: "Nhờ AI đọc xem hai mục có nói mâu thuẫn / trùng nhau không", on: { click: (ev) => run(ev.currentTarget, () => reviewPairs([p])) } }), fix(p.a), fix(p.b)) },
           ],
-          pairs,
+          list,
         ),
       );
     };
-    const scan = btn("Quét chồng lấn toàn kho", {
+    let scanned = false;
+    const scan = btn("Kiểm tra toàn bộ nội dung", {
       kind: "primary",
       on: {
         click: (ev) =>
           run(ev.currentTarget, async () => {
             const r = await get("/api/kb/overlap", { min: Number(min.value) || 0.55, max: 500 });
             pairs = r.pairs;
+            fixHint = r.fixHint || "";
+            scanned = true;
+            showQuiet = false;
             reviews.clear();
             draw();
-            toast(`${r.pairs.length} cặp vượt ngưỡng ${r.min} (model ${r.model})`, "ok");
           }),
       },
     });
     draw();
     return card(
-      "Chồng lấn nội dung (code cờ → AI phán xét → bạn quyết)",
-      h("p", { class: "muted" }, "Dùng chính bộ tìm kiếm lúc chạy thật (vector câu mẫu + vector đoạn tri thức, cùng model đang chọn) và tín hiệu từ khoá-nằm-trong-câu để tìm các cặp nội dung bot có thể lẫn khi khách hỏi. Giống về chữ chưa chắc cùng một việc — AI phân loại trùng / bao hàm / mâu thuẫn / khác nhau, không tự sửa gì. Lối tắt chuyển nhân viên (esc-*) không còn được gợi ý bằng độ giống mờ khi khách hỏi, nhưng vẫn được cờ ở đây để bạn thu hẹp từ khoá."),
-      h("div", { class: "form-row" }, h("div", { class: "field narrow" }, h("span", { class: "lbl" }, "Ngưỡng điểm"), min, h("div", { class: "hint" }, "0.55 là cấu hình đề xuất; điểm xuyên ngôn ngữ thường thấp hơn.")), h("div", { class: "actions" }, scan)),
+      "Kiểm tra bot có trả lời nhầm không",
+      h("p", { class: "muted" }, "Hệ thống tự hỏi thử bot bằng từng câu ví dụ, từng từ khoá của mỗi mục (và tiêu đề các đoạn tài liệu), rồi báo những câu bị bot trả lời bằng MỤC KHÁC. Các mục chỉ giống chữ nhưng bot vẫn trả lời đúng thì không cần sửa. Không sửa gì tự động."),
+      h("div", { class: "form-row" }, h("div", { class: "actions" }, scan)),
+      h("details", null, h("summary", { class: "small muted" }, "Nâng cao"), h("div", { class: "field narrow" }, h("span", { class: "lbl" }, "Độ giống tối thiểu để đưa vào danh sách hỏi thử"), min, h("div", { class: "hint" }, "Mặc định 0.55. Chỉ ảnh hưởng số cặp \"giống chữ\" được liệt kê; chỗ bot trả lời nhầm luôn được tìm trên toàn bộ các mục."))),
       holder,
     );
   }
@@ -2380,6 +2419,23 @@ Nội dung mục 2.
               { label: "Ticket", cell: (t) => (t.ticket ? h("span", { class: "small mono" }, short(jsonText(t.ticket, 0), 60)) : "-") },
               { label: "Câu trả lời (EN)", cell: (t) => h("span", { class: "small pre-wrap" }, t.answer_en) },
               { label: "Khớp bằng", cell: (t) => h("div", { class: "small" }, (t.keyword_list || []).length ? h("div", null, h("span", { class: "muted" }, "từ khoá: "), t.keyword_list.join(", "), t.keywords > t.keyword_list.length ? "…" : "") : null, (t.examples || []).length ? h("div", null, h("span", { class: "muted" }, "câu mẫu: "), t.examples.join(" · ")) : h("div", { class: "muted" }, "chưa có câu mẫu")) },
+              {
+                // Đọc ngay tại đây thay vì phải nhớ ID rồi mở tab "Câu hỏi mẫu" / chạy quét chồng lấn riêng.
+                label: "Sức khoẻ",
+                cell: (t) =>
+                  h(
+                    "div",
+                    { class: "small" },
+                    t.evalCount > 0 ? badge(`✔ ${t.evalCount} câu kiểm tra`, "ok") : badge("⚠ chưa có câu kiểm tra", "warn"),
+                    (t.conflicts || []).length
+                      ? h(
+                          "div",
+                          { title: t.conflicts.map((c) => `${c.withTitle} — độ giống ${c.score.toFixed(2)}`).join("\n") },
+                          badge(`⚠ dễ nhầm với ${t.conflicts.length === 1 ? t.conflicts[0].withTitle : `${t.conflicts.length} mục khác`}`, "warn"),
+                        )
+                      : null,
+                  ),
+              },
               { label: "", cell: (t) => (can("admin") && r.docs[t.id] ? btn("Sửa", { small: true, on: { click: () => editTemplate(r.docs[t.id], t.id) } }) : null) },
             ],
             rows.slice(0, 300),

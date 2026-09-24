@@ -39,6 +39,22 @@ export interface ConflictInput {
   suggestion?: string | null;
 }
 
+function mapConflictRow(x: Record<string, unknown>): ConflictRow {
+  return {
+    id: num(x.id),
+    pairKey: String(x.pair_key),
+    a: { kind: x.a_kind as "template" | "chunk", id: String(x.a_id), doc: String(x.a_doc), title: String(x.a_title) },
+    b: { kind: x.b_kind as "template" | "chunk", id: String(x.b_id), doc: String(x.b_doc), title: String(x.b_title) },
+    score: Number(x.score),
+    signals: (x.signals as string[] | null) ?? [],
+    narrow: (x.narrow as { templateId: string; phrase: string } | null) ?? null,
+    verdict: (x.verdict as string | null) ?? null,
+    reason: (x.reason as string | null) ?? null,
+    suggestion: (x.suggestion as string | null) ?? null,
+    createdAt: new Date(String(x.created_at)),
+  };
+}
+
 export interface VersionRow {
   id: number;
   slug: string;
@@ -258,12 +274,12 @@ export function kbRepo(db: Db) {
     },
 
     /** Mọi đoạn tri thức đang publish (cho máy quét chồng lấn kb/overlap.ts). */
-    async listPublishedChunks(): Promise<{ chunkId: string; docSlug: string; heading: string; text: string; searchText: string; lang?: string }[]> {
+    async listPublishedChunks(): Promise<{ chunkId: string; docSlug: string; heading: string; text: string; searchText: string; lang?: string; url?: string }[]> {
       const r = await db.query(
-        `SELECT c.id::text AS id, c.doc_slug, c.heading, c.text, c.search_text, c.metadata->>'lang' AS lang
+        `SELECT c.id::text AS id, c.doc_slug, c.heading, c.text, c.search_text, c.url, c.metadata->>'lang' AS lang
          FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id WHERE v.status = 'published' ORDER BY c.doc_slug, c.chunk_index`,
       );
-      return r.rows.map((x) => ({ chunkId: String(x.id), docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), searchText: String(x.search_text), lang: (x.lang as string | null) ?? undefined }));
+      return r.rows.map((x) => ({ chunkId: String(x.id), docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), searchText: String(x.search_text), lang: (x.lang as string | null) ?? undefined, url: (x.url as string | null) ?? undefined }));
     },
 
     /** Vector đã lưu của mọi đoạn đang publish theo `model` (máy quét chồng lấn dùng lại, không gọi API embed). */
@@ -333,22 +349,16 @@ export function kbRepo(db: Db) {
       return out;
     },
 
+    /** Toàn bộ xung đột đang mở trong cả kho — dùng để hiện cảnh báo "dễ nhầm với" ngay trên danh sách Template, không cần mở từng tài liệu. */
+    async listAllConflicts(): Promise<ConflictRow[]> {
+      const r = await db.query(`SELECT * FROM kb_conflicts WHERE status = 'open' ORDER BY score DESC`);
+      return r.rows.map(mapConflictRow);
+    },
+
     /** Toàn bộ xung đột đang mở chạm tới một tài liệu (cả khi tài liệu đó là bên A hay bên B), điểm cao nhất trước. */
     async listConflicts(doc: string): Promise<ConflictRow[]> {
       const r = await db.query(`SELECT * FROM kb_conflicts WHERE status = 'open' AND (a_doc = $1 OR b_doc = $1) ORDER BY score DESC`, [doc]);
-      return r.rows.map((x) => ({
-        id: num(x.id),
-        pairKey: String(x.pair_key),
-        a: { kind: x.a_kind as "template" | "chunk", id: String(x.a_id), doc: String(x.a_doc), title: String(x.a_title) },
-        b: { kind: x.b_kind as "template" | "chunk", id: String(x.b_id), doc: String(x.b_doc), title: String(x.b_title) },
-        score: Number(x.score),
-        signals: (x.signals as string[] | null) ?? [],
-        narrow: (x.narrow as { templateId: string; phrase: string } | null) ?? null,
-        verdict: (x.verdict as string | null) ?? null,
-        reason: (x.reason as string | null) ?? null,
-        suggestion: (x.suggestion as string | null) ?? null,
-        createdAt: new Date(String(x.created_at)),
-      }));
+      return r.rows.map(mapConflictRow);
     },
 
     // ---- Cache embedding ----

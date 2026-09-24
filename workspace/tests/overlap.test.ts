@@ -63,7 +63,8 @@ describe("2. kiểm tra chồng lấn lúc import + 4. quét toàn kho", () => {
     const text = step3.details.join("\n");
     expect(text).toContain("esc-login-fail");
     expect(text).toMatch(/login fail/);
-    expect(text).toContain("Quét chồng lấn"); // dòng hướng dẫn xử lý
+    expect(text).toMatch(/Khách hỏi "Bước 1 — Lỗi Invalid ID hoặc login fail".*bot sẽ trả lời bằng mục/); // câu dễ hiểu: câu nào, của đâu, bị trả lời bằng mục nào
+    expect(text).toContain("Cách sửa"); // dòng hướng dẫn xử lý
     expect(report.ok).toBe(true); // cảnh báo, không chặn: admin quyết
   });
 

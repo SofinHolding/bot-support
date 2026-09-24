@@ -14,6 +14,7 @@ import type { TemplateIndex } from "../core/template-index";
 import { containsPhrase, normalize, wordCount } from "../core/text";
 import type { Template } from "../domain/types";
 import type { KbRepo } from "../db/repo-kb";
+import type { Confusion } from "./routing-check";
 
 export interface OverlapRef {
   kind: "template" | "chunk";
@@ -40,6 +41,8 @@ export interface OverlapPair {
   updateHint?: string;
   /** Chỉ có khi tín hiệu mạnh nhất trỏ đúng một cụm của MỘT template — cho phép nút "Gỡ máy móc" thay vì chỉ đọc gợi ý của AI. */
   narrow?: NarrowHint;
+  /** Kết quả HỎI THỬ bot (kb/routing-check.ts): những câu của bên này bị trả lời bằng bên kia. Rỗng = chỉ giống chữ, bot vẫn trả lời đúng. */
+  confusions?: Confusion[];
 }
 
 /** Một mục cần dò: các câu để embed (câu mẫu/từ khoá của template, tiêu đề + đầu đoạn của chunk) và từ khoá để so chuỗi. */

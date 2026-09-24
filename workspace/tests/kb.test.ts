@@ -154,6 +154,67 @@ describe("Draft -> kiểm tra -> Publish", () => {
   });
 });
 
+describe("tự động đăng ký câu kiểm tra khi publish (KbService.autoRegisterEvalCases)", () => {
+  it("template mới có examples, chưa từng có câu kiểm tra -> tự thêm đúng 1 câu, nguồn 'auto'", async () => {
+    const md = `---
+id: test-auto-eval
+group: Test
+response_mode: EXACT_TEMPLATE
+priority: 300
+match:
+  keywords:
+    - auto eval keyword
+  examples:
+    - How do I trigger the auto eval case for this new template?
+    - auto eval keyword please
+sets_context:
+  issue: test issue
+  status: pending
+---
+<!-- answer:en -->
+Auto eval answer.
+`;
+    const { version } = await w.kbService.createDraft({ slug: "test-auto-eval-doc", kind: "templates", md, author: admin });
+    expect(await w.kbService.publish(version.id, admin)).toBe("published");
+
+    const cases = (await w.kb.listEvalCases()).filter((c) => c.expected_template_id === "test-auto-eval");
+    expect(cases).toHaveLength(1);
+    expect(cases[0]!.question).toBe("How do I trigger the auto eval case for this new template?");
+    expect(cases[0]!.source).toBe("auto");
+  });
+
+  it("template đã có câu kiểm tra (thêm tay) -> publish lại KHÔNG thêm câu tự động nữa", async () => {
+    await w.kb.addEvalCase({ question: "manual question for this template", expected: "test-auto-eval-covered", source: "admin" });
+    const md1 = `---
+id: test-auto-eval-covered
+group: Test
+response_mode: EXACT_TEMPLATE
+priority: 300
+match:
+  keywords:
+    - covered keyword
+  examples:
+    - Some example phrase for the covered template
+sets_context:
+  issue: test issue
+  status: pending
+---
+<!-- answer:en -->
+First version.
+`;
+    const { version: v1 } = await w.kbService.createDraft({ slug: "test-auto-eval-covered-doc", kind: "templates", md: md1, author: admin });
+    await w.kbService.publish(v1.id, admin);
+
+    const md2 = md1.replace("First version.", "Second version.");
+    const { version: v2 } = await w.kbService.createDraft({ slug: "test-auto-eval-covered-doc", kind: "templates", md: md2, author: admin });
+    await w.kbService.publish(v2.id, admin);
+
+    const cases = (await w.kb.listEvalCases()).filter((c) => c.expected_template_id === "test-auto-eval-covered");
+    expect(cases).toHaveLength(1); // vẫn chỉ 1: câu thêm tay ban đầu, không bị nhân đôi qua các lần publish sau
+    expect(cases[0]!.source).toBe("admin");
+  });
+});
+
 describe("duyệt hai người cho luật bảo mật (SECURITY_RULE)", () => {
   const secMd = tpl("test-sec", { mode: "SECURITY_RULE", keywords: ["nothing"], answer: "Protected text" });
 

@@ -1,5 +1,5 @@
 /**
- * Trích văn bản từ tệp admin kéo-thả vào trợ lý "Nạp nội dung mới" (.txt, .pdf, .doc, .docx, .xlsx) để đưa vào ô nội dung
+ * Trích văn bản từ tệp admin kéo-thả vào trợ lý "Nạp nội dung mới" (.txt, .md, .pdf, .doc, .docx, .xlsx) để đưa vào ô nội dung
  * tự do — không lưu tệp lại (chỉ xử lý trong bộ nhớ rồi bỏ), không gọi dịch vụ ngoài nào. Chỉ admin mới gọi được route
  * dùng hàm này (xem admin/server.ts), nhưng nội dung tệp vẫn coi là KHÔNG ĐÁNG TIN — thư viện phân tích có thể có lỗi
  * với tệp cố tình làm hỏng; luôn bọc try/catch và có giới hạn dung lượng ở route.
@@ -71,13 +71,15 @@ export async function extractText(buf: Buffer, filename: string, mime: string): 
   const ext = extOf(filename);
   let text: string;
   try {
-    if (ext === "txt" || mime === "text/plain") text = buf.toString("utf8");
+    // .md: đọc thẳng như .txt — chỉ là văn bản có cú pháp Markdown, không phải cấu trúc YAML/template mà hệ thống dùng
+    // để lưu (parseTemplateFile/parseKnowledgeDoc); AI ở bước sau vẫn đọc hiểu và cấu trúc lại như mọi văn bản tự do khác.
+    if (ext === "txt" || ext === "md" || ext === "markdown" || mime === "text/plain" || mime === "text/markdown") text = buf.toString("utf8");
     else if (ext === "pdf" || mime === "application/pdf") text = await extractPdf(buf);
     else if (ext === "docx" || mime.includes("wordprocessingml")) text = (await mammoth.extractRawText({ buffer: buf })).value;
     else if (ext === "doc" || mime === "application/msword") text = (await new WordExtractor().extract(buf)).getBody();
     else if (ext === "xlsx" || mime.includes("spreadsheetml")) text = await extractXlsx(buf);
     else if (ext === "xls" || mime === "application/vnd.ms-excel") throw new Error('định dạng .xls (Excel cũ) chưa hỗ trợ — lưu lại thành .xlsx rồi thử lại');
-    else throw new Error(`không hỗ trợ định dạng tệp ".${ext || "?"}" — chỉ nhận .txt, .pdf, .doc, .docx, .xlsx`);
+    else throw new Error(`không hỗ trợ định dạng tệp ".${ext || "?"}" — chỉ nhận .txt, .md, .pdf, .doc, .docx, .xlsx`);
   } catch (e) {
     if (e instanceof Error && !e.message.includes("hỗ trợ")) throw new Error(`không đọc được nội dung tệp: ${e.message.slice(0, 200)}`);
     throw e;

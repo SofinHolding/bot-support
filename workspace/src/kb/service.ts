@@ -11,7 +11,7 @@ import { parseKnowledgeDoc, type KnowledgeChunk } from "../core/knowledge";
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
 import { parseTemplateFile, validateBundle } from "../core/templates";
-import { normalize, wordCount } from "../core/text";
+import { containsPhrase, normalize, wordCount } from "../core/text";
 import type { ParseIssue, Template } from "../domain/types";
 import type { Db } from "../db/db";
 import { kbRepo, type ConflictInput, type KbRepo, type VersionRow } from "../db/repo-kb";
@@ -20,6 +20,9 @@ import { usableLlm, type LlmPort, type OverlapSide } from "../core/ports";
 import { evalSettings, outcomeKey, routeOffline, runEval, type EvalCase } from "./eval";
 import type { LiveContent } from "./live-content";
 import { findOverlaps, narrowTemplateMatch, probesFromChunks, probesFromTemplates, replaceChunkSection, replaceTemplateAnswer, type OverlapPair, type OverlapRef, type ProbeItem } from "./overlap";
+import { CONFUSION_FIX_HINT, confusionKey, confusionsOf, describeConfusion, findConfusions, type Confusion } from "./routing-check";
+import type { Evaluator } from "../core/predicates";
+import type { TemplateIndex } from "../core/template-index";
 
 export type DocKind = "templates" | "knowledge" | "guide";
 
@@ -183,11 +186,18 @@ export class KbService {
     }
     steps.push({ name: "2. Quét an toàn", status: safety.length ? "error" : warnings.length ? "warning" : "ok", details: [...new Set([...safety, ...warnings])] });
 
+    // Bộ tìm kiếm SAU khi đưa bản nháp lên (chỉ template): dùng cho bước 3 (hỏi thử bot) lẫn bước 5 (hồi quy), dựng một lần.
+    let afterIdx: TemplateIndex | undefined;
+    let afterEvaluator: Evaluator | undefined;
+    const docOfLive = new Map(liveRows.map((r) => [r.template.id, r.docSlug]));
+
     // 3. Trùng lặp và mâu thuẫn (chỉ template)
     if (kind === "templates") {
       const predicates = await this.predicateMap();
       const union = [...others, ...parsed.templates];
-      const cross = validateBundle(union, makeEvaluator(predicates).names()).filter((i) => i.level === "error");
+      afterEvaluator = makeEvaluator(predicates);
+      afterIdx = await buildIndex({ templates: union, evaluator: afterEvaluator }, this.d.embedder);
+      const cross = validateBundle(union, afterEvaluator.names()).filter((i) => i.level === "error");
       const dup: string[] = cross.map((i) => `[${i.templateId ?? "-"}] ${i.message}`);
       const conflictWarn: string[] = [];
       const kwOwner = new Map<string, Template>();
@@ -198,12 +208,13 @@ export class KbService {
           if (o && o.id !== t.id && this.answerOf(o) !== this.answerOf(t)) conflictWarn.push(`từ khoá "${k}" của ${t.id} trùng với ${o.id} nhưng đáp án khác nhau (ưu tiên: ${t.priority} so với ${o.priority})`);
         }
       }
-      const embWarn = await this.similarExamples(parsed.templates, others);
-      // Chồng lấn với TOÀN BỘ kho đang publish, template lẫn đoạn tri thức (câu mẫu template mới ~ template cũ hoặc đoạn tài liệu):
-      // AI có thể chọn bản kia thay vì bản này. Dùng chính bộ tìm kiếm lúc khách hỏi (kb/overlap.ts), không chỉ so từ khoá trùng tuyệt đối.
-      const overlap = await this.overlapWarnings(probesFromTemplates(parsed.templates, slug), slug, liveRows);
-      report.overlapPairs = overlap.pairs;
-      steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length ? "error" : conflictWarn.length || embWarn.length || overlap.details.length ? "warning" : "ok", details: [...dup, ...conflictWarn, ...embWarn, ...overlap.details] });
+      // Máy quét tìm nội dung GIỐNG CHỮ trong toàn kho (template lẫn đoạn tri thức), rồi HỎI THỬ bot để chỉ báo chỗ bot trả lời
+      // nhầm thật (kb/routing-check.ts) — giống chữ mà bot vẫn phân biệt đúng thì không làm phiền người dùng.
+      const pairs = await this.overlapPairs(probesFromTemplates(parsed.templates, slug), slug, liveRows);
+      const docOfAfter = new Map([...docOfLive, ...parsed.templates.map((t) => [t.id, slug] as const)]);
+      const check = await this.routingCheck(pairs, { draftIds: new Set(parsed.templates.map((t) => t.id)), afterIdx, afterEvaluator, docOf: docOfAfter });
+      report.overlapPairs = check.pairs;
+      steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length ? "error" : conflictWarn.length || check.warn ? "warning" : "ok", details: [...dup, ...conflictWarn, ...check.details] });
     } else if (kind === "guide") {
       // Hướng dẫn không được CHO PHÉP điều hệ thống cấm (dự đoán giá, lộ công thức HCS, xin seed/mật khẩu, dùng kiến thức chung, bỏ qua luật)
       const bad = parsed.guide ? guidePolicyProblems(parsed.guide) : [];
@@ -211,9 +222,13 @@ export class KbService {
     } else {
       // Tài liệu tri thức mới: so từng đoạn với template + đoạn tri thức đang publish bằng CHÍNH bộ tìm kiếm lúc chạy thật (kb/overlap.ts).
       // Sự cố thật: login-help (mới) bị lối tắt cũ esc-login-fail giành mất vì bước này trước đây không so tài liệu tri thức với template.
-      const overlap = await this.overlapWarnings(probesFromChunks(parsed.chunks, slug), slug, liveRows);
-      report.overlapPairs = overlap.pairs;
-      steps.push({ name: "3. Trùng và mâu thuẫn", status: overlap.details.length ? "warning" : "ok", details: overlap.details });
+      const probes = probesFromChunks(parsed.chunks, slug);
+      const pairs = await this.overlapPairs(probes, slug, liveRows);
+      const check = this.d.live.index
+        ? await this.routingCheck(pairs, { draftIds: new Set(), afterIdx: this.d.live.index, afterEvaluator: this.d.live.evaluator, docOf: docOfLive, draftChunks: probes.map((p) => ({ ref: p.ref, heading: p.ref.title })) })
+        : { pairs, details: [], warn: false };
+      report.overlapPairs = check.pairs;
+      steps.push({ name: "3. Trùng và mâu thuẫn", status: check.warn ? "warning" : "ok", details: check.details });
     }
 
     // 4. Bản dịch
@@ -239,12 +254,9 @@ export class KbService {
     steps.push({ name: "4. Bản dịch", status: trans.length || weak.length ? "warning" : "ok", details: [...trans.slice(0, 20), ...weak.slice(0, 20)] });
 
     // 5. Hồi quy + 6. Replay (chỉ template)
-    if (kind === "templates") {
-      const predicates = await this.predicateMap();
-      const evaluator = makeEvaluator(predicates);
+    if (kind === "templates" && afterIdx && afterEvaluator) {
+      const evaluator = afterEvaluator;
       const beforeIdx = this.d.live.index;
-      const draftTemplates = [...others, ...parsed.templates];
-      const afterIdx = await buildIndex({ templates: draftTemplates, evaluator }, this.d.embedder);
       const cases = await this.d.kb.listEvalCases();
       const settings = evalSettings(this.d.live.urlHosts);
       const before = beforeIdx ? await runEval(cases as EvalCase[], beforeIdx, this.d.live.evaluator, settings) : { rows: [], correct: 0, total: 0 };
@@ -281,39 +293,83 @@ export class KbService {
     return report;
   }
 
-  /** Ngưỡng điểm dùng ở bước 3 lúc kiểm bản nháp — CAO HƠN ngưỡng quét toàn kho (0.55) có chủ ý: bản nháp chỉ cần biết những
-   * cặp đáng lo nhất ngay lập tức, còn muốn dò kỹ hơn (điểm thấp hơn, để rà soát định kỳ) thì dùng Template → Quét chồng lấn. */
+  /** Ngưỡng độ giống để đưa một mục đang publish vào danh sách HỎI THỬ lúc kiểm bản nháp (cao hơn 0.55 của quét toàn kho: giữ
+   * lời gọi ít và giữ tín hiệu từ khoá — điểm bằng ngưỡng — đủ mạnh để cho ra cụm "Gỡ máy móc"). Câu của CHÍNH bản nháp bị trả lời
+   * nhầm sang bất kỳ mục nào thì vẫn luôn bị bắt, không phụ thuộc ngưỡng này. */
   private static readonly DRAFT_OVERLAP_MIN = 0.7;
-  /** Chỉ liệt kê chi tiết TOP_N cặp điểm cao nhất trong bước 3 — nhiều hơn là một cục chữ không ai đọc hết được. */
-  private static readonly DRAFT_OVERLAP_TOP = 5;
+  /** Tối đa bao nhiêu câu nhầm được liệt kê chi tiết ở bước 3 — nhiều hơn là một cục chữ không ai đọc hết được. */
+  private static readonly DRAFT_CONFUSION_TOP = 8;
 
   /**
-   * Cảnh báo chồng lấn cho bản nháp (kb/overlap.ts), so với TOÀN BỘ kho đang publish. Chỉ CODE, không gọi AI — chạy ở
-   * mỗi lần lưu/kiểm tra bản nháp nên phải nhanh và rẻ. Chỉ liệt kê TOP 5 cặp đáng ngại nhất, còn lại gộp thành một dòng
-   * tổng — 20+ dòng kỹ thuật cùng lúc không ai đọc được. Chỉ cảnh báo, không chặn Publish — admin quyết định có đưa lên
-   * hay không (xem `syncConflictsAfterPublish`: nếu vẫn Publish, xung đột được AI mô tả thêm rồi ghi lại để hiện dấu hiệu
-   * trên danh sách Tài liệu).
+   * Ứng viên chồng lấn của bản nháp với TOÀN BỘ kho đang publish (kb/overlap.ts, chỉ CODE). Đây chỉ là danh sách nội bộ
+   * "giống chữ" để biết cần HỎI THỬ những mục nào — không hiện thẳng cho người dùng (xem `routingCheck`).
    */
-  private async overlapWarnings(probes: ProbeItem[], slug: string, liveRows: { docSlug: string; template: Template }[]): Promise<{ details: string[]; pairs: OverlapPair[] }> {
+  private async overlapPairs(probes: ProbeItem[], slug: string, liveRows: { docSlug: string; template: Template }[]): Promise<OverlapPair[]> {
     const index = this.d.live.index as typeof this.d.live.index | undefined;
-    if (!probes.length || !index) return { details: [], pairs: [] };
+    if (!probes.length || !index) return [];
     try {
-      const pairs = await findOverlaps(
-        { index, kb: this.d.kb, embedder: this.d.embedder, docOf: new Map(liveRows.map((r) => [r.template.id, r.docSlug])) },
-        probes,
-        { excludeDoc: slug, maxPairs: 40, minScore: KbService.DRAFT_OVERLAP_MIN },
-      );
-      const details: string[] = [];
-      for (const p of pairs.slice(0, KbService.DRAFT_OVERLAP_TOP)) {
-        const target = p.b.kind === "template" ? `template ${p.b.id}${index.isEscalateShortcut(p.b.id) ? " (lối tắt chuyển nhân viên)" : ""}` : `đoạn "${p.b.title}" của tài liệu ${p.b.doc}`;
-        details.push(`"${p.a.title}" có thể bị nhầm với ${target} — độ giống ${p.score.toFixed(2)}/1.00 (${p.signals[0]}).${p.updateHint ? ` ${p.updateHint}` : ""}`);
-      }
-      if (pairs.length > KbService.DRAFT_OVERLAP_TOP) details.push(`... còn ${pairs.length - KbService.DRAFT_OVERLAP_TOP} cặp nữa, điểm thấp hơn — xem đầy đủ và để AI phán xét từng cặp ở Template → Quét chồng lấn.`);
-      if (details.length) details.push("Bot có thể chọn nhầm bên kia khi khách hỏi. Sửa từ khoá/câu mẫu ở nút Sửa (tab Template), hoặc dùng Template → Quét chồng lấn. Nếu vẫn Publish, xung đột này sẽ hiện dấu hiệu trên danh sách Tài liệu.");
-      return { details, pairs };
+      return await findOverlaps({ index, kb: this.d.kb, embedder: this.d.embedder, docOf: new Map(liveRows.map((r) => [r.template.id, r.docSlug])) }, probes, { excludeDoc: slug, maxPairs: 40, minScore: KbService.DRAFT_OVERLAP_MIN });
     } catch {
-      return { details: [], pairs: [] };
+      return [];
     }
+  }
+
+  /**
+   * HỎI THỬ bot (kb/routing-check.ts) trước và sau khi đưa bản nháp lên, trên các mục của bản nháp + các mục giống chữ với
+   * nó. Chỉ báo chỗ bot SẼ trả lời nhầm do bản nháp này gây ra, viết thành câu dễ hiểu (câu nào, của mục nào, bị trả lời bằng
+   * mục nào). Cặp chỉ giống chữ mà bot vẫn trả lời đúng gộp thành MỘT dòng "không cần sửa". Chỉ cảnh báo, không chặn Publish
+   * — admin quyết (xem `syncConflictsAfterPublish`: nếu vẫn Publish, chỗ nhầm được ghi lại để hiện trên danh sách Tài liệu).
+   */
+  private async routingCheck(
+    pairs: OverlapPair[],
+    ctx: { draftIds: Set<string>; afterIdx: TemplateIndex; afterEvaluator: Evaluator; docOf: Map<string, string>; draftChunks?: { ref: OverlapRef; heading: string }[] },
+  ): Promise<{ pairs: OverlapPair[]; details: string[]; warn: boolean }> {
+    const settings = evalSettings(this.d.live.urlHosts);
+    const draftChunkIds = new Set((ctx.draftChunks ?? []).map((c) => c.ref.id));
+    const partnerIds = new Set(pairs.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "template").map((r) => r.id));
+    // Từ khoá của bản nháp nằm trong câu của mục khác => mục đó có thể bị giành câu hỏi (vd từ khoá quá chung "KYC" giành
+    // "how to KYC"), dù hai mục không giống chữ đủ để vào danh sách trên — cũng phải được hỏi thử.
+    const draftKeywords = [...ctx.draftIds].flatMap((id) => ctx.afterIdx.get(id)?.match.keywords ?? []).map(normalize).filter(Boolean);
+    for (const t of ctx.afterIdx.templates) {
+      if (ctx.draftIds.has(t.id) || partnerIds.has(t.id)) continue;
+      const phrases = [...t.match.examples, ...t.match.keywords, ...t.match.exact].map(normalize);
+      if (draftKeywords.some((k) => phrases.some((p) => containsPhrase(p, k)))) partnerIds.add(t.id);
+    }
+    const ids = new Set([...ctx.draftIds, ...partnerIds]);
+    const liveChunks = [...new Map(pairs.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "chunk" && !draftChunkIds.has(r.id)).map((r) => [r.id, { ref: r, heading: r.title }])).values()];
+    let after: Confusion[] = [];
+    let before: Confusion[] = [];
+    try {
+      after = await findConfusions(ctx.afterIdx, ctx.afterEvaluator, this.d.embedder, settings, { onlyIds: ids, docOf: ctx.docOf, chunks: [...(ctx.draftChunks ?? []), ...liveChunks] });
+      const beforeIdx = this.d.live.index as TemplateIndex | undefined;
+      if (beforeIdx) before = await findConfusions(beforeIdx, this.d.live.evaluator, this.d.embedder, settings, { onlyIds: ids, docOf: ctx.docOf, chunks: liveChunks });
+    } catch {
+      /* không hỏi thử được: vẫn còn bước 5 (hồi quy) và 6 (replay) bắt lỗi định tuyến */
+    }
+    const beforeKeys = new Set(before.map(confusionKey));
+    const fresh = after.filter((c) => !beforeKeys.has(confusionKey(c)));
+    const old = after.filter((c) => beforeKeys.has(confusionKey(c)));
+    const titleOf = (id: string) => ctx.afterIdx.get(id)?.sets_context.issue ?? id;
+
+    const annotated: OverlapPair[] = pairs.map((p) => ({ ...p, confusions: confusionsOf(p, after) }));
+    // chỗ nhầm không nằm trong cặp giống chữ nào (vd từ khoá quá chung giành câu của một mục không giống chữ): vẫn phải hiện
+    for (const c of after) {
+      if (annotated.some((p) => p.confusions!.includes(c))) continue;
+      const t = ctx.afterIdx.get(c.got)!;
+      annotated.push({ a: c.owner, b: { kind: "template", id: t.id, doc: ctx.docOf.get(t.id) ?? "", title: `${t.group} — ${titleOf(t.id)}` }, score: 0, signals: [], confusions: [c] });
+    }
+    annotated.sort((x, y) => Number(!!y.confusions!.length) - Number(!!x.confusions!.length) || y.score - x.score);
+
+    const details: string[] = [];
+    for (const c of fresh.slice(0, KbService.DRAFT_CONFUSION_TOP)) details.push(`⚠ ${describeConfusion(c, titleOf, "sẽ")}`);
+    if (fresh.length > KbService.DRAFT_CONFUSION_TOP) details.push(`... và ${fresh.length - KbService.DRAFT_CONFUSION_TOP} câu nữa bị trả lời nhầm tương tự.`);
+    const near = annotated.filter((p) => p.updateHint);
+    for (const p of near.slice(0, 3)) details.push(`⚠ Đoạn "${p.a.title}" gần như trùng nguyên văn với đoạn "${p.b.title}" của tài liệu ${p.b.doc}. ${p.updateHint}`);
+    if (old.length) details.push(`Đã có từ trước (không do bản này gây ra): ${old.slice(0, 3).map((c) => describeConfusion(c, titleOf)).join(" ")}`);
+    if (fresh.length || old.length) details.push(CONFUSION_FIX_HINT);
+    const quiet = annotated.filter((p) => !p.confusions!.length && !p.updateHint).length;
+    if (quiet) details.push(`${quiet} mục khác chỉ giống chữ với nội dung này — đã hỏi thử, bot vẫn trả lời đúng mục của từng câu, không cần sửa.`);
+    return { pairs: annotated, details, warn: fresh.length > 0 || near.length > 0 };
   }
 
   /** Bao nhiêu cặp điểm cao nhất được hỏi AI mô tả khi CHỐT xung đột lúc publish (xem `syncConflictsAfterPublish`). Có giới hạn để một lần Publish không gọi AI hàng chục lần. */
@@ -335,7 +391,16 @@ export class KbService {
       const index = this.d.live.index;
       if (!index) return;
       const liveRows = await this.d.kb.loadPublishedTemplateRows(); // đã publish, gồm cả tài liệu vừa lên
-      const pairs = await findOverlaps({ index, kb: this.d.kb, embedder: this.d.embedder, docOf: new Map(liveRows.map((r) => [r.template.id, r.docSlug])) }, probes, { maxPairs: 40 });
+      const docOf = new Map(liveRows.map((r) => [r.template.id, r.docSlug]));
+      const raw = await findOverlaps({ index, kb: this.d.kb, embedder: this.d.embedder, docOf }, probes, { maxPairs: 40 });
+      // HỎI THỬ bot (kb/routing-check.ts): cặp nào bot thật sự trả lời nhầm / không phân định được thì chắc chắn là vấn đề thật.
+      const ids = new Set([...parsed.templates.map((t) => t.id), ...raw.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "template").map((r) => r.id)]);
+      const chunkSides = [...new Map(raw.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "chunk").map((r) => [r.id, { ref: r, heading: r.title }])).values()];
+      const confusions = await findConfusions(index, this.d.live.evaluator, this.d.embedder, evalSettings(this.d.live.urlHosts), { onlyIds: ids, docOf, chunks: chunkSides }).catch(() => [] as Confusion[]);
+      const titleOf = (id: string) => index.get(id)?.sets_context.issue ?? id;
+      const confirmed = (p: OverlapPair) => !!p.confusions?.length || !!p.updateHint;
+      // cặp nhầm thật lên trước để luôn được AI mô tả; sau đó mới tới cặp chỉ giống chữ, điểm cao trước
+      const pairs = raw.map((p) => ({ ...p, confusions: confusionsOf(p, confusions) })).sort((x, y) => Number(confirmed(y)) - Number(confirmed(x)) || y.score - x.score);
       const llm = usableLlm(this.d.llm);
       const chunkText = new Map((await this.d.kb.listPublishedChunks()).map((c) => [c.chunkId, c]));
       const sideOf = (ref: OverlapRef): OverlapSide => {
@@ -361,12 +426,30 @@ export class KbService {
             /* AI chỉ mô tả thêm: dòng xung đột vẫn được ghi lại (không có verdict), publish không chờ và không chặn */
           }
         }
-        inputs.push({ a: p.a, b: p.b, score: p.score, signals: p.signals, narrow: p.narrow ?? null, verdict, reason, suggestion });
+        // Chỉ GHI LẠI (hiện dấu đỏ trên danh sách Tài liệu) vấn đề thật: bot trả lời nhầm / đoạn trùng nguyên văn, hoặc AI thấy hai
+        // bên nói MÂU THUẪN / TRÙNG hẳn nhau. Cặp chỉ giống chữ mà bot vẫn phân biệt đúng thì không làm phiền người dùng.
+        if (!confirmed(p) && verdict !== "conflict" && verdict !== "duplicate") continue;
+        const said = (p.confusions ?? []).slice(0, 3).map((c) => describeConfusion(c, titleOf));
+        inputs.push({ a: p.a, b: p.b, score: p.score, signals: [...said, ...p.signals], narrow: p.narrow ?? null, verdict, reason, suggestion });
       }
       await this.d.kb.syncConflicts(slug, inputs);
     } catch {
       /* ghi nhận xung đột là tính năng phụ trợ: publish đã xong rồi, không lùi lại vì bước này lỗi */
     }
+  }
+
+  /**
+   * Tính lại danh sách xung đột đã ghi (kb_conflicts) của MỌI tài liệu đang publish theo cách kiểm tra hiện tại — dùng sau khi
+   * đổi cách phát hiện xung đột, để các dòng cũ (ghi theo cách cũ, chỉ dựa trên độ giống chữ) được thay bằng kết quả hỏi thử.
+   * Không đổi nội dung nào, không publish gì.
+   */
+  async resyncAllConflicts(): Promise<{ docs: number; docsWithConflicts: number }> {
+    const docs = (await this.d.kb.listDocuments()).filter((d) => d.published_version && d.kind !== "guide");
+    for (const d of docs) {
+      const v = await this.d.kb.getPublished(d.slug);
+      if (v) await this.syncConflictsAfterPublish(d.slug, d.kind, v.source_md);
+    }
+    return { docs: docs.length, docsWithConflicts: (await this.d.kb.listOpenConflictCounts()).size };
   }
 
   /**
@@ -414,34 +497,6 @@ export class KbService {
     return t.answers.en ?? t.answer_from ?? "";
   }
 
-  private async similarExamples(draft: Template[], others: Template[]): Promise<string[]> {
-    const out: string[] = [];
-    const pairs: { id: string; text: string }[] = [];
-    for (const t of draft) for (const e of t.match.examples) pairs.push({ id: t.id, text: e });
-    const otherPairs: { id: string; text: string }[] = [];
-    for (const t of others) for (const e of t.match.examples) otherPairs.push({ id: t.id, text: e });
-    if (!pairs.length || !otherPairs.length) return out;
-    try {
-      const vecs = await this.d.embedder.embed([...pairs.map((p) => p.text), ...otherPairs.map((p) => p.text)]);
-      const a = vecs.slice(0, pairs.length);
-      const b = vecs.slice(pairs.length);
-      const seen = new Set<string>();
-      a.forEach((va, i) =>
-        b.forEach((vb, j) => {
-          if (pairs[i]!.id !== otherPairs[j]!.id && cosine(va, vb) >= 0.93) {
-            const key = `${pairs[i]!.id}|${otherPairs[j]!.id}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              out.push(`ví dụ của ${pairs[i]!.id} ("${pairs[i]!.text}") gần trùng với ${otherPairs[j]!.id} ("${otherPairs[j]!.text}")`);
-            }
-          }
-        }),
-      );
-    } catch {
-      /* không có embedding: bỏ qua bước này */
-    }
-    return out.slice(0, 10);
-  }
 
   // ---------------------------------------------------------------- Publish
   private async mustVersion(id: number): Promise<VersionRow> {
@@ -573,6 +628,29 @@ export class KbService {
       await ops.bumpKbVersion(by);
     });
     await this.d.live.rebuild();
+    if (kind === "templates") await this.autoRegisterEvalCases(parsed.templates);
+  }
+
+  /**
+   * Tự động thêm câu kiểm tra hồi quy ("Câu hỏi mẫu") cho template CHƯA có câu nào bảo vệ, ngay lúc publish — người
+   * dùng không cần tự tay vào mục Câu hỏi mẫu thêm dòng nào. Lấy 1 câu có sẵn trong `examples` của chính template
+   * (không gọi thêm AI, không tốn token). Bỏ qua template đã có ít nhất 1 câu, để không chèn thêm mỗi lần publish.
+   * Lỗi ở bước phụ này không được làm hỏng việc publish đã thành công (đã publish xong mới chạy tới đây).
+   */
+  private async autoRegisterEvalCases(templates: Template[]): Promise<void> {
+    try {
+      const cases = await this.d.kb.listEvalCases();
+      const covered = new Set(cases.map((c) => c.expected_template_id).filter((x): x is string => !!x));
+      for (const t of templates) {
+        if (covered.has(t.id)) continue;
+        const example = t.match.examples.find((e) => e.trim().length >= 4);
+        if (!example) continue;
+        await this.d.kb.addEvalCase({ question: example, expected: t.id, source: "auto" });
+        covered.add(t.id);
+      }
+    } catch {
+      /* không để lỗi ở bước phụ này làm hỏng publish */
+    }
   }
 
   /**

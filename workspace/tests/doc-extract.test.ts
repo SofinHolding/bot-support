@@ -19,12 +19,17 @@ describe("extractText", () => {
     expect(text.length).toBe(MAX_EXTRACTED_CHARS);
   });
 
+  it(".md: đọc thẳng như .txt (chỉ là văn bản có cú pháp Markdown, không phải cấu trúc YAML mà hệ thống lưu)", async () => {
+    const text = await extractText(Buffer.from("# Tiêu đề\n\nMột đoạn nội dung Markdown.\n", "utf8"), "ghi-chu.md", "text/markdown");
+    expect(text).toBe("# Tiêu đề\n\nMột đoạn nội dung Markdown.");
+  });
+
   it("tệp rỗng (chỉ khoảng trắng) -> báo lỗi rõ ràng", async () => {
     await expect(extractText(Buffer.from("   \n\n  ", "utf8"), "empty.txt", "text/plain")).rejects.toThrow(/không trích được nội dung/);
   });
 
   it("đuôi tệp không hỗ trợ -> báo lỗi liệt kê đúng các định dạng nhận", async () => {
-    await expect(extractText(Buffer.from("x"), "ảnh.png", "image/png")).rejects.toThrow(/không hỗ trợ định dạng.*\.txt, \.pdf, \.doc, \.docx, \.xlsx/);
+    await expect(extractText(Buffer.from("x"), "ảnh.png", "image/png")).rejects.toThrow(/không hỗ trợ định dạng.*\.txt, \.md, \.pdf, \.doc, \.docx, \.xlsx/);
   });
 
   it(".xls (Excel cũ, dạng nhị phân) -> báo lỗi gợi ý lưu lại thành .xlsx", async () => {

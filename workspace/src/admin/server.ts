@@ -24,6 +24,7 @@ import { usableLlm, type OverlapSide } from "../core/ports";
 import { activeEmbedder, cosine } from "../core/embedding";
 import { containsPhrase } from "../core/text";
 import { DEFAULT_OVERLAP_MIN, scanCorpus } from "../kb/overlap";
+import { CONFUSION_FIX_HINT, confusionsOf, describeConfusion, findConfusions } from "../kb/routing-check";
 import { renderIntakeMarkdown } from "../kb/intake";
 import { extractText, MAX_UPLOAD_BYTES } from "../kb/doc-extract";
 import { GUIDE_SLUG } from "../core/guide";
@@ -297,11 +298,43 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     return { ok: true };
   });
 
-  app.get("/api/templates", async () => ({
-    docs: Object.fromEntries((await kb.loadPublishedTemplateRows()).map((r) => [r.template.id, r.docSlug])),
-    items: live.index.templates.map((t) => ({ id: t.id, group: t.group, response_mode: t.response_mode, priority: t.priority, langs: Object.keys(t.answers), keywords: t.match.keywords.length, examples: t.match.examples.slice(0, 3), keyword_list: t.match.keywords.slice(0, 8), ticket: t.ticket ?? null, answer_en: t.answer_from ? `(dùng câu của ${t.answer_from})` : (t.answers.en ?? "").slice(0, 240) })),
-    kbVersion: live.version,
-  }));
+  /**
+   * evalCount/conflicts: để admin đọc ngay trên một dòng "template này có đang được bảo vệ bằng câu kiểm tra không,
+   * có đang dễ bị nhầm với template/tài liệu nào không" — không phải tự nhớ ID rồi mở tab khác tra lại.
+   */
+  app.get("/api/templates", async () => {
+    const [rows, cases, conflicts] = await Promise.all([kb.loadPublishedTemplateRows(), kb.listEvalCases(), kb.listAllConflicts()]);
+    const evalCountById = new Map<string, number>();
+    for (const c of cases) if (c.expected_template_id) evalCountById.set(c.expected_template_id, (evalCountById.get(c.expected_template_id) ?? 0) + 1);
+    const conflictsById = new Map<string, { withTitle: string; score: number }[]>();
+    for (const c of conflicts) {
+      for (const [side, other] of [[c.a, c.b] as const, [c.b, c.a] as const]) {
+        if (side.kind !== "template") continue;
+        const list = conflictsById.get(side.id) ?? [];
+        list.push({ withTitle: other.title, score: c.score });
+        conflictsById.set(side.id, list);
+      }
+    }
+    return {
+      docs: Object.fromEntries(rows.map((r) => [r.template.id, r.docSlug])),
+      items: live.index.templates.map((t) => ({
+        id: t.id,
+        group: t.group,
+        response_mode: t.response_mode,
+        priority: t.priority,
+        langs: Object.keys(t.answers),
+        keywords: t.match.keywords.length,
+        examples: t.match.examples.slice(0, 3),
+        keyword_list: t.match.keywords.slice(0, 8),
+        ticket: t.ticket ?? null,
+        // hiện NGUYÊN VĂN câu bot gửi, kể cả khi template dùng chung câu trả lời của template khác (answer_from) — người đọc không phải tra id
+        answer_en: (live.index.resolveAnswerSource(t).answers.en ?? "").replace("{SUPPORT_SUMMARY}", "").slice(0, 240),
+        evalCount: evalCountById.get(t.id) ?? 0,
+        conflicts: conflictsById.get(t.id) ?? [],
+      })),
+      kbVersion: live.version,
+    };
+  });
 
   /**
    * Tìm xuyên suốt kho tri thức đang chạy: tài liệu (slug/tiêu đề), đoạn tri thức đang publish (tiêu đề/nội dung), template
@@ -342,8 +375,25 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   app.get("/api/kb/overlap", { preHandler: need("admin") }, async (req) => {
     const q = z.object({ min: z.coerce.number().min(0.2).max(0.99).optional(), max: z.coerce.number().int().min(10).max(2000).optional() }).parse(req.query ?? {});
     const rows = await kb.loadPublishedTemplateRows();
-    const pairs = await scanCorpus({ index: live.index, kb, embedder: svc.embedder, docOf: new Map(rows.map((r) => [r.template.id, r.docSlug])) }, { minScore: q.min, maxPairs: q.max ?? 300 });
-    return { pairs, min: q.min ?? DEFAULT_OVERLAP_MIN, max: q.max ?? 300, kbVersion: live.version, model: (await activeEmbedder(svc.embedder)).version };
+    const docOf = new Map(rows.map((r) => [r.template.id, r.docSlug]));
+    const raw = await scanCorpus({ index: live.index, kb, embedder: svc.embedder, docOf }, { minScore: q.min, maxPairs: q.max ?? 300 });
+    // HỎI THỬ bot trên toàn bộ template + các đoạn tri thức có mặt trong danh sách: chỉ cặp bot trả lời nhầm thật mới là vấn đề
+    const chunks = [...new Map(raw.flatMap((p) => [p.a, p.b]).filter((r) => r.kind === "chunk").map((r) => [r.id, { ref: r, heading: r.title }])).values()];
+    const confusions = await findConfusions(live.index, live.evaluator, svc.embedder, evalSettings(live.urlHosts), { docOf, chunks });
+    const titleOf = (id: string) => live.index.get(id)?.sets_context.issue ?? id;
+    const pairs = raw
+      .map((p) => {
+        const cs = confusionsOf(p, confusions);
+        return { ...p, confusions: cs, confirmed: cs.length > 0 || !!p.updateHint, explain: cs.slice(0, 3).map((c) => describeConfusion(c, titleOf)) };
+      })
+      .sort((x, y) => Number(y.confirmed) - Number(x.confirmed) || y.score - x.score);
+    return { pairs, confirmed: pairs.filter((p) => p.confirmed).length, min: q.min ?? DEFAULT_OVERLAP_MIN, max: q.max ?? 300, kbVersion: live.version, model: (await activeEmbedder(svc.embedder)).version, fixHint: CONFUSION_FIX_HINT };
+  });
+  /** Tính lại danh sách xung đột đã ghi của mọi tài liệu theo cách kiểm tra hiện tại (hỏi thử bot). Không đổi nội dung nào. */
+  app.post("/api/kb/conflicts/resync", { preHandler: need("admin") }, async (req) => {
+    const r = await kbService.resyncAllConflicts();
+    await audit(req, "kb.conflicts_resync", "kb_conflicts", null, r);
+    return r;
   });
   /** AI phán xét từng cặp bị cờ (SKILL review-overlap): mỗi lời gọi đúng hai mục, tối đa 20 cặp một lần. */
   app.post("/api/kb/overlap/review", { preHandler: need("admin") }, async (req) => {
@@ -419,12 +469,20 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     // chính nó — không dùng được với applyNarrow/applyBoxEdit (chỉ sửa tài liệu ĐÃ publish): khung vẫn hiện đủ tín hiệu +
     // gợi ý AI, chỉ ẩn narrow để không có nút "Áp dụng" trỏ sai chỗ; admin sửa trực tiếp trong ô nội dung mới của mình.
     const ownTemplateIds = new Set(kind === "templates" ? parsedDraft.templates.map((t) => t.id) : []);
-    const pairs = overlapPairs.slice(0, 5);
-    const boxes: { a: OverlapSide | { kind: string; id: string; doc: string; title: string }; b: OverlapSide | { kind: string; id: string; doc: string; title: string }; score: number; signals: string[]; narrow: { templateId: string; phrase: string } | null; updateHint?: string; verdict: string | null; reason: string | null; suggestion: string | null }[] = [];
+    const isDraft = (r: { kind: string; id: string }) => (r.kind === "template" ? ownTemplateIds.has(r.id) : r.id.startsWith(`${slug}#`));
+    // Khung chỉ dành cho VẤN ĐỀ THẬT: chỗ hỏi thử thấy bot trả lời nhầm (routing-check) hoặc đoạn trùng nguyên văn — luôn hiện;
+    // thêm vài cặp giống chữ điểm cao để AI soi xem nội dung có MÂU THUẪN / TRÙNG hẳn không (bot chọn đúng vẫn có thể nói sai).
+    const confirmed = (p: (typeof overlapPairs)[number]) => !!p.confusions?.length || !!p.updateHint;
+    const pairs = [...overlapPairs.filter(confirmed), ...overlapPairs.filter((p) => !confirmed(p))]
+      .map((p) => (isDraft(p.a) || !isDraft(p.b) ? p : { ...p, a: p.b, b: p.a })) // bên nội dung mới luôn là `a`, bên đang dùng là `b` (để sửa)
+      .slice(0, 5);
+    const titleOf = (id: string) => live.index.get(id)?.sets_context.issue ?? parsedDraft.templates.find((t) => t.id === id)?.sets_context.issue ?? id;
+    const boxes: { a: OverlapSide | { kind: string; id: string; doc: string; title: string }; b: OverlapSide | { kind: string; id: string; doc: string; title: string }; score: number; signals: string[]; explain: string[]; narrow: { templateId: string; phrase: string } | null; updateHint?: string; verdict: string | null; reason: string | null; suggestion: string | null }[] = [];
     for (const p of pairs) {
       const a = draftSide(p.a.id) ?? p.a;
       const bSide = liveSide(p.b.kind, p.b.id) ?? p.b;
       const narrow = p.narrow && !ownTemplateIds.has(p.narrow.templateId) ? p.narrow : null;
+      const explain = (p.confusions ?? []).slice(0, 3).map((c) => describeConfusion(c, titleOf, "sẽ"));
       let verdict: string | null = null;
       let reason: string | null = null;
       let suggestion: string | null = null;
@@ -436,7 +494,9 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
       } catch {
         /* AI chỉ mô tả thêm: khung vẫn hiện với tín hiệu code, không chặn */
       }
-      boxes.push({ a, b: bSide, score: p.score, signals: p.signals, narrow, updateHint: p.updateHint, verdict, reason, suggestion });
+      // giống chữ, bot vẫn trả lời đúng, AI cũng không thấy mâu thuẫn/trùng => không phải việc của người dùng
+      if (!confirmed(p) && verdict !== "conflict" && verdict !== "duplicate") continue;
+      boxes.push({ a, b: bSide, score: p.score, signals: p.signals, explain, narrow, updateHint: p.updateHint, verdict, reason, suggestion });
     }
     return boxes;
   }
