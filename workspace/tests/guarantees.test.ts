@@ -1,6 +1,8 @@
 /** Các bảo đảm nghiệp vụ không được vỡ: ngữ cảnh không lây, ca cần người thật luôn có ticket, không mất tin, hồi quy chặn đúng. */
 import { afterEach, describe, expect, it } from "vitest";
 import type { Actor } from "../src/kb/service";
+import { NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
+import { LlmUnavailableError } from "../src/core/ports";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
 let w: World;
@@ -19,6 +21,7 @@ describe("ngữ cảnh của vấn đề cũ không bị vấn đề khác làm 
     w.clock.advance(2 * HOUR);
     await w.say(8001, "please explain quantum banana zebra protocol");
     expect(w.channel.textsTo(8001).at(-1)).toContain("@interlink_technicalsupport");
+    expect(w.channel.textsTo(8001).at(-1)).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
     const eps = await episodesOf(8001);
     expect(eps.find((e) => e.group === "KYC")).toMatchObject({ status: "dormant", issue: before.issue }); // giữ nguyên vấn đề gốc
     expect(eps.find((e) => e.status === "escalated")).toMatchObject({ group: null, issue: "please explain quantum banana zebra protocol" });
@@ -50,13 +53,20 @@ describe("ngữ cảnh của vấn đề cũ không bị vấn đề khác làm 
 });
 
 describe("không chắc chắn thì chuyển người thật, và luôn để lại dấu vết", () => {
-  it("không đọc được ảnh (model từ chối / lỗi) -> chuyển support + ticket, không văng lỗi 'high traffic'", async () => {
+  it("không đọc được ảnh (model từ chối / lỗi) -> chuyển support + ticket, không gửi câu báo mất kết nối", async () => {
     w = await makeWorld({ llm: fakeLlm({ vision: async () => { throw new Error("refused"); } }) });
     await w.sayPhoto(8010, "f1");
     expect(w.channel.textsTo(8010).at(-1)).toContain("@interlink_technicalsupport");
+    expect(w.channel.textsTo(8010).at(-1)).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
     expect((await w.conv.listTickets({ limit: 10, offset: 0 })).some((t) => t.user_id === 8010)).toBe(true);
   });
 
+  it("SKILL đọc ảnh mất kết nối -> câu báo mất kết nối cố định (tiếng Anh), không đoán nội dung ảnh", async () => {
+    w = await makeWorld({ llm: fakeLlm({ vision: async () => { throw new LlmUnavailableError("503"); } }) });
+    const r = await w.sayPhoto(8012, "f1");
+    expect(r).toMatchObject({ decisionKind: "UNAVAILABLE" });
+    expect(w.channel.textsTo(8012)).toEqual([NETWORK_DISCONNECTED_EN]);
+  });
   it("lượt xử lý hỏng giữa chừng: khách nhận câu cố định, hệ thống tạo ticket system-error và bản ghi quyết định", async () => {
     w = await makeWorld();
     const orig = w.live.ensureFresh.bind(w.live);
@@ -70,11 +80,11 @@ describe("không chắc chắn thì chuyển người thật, và luôn để l�
     };
     const r = await w.say(8011, "how to login");
     expect(r.status).toBe("error");
-    expect(w.channel.textsTo(8011).at(-1)).toContain("high traffic");
+    expect(w.channel.textsTo(8011)).toEqual([NETWORK_DISCONNECTED_EN]);
     const t = (await w.conv.listTickets({ limit: 10, offset: 0 })).find((x) => x.user_id === 8011)!;
     expect(t).toMatchObject({ category: "system-error", status: "open" });
     const d = await w.db.query<{ via: string; kind: string }>("SELECT via, kind FROM decisions WHERE user_id = 8011");
-    expect(d.rows[0]).toMatchObject({ via: "pipeline_error", kind: "ESCALATE" });
+    expect(d.rows[0]).toMatchObject({ via: "pipeline_error", kind: "UNAVAILABLE" }); // khách nhận câu báo mất kết nối; ticket system-error vẫn được tạo cho người thật theo dõi
   });
 });
 

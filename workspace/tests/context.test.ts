@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildIndex, loadContentDir } from "../src/core/bundle";
 import { extractFacts, mergeFacts } from "../src/core/facts";
-import type { ClassifyRequest, KnowledgeHit, LlmPort } from "../src/core/ports";
+import type { KnowledgeHit, LlmPort, UnderstandRequest } from "../src/core/ports";
 import { DEFAULT_ROUTER_SETTINGS, route, type RouterDeps } from "../src/core/router";
 import { cleanSummary, degradedSummary, readSummary, summaryForContext, SUMMARY_LIMITS } from "../src/core/summary";
 import { normalize } from "../src/core/text";
@@ -161,12 +161,18 @@ describe("router: SKILL translate-query cho câu hỏi tri thức", () => {
 describe("pipeline + worker: ngữ cảnh không mất khi tin cũ rời cửa sổ", () => {
   let w: World;
   let ctx: JobContext;
-  let classifySeen: ClassifyRequest[] = [];
+  let understandSeen: UnderstandRequest[] = [];
   let summarize: LlmPort["summarize"];
   const U = 4242;
 
   beforeAll(async () => {
-    const llm: LlmPort = { ...fakeLlm(), classify: async (req) => { classifySeen.push(req); return { action: "template", template_id: "fp-2-withdraw" }; }, summarize: (r) => summarize(r) };
+    // AI hiểu (nhận ngữ cảnh nạp lại) -> câu truy vấn luôn dẫn tới fp-2-withdraw -> AI chọn fp-2-withdraw: vụ việc "pending" luôn mở qua các lượt
+    const llm: LlmPort = {
+      ...fakeLlm(),
+      understand: async (req) => { understandSeen.push(req); return { language: "en", intent: "question", follow_up: "none", query_en: `${req.text} withdraw`, query_kb: `${req.text} withdraw` }; },
+      select: async (req) => ({ ref: req.candidates.some((c) => c.ref === "T:fp-2-withdraw") ? "T:fp-2-withdraw" : "ESCALATE", reason: "" }),
+      summarize: (r) => summarize(r),
+    };
     w = await makeWorld({ llm });
     ctx = {
       db: w.db, conv: w.conv, kb: w.kb, ops: w.ops, settings: w.settings, kbService: w.kbService, channel: w.channel, llm,
@@ -182,14 +188,16 @@ describe("pipeline + worker: ngữ cảnh không mất khi tin cũ rời cửa s
     expect(facts).toHaveLength(1);
     expect(facts[0]!.payload).toEqual({ facts: [{ kind: "error_code", value: "504" }, { kind: "app_version", value: "2.3.1" }] });
 
-    classifySeen = [];
+    understandSeen = [];
     for (let i = 0; i < 5; i++) {
       w.clock.advance(60_000);
       await w.say(U, `another strange zebra statement number ${i}`);
     }
-    const last = classifySeen[classifySeen.length - 1]!;
-    expect(last.context.facts).toEqual(["error_code=504", "app_version=2.3.1"]);
-    expect(last.context.events.join("\n")).not.toContain("customer_fact");
+    expect(understandSeen).toHaveLength(5);
+    expect((await w.conv.getActiveEpisode(U))!.id).toBe(ep.id); // vẫn cùng vụ việc
+    const last = understandSeen[understandSeen.length - 1]!;
+    expect(last.context!.facts).toEqual(["error_code=504", "app_version=2.3.1"]);
+    expect(last.context!.events.join("\n")).not.toContain("customer_fact");
   });
 
   it("tóm tắt: cập nhật tại chỗ từ bản trước, bỏ giá trị bịa, dời mốc; lượt sau chỉ nạp tóm tắt + tin sau mốc", async () => {
@@ -203,10 +211,10 @@ describe("pipeline + worker: ngữ cảnh không mất khi tin cũ rời cửa s
     expect(readSummary(saved.summary)).toMatchObject({ issue: "dashboard error", exact_facts: ["error code 504"] });
     expect(saved.summary_upto_message_id).toBe(res.upTo);
 
-    classifySeen = [];
+    understandSeen = [];
     w.clock.advance(60_000);
     await w.say(U, "one more strange zebra statement");
-    const c = classifySeen[0]!.context;
+    const c = understandSeen[0]!.context!;
     expect(c.summary).toContain("exact values stated by the customer: error code 504");
     expect(c.recent.every((m) => !m.text.includes("error code 504"))).toBe(true); // tin gốc đã nằm sau mốc tóm tắt
     expect(c.facts).toContain("error_code=504"); // nhưng giá trị do code trích vẫn còn

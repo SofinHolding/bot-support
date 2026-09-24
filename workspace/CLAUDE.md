@@ -44,6 +44,7 @@ Script thao tác dữ liệu (`scripts/*.ts`) chỉ ghi file vào `.staging/` (g
 1. **Không đổi nghĩa** các luật [CODE]/[AI] trong `agent-guide`, các yêu cầu R1… trong SKILL, mẫu SECURITY_RULE, `predicates.yml`, quy trình kiểm tra/duyệt. Thay đổi các nội dung này chỉ đi qua **duyệt hai người** trên Admin Web. Chỉ được soạn đề xuất (`docs/de-xuat/`), không sửa thẳng file.
 2. Luồng nạp nội dung (intake) **không bao giờ** tạo hay sửa "Hướng dẫn AI làm việc" (`agent-guide`).
 3. AI chỉ **chọn**, không viết câu trả lời. Khách nhận nguyên văn nội dung đã duyệt (dịch trung thành). Mọi đầu ra của AI được code kiểm lại.
+   **Không có đường nào gửi thẳng nội dung trong kho cho khách:** mọi câu trả lời phải qua SKILL AI đánh giá trong lượt đó (verify-answer / select-answer) rồi dịch. Mất kết nối LLM (hoặc chưa cấu hình, hết ngân sách) -> `NETWORK_DISCONNECTED_EN` (`src/core/fixed-messages.ts`), outcome `UNAVAILABLE`. Không thêm lại chế độ trả lời bằng từ khoá khi AI lỗi, không thêm cài đặt tắt bước AI xác nhận. Ngoại lệ duy nhất: cảnh báo lộ seed/private key và chống spam (code, luôn tiếng Anh, `fixedEnglish`).
 4. Mục hỏi đáp:
    - không có độ ưu tiên dạng số;
    - không có cụm nhận biết một từ;

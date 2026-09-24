@@ -81,8 +81,8 @@ export interface World {
 
 let updateSeq = 1;
 
-/** `mode`: luồng xử lý. Mặc định code_first để các test cũ kiểm đúng luồng dự phòng (luật/từ khoá); test của luồng "AI hiểu trước" truyền llm_first. */
-export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[]; ownerId?: number; databaseUrl?: string; mode?: "hybrid" | "llm_first" | "code_first" } = {}): Promise<World> {
+/** `mode`: luồng xử lý (mặc định hybrid như lúc chạy thật; không còn luồng trả lời không qua AI). */
+export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[]; ownerId?: number; databaseUrl?: string; mode?: "hybrid" | "llm_first" } = {}): Promise<World> {
   const db = await openDb(opts.databaseUrl ?? "pglite:memory");
   await migrate(db);
   const conv = convRepo(db);
@@ -100,7 +100,7 @@ export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[
   await live.rebuild();
 
   const channel = new FakeChannel();
-  await ops.setSetting("router.mode", opts.mode ?? "code_first", "test");
+  await ops.setSetting("router.mode", opts.mode ?? "hybrid", "test");
   await ops.setSetting("router.tier3_mode", "extractive", "test"); // test kiểm luồng trích nguyên văn; chế độ sinh có test riêng
   settings.invalidate();
   const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);

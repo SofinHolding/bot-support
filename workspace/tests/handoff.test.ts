@@ -79,6 +79,7 @@ describe("Hai lớp kiểm trước khi gửi khối tóm tắt (không phải t
       await w.say(u, "not burn");
       const reply = w.channel.textsTo(u).at(-1)!;
       expect(reply).toContain("@interlink_technicalsupport"); // câu FP-12 gốc vẫn gửi
+      expect(reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
       expect(reply).not.toContain("Summary to send to support"); // nhưng không kèm khối tóm tắt dính chính sách
       const t = (await w.conv.listTickets({ limit: 20, offset: 0 })).find((x) => x.user_id === u)!;
       expect(t).toBeDefined(); // ticket vẫn được tạo bình thường, không phụ thuộc khối tóm tắt
@@ -98,6 +99,7 @@ describe("Hai lớp kiểm trước khi gửi khối tóm tắt (không phải t
       await w.say(u + 1, "not burn");
       const reply = w.channel.textsTo(u + 1).at(-1)!;
       expect(reply).toContain("@interlink_technicalsupport");
+      expect(reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
       expect(reply).not.toContain("Summary to send to support");
     } finally {
       await w.close();
@@ -115,6 +117,7 @@ describe("Hai lớp kiểm trước khi gửi khối tóm tắt (không phải t
       await w.say(u + 2, "not burn");
       const reply = w.channel.textsTo(u + 2).at(-1)!;
       expect(reply).toContain("@interlink_technicalsupport");
+      expect(reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
       expect(reply).not.toContain("Summary to send to support");
     } finally {
       await w.close();

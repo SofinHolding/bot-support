@@ -262,9 +262,10 @@ describe("router: tầng 2, 3 và các đường lỗi", () => {
   it("LLM phân loại off-topic", async () => {
     expect((await ask("what is the weather in Paris", { llm: okLlm("offtopic") })).outcome.kind).toBe("OFFTOPIC");
   });
-  it("LLM lỗi/quá tải -> thông báo high traffic cố định, không lộ lỗi kỹ thuật", async () => {
+  it("LLM lỗi/quá tải -> UNAVAILABLE (câu báo mất kết nối cố định), không gửi nội dung trong kho, không lộ lỗi kỹ thuật", async () => {
     const down: LlmPort = { ...okLlm("escalate"), classify: async () => { throw new LlmUnavailableError("429"); } };
-    expect(tpl(await ask("some strange statement about zebras", { llm: down }))).toBe("high-traffic");
+    const r = await ask("some strange statement about zebras", { llm: down });
+    expect(r.outcome).toMatchObject({ kind: "UNAVAILABLE", tier: 2 });
   });
   const twoChunks = { search: async () => [
     { chunkId: "1", docSlug: "whitepaper", heading: "Listing", text: "Listing date is not announced.", url: "https://x.com/inter_link", score: 0.7 },
@@ -287,13 +288,13 @@ describe("router: tầng 2, 3 và các đường lỗi", () => {
     const r = await route(q, { ...deps, knowledge: twoChunks, settings: { ...deps.settings, tier3Verify: false } });
     expect(r.outcome).toMatchObject({ kind: "GROUNDED", answer: "Listing date is not announced.\n\nhttps://x.com/inter_link" });
   });
-  it("LLM xác nhận trả kết quả sai schema -> ESCALATE (không báo 'high traffic'); LLM quá tải -> 'high traffic'", async () => {
+  it("LLM xác nhận trả kết quả sai schema -> ESCALATE (không báo mất kết nối); LLM quá tải -> UNAVAILABLE", async () => {
     const bad: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new LlmUnavailableError("bad json", true); } };
     expect((await route(q, { ...deps, knowledge: twoChunks, llm: bad })).outcome.kind).toBe("ESCALATE");
     const refused: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new Error("refused"); } };
     expect((await route(q, { ...deps, knowledge: twoChunks, llm: refused })).outcome.kind).toBe("ESCALATE");
     const down: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new LlmUnavailableError("503"); } };
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm: down })).outcome).toMatchObject({ kind: "TEMPLATE", templateId: "high-traffic" });
+    expect((await route(q, { ...deps, knowledge: twoChunks, llm: down })).outcome).toMatchObject({ kind: "UNAVAILABLE", tier: 3 });
   });
   it("tri thức không đủ liên quan -> ESCALATE, không tự đoán", async () => {
     const knowledge = { search: async () => [{ chunkId: "1", docSlug: "w", heading: "h", text: "t", score: 0.05 }] };

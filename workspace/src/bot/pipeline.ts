@@ -11,7 +11,8 @@ import { buildHandoffText, hasHandoffContent } from "../core/handoff";
 import { detectLanguage, looksVietnamese, resolveLanguage } from "../core/language";
 import type { KnowledgePort, LlmPort } from "../core/ports";
 import { LlmUnavailableError, usableLlm } from "../core/ports";
-import { route, routeHybrid, routeLlmFirst, type Outcome, type RouteResult, type RouterSettings } from "../core/router";
+import { routeHybrid, routeLlmFirst, type Outcome, type RouteResult, type RouterSettings } from "../core/router";
+import { fixedEnglish, NETWORK_DISCONNECTED_EN } from "../core/fixed-messages";
 import { detectKeyLeak, maskSensitive, REDACTED_LOG_TEXT } from "../core/sanitize";
 import type { Settings } from "../core/settings";
 import { SettingsService } from "../core/settings";
@@ -19,7 +20,7 @@ import { readSummary } from "../core/summary";
 import { normalize } from "../core/text";
 import type { Template, VisionResult, VisionScreenType } from "../domain/types";
 import {
-  ESCALATE_TEMPLATE_ID, HIGH_TRAFFIC_TEMPLATE_ID, IMAGE_COVER_SECRET_ID, IMAGE_UNREADABLE_ID, SECURITY_TEMPLATE_ID,
+  ESCALATE_TEMPLATE_ID, IMAGE_COVER_SECRET_ID, IMAGE_UNREADABLE_ID, SECURITY_TEMPLATE_ID,
 } from "../domain/types";
 import type { Db } from "../db/db";
 import type { ConvRepo, EpisodeRow, UserRow } from "../db/repo-conv";
@@ -92,10 +93,10 @@ export class BotPipeline {
       this.log("error", "pipeline error", { err: (e as Error).stack ?? String(e) });
       for (const it of items) if (it.updateId > 0) await conv.finishUpdate(it.updateId, "error").catch(() => undefined);
       // KHÔNG hiển thị lỗi kỹ thuật cho khách (AGENTS.md > Error Handling): gửi thông báo cố định.
-      const text = await this.d.resolver.forTemplate(HIGH_TRAFFIC_TEMPLATE_ID, "en").then((r) => r.text).catch(() => "");
-      if (text) await this.send(batch.chatId, text, `err:${items[0]!.updateId}`);
+      const text = NETWORK_DISCONNECTED_EN;
+      await this.send(batch.chatId, text, `err:${items[0]!.updateId}`).catch(() => undefined);
       await this.recordFailure(batch, e).catch((e2) => this.log("error", "không ghi được ca lỗi", { err: (e2 as Error).message }));
-      return { status: "error", replies: text ? [text] : [] };
+      return { status: "error", replies: [text] };
     }
   }
 
@@ -164,9 +165,14 @@ export class BotPipeline {
       const langRes = resolveLanguage(masked, user.language);
       let lang = langRes.lang; // do code nhận diện; ở luồng "AI hiểu trước" AI xác định lại bên dưới (code vẫn kiểm)
 
+      let llmDown = false;
       if (vision?.has_secret) {
-        const warn = await resolver.forTemplate(IMAGE_COVER_SECRET_ID, lang);
-        extraReplies.push(warn.text);
+        try {
+          extraReplies.push((await resolver.forTemplate(IMAGE_COVER_SECRET_ID, lang)).text);
+        } catch (e) {
+          if (!(e instanceof LlmUnavailableError) || e.badOutput) throw e;
+          llmDown = true;
+        }
       }
 
       // ---- Episode + ngữ cảnh ----
@@ -183,7 +189,6 @@ export class BotPipeline {
         tier3MinScore: settings["router.tier3_min_score"],
         tier3Verify: settings["router.tier3_verify"],
         knowledgeLang: settings["router.knowledge_lang"],
-        fastVerify: settings["router.fast_verify"],
         tooShortMaxChars: settings["router.too_short_max_chars"],
         urlHostWhitelist: this.d.live.urlHosts,
         askWhenUnclear: settings["episode.ask_when_unclear"],
@@ -196,14 +201,15 @@ export class BotPipeline {
         result = { outcome: { kind: "ESCALATE", tier: 0, reason: "khách gửi tệp bot không đọc được (video/voice/tài liệu)", sourceTemplateId: lastTemplate?.id }, trace: { gates: [], ranked: [], candidates: [], notes: [] } };
       } else if (photos.length && !vision) {
         result = imgs.failed === "unavailable"
-          ? { outcome: { kind: "TEMPLATE", templateId: HIGH_TRAFFIC_TEMPLATE_ID, tier: 2, via: "llm_unavailable" }, trace: { gates: [], ranked: [], candidates: [], notes: ["vision không khả dụng"] } }
+          ? { outcome: { kind: "UNAVAILABLE", tier: 2, reason: "không gọi được SKILL đọc ảnh" }, trace: { gates: [], ranked: [], candidates: [], notes: ["vision không khả dụng"] } }
           : { outcome: { kind: "ESCALATE", tier: 0, reason: imgs.failed === "error" ? "bot không đọc được ảnh khách gửi" : "khách gửi ảnh nhưng vision chưa được cấu hình", sourceTemplateId: lastTemplate?.id }, trace: { gates: [], ranked: [], candidates: [], notes: [] } };
       } else {
-        // Luồng "AI hiểu trước": mọi tin có chữ đi qua AI (hiểu -> tìm -> AI chọn). AI không dùng được thì routeLlmFirst tự quay về luồng code-first.
+        // Mọi tin đi qua AI (hiểu -> tìm -> AI chọn / AI xác nhận). AI không dùng được -> UNAVAILABLE: câu báo mất kết nối cố định, không trả lời thẳng từ kho.
         // Tin sẽ qua AI: báo "đang soạn" mỗi 4 giây cho tới khi có kết quả. Lỗi báo trạng thái không được làm hỏng lượt xử lý.
-        const typing = llm && settings["router.mode"] !== "code_first" && this.d.channel.typing ? this.keepTyping(batch.chatId) : undefined;
+        const typing = llm && this.d.channel.typing ? this.keepTyping(batch.chatId) : undefined;
         const mode = settings["router.mode"];
-        const router = mode === "hybrid" ? routeHybrid : mode === "llm_first" && llm ? routeLlmFirst : route;
+        // Không có luồng trả lời thẳng không qua AI (code_first đã bỏ; giá trị cũ trong DB coi như hybrid)
+        const router = mode === "llm_first" ? routeLlmFirst : routeHybrid;
         try {
           result = await router(
           { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined } },
@@ -213,7 +219,7 @@ export class BotPipeline {
           typing?.();
         }
       }
-      let outcome = result.outcome;
+      let outcome: Outcome = llmDown ? { kind: "UNAVAILABLE", tier: result.outcome.tier, reason: "không dịch được cảnh báo ảnh: mất kết nối LLM" } : result.outcome;
       if (result.lang) lang = result.lang;
       if (!isAdmin && lang !== user.language && (result.lang || langRes.update)) await conv.setLanguage(batch.userId, lang);
 
@@ -224,7 +230,16 @@ export class BotPipeline {
       let supportSummaryVar: string | undefined;
       const supportLang = lang; // chốt tại đây: không đổi theo các lần buildReply gọi lại bên dưới (vd rơi về "en" cho lưới an toàn)
       const supportSummary = isAdmin ? undefined : async () => (supportSummaryVar ??= await this.buildSupportSummaryVar(loaded.active, supportLang));
-      let built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+      let built;
+      try {
+        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+      } catch (e) {
+        if (!(e instanceof LlmUnavailableError) || e.badOutput) throw e;
+        result.trace.notes.push(`không dịch được câu trả lời (${e.message.slice(0, 80)}): gửi câu báo mất kết nối`);
+        outcome = { kind: "UNAVAILABLE", tier: outcome.tier, reason: "mất kết nối LLM khi dịch câu trả lời" };
+        extraReplies.length = 0;
+        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+      }
       // Ràng buộc chung về ngôn ngữ (bằng code, không nhờ LLM): khách nhắn ngôn ngữ nào thì nhận ngôn ngữ đó, và khách không dùng
       // tiếng Việt TUYỆT ĐỐI không nhận chữ tiếng Việt — dù kho tri thức, bản dịch hay LLM trả về gì. Vi phạm -> chuyển người thật.
       const firstMode = built.mode;
@@ -256,9 +271,9 @@ export class BotPipeline {
         const o = applyOfftopic(anti, now);
         await conv.saveAntispam(batch.userId, o.state);
         antiEvent = { level: o.level, blockMs: o.blockMs };
-        const w = await resolver.forTemplate(o.templateId, lang);
+        // ngoại lệ do code xử lý: luôn tiếng Anh, không qua AI (core/fixed-messages.ts)
         replies.length = 0;
-        replies.push(...extraReplies, w.text);
+        replies.push(...extraReplies, fixedEnglish(this.d.live.index, o.templateId));
         await conv.addEvent({ userId: batch.userId, type: o.blockMs ? "antispam_block" : "antispam_warning", payload: { level: o.level, block_minutes: o.blockMs / 60_000, offtopic: masked.slice(0, 120) } }, now);
       } else if (anti && !isAdmin) {
         await conv.saveAntispam(batch.userId, { ...anti, last_seen: now });
@@ -351,7 +366,7 @@ export class BotPipeline {
     });
   }
 
-  /** Lượt xử lý hỏng giữa chừng: khách chỉ nhận câu "high traffic", nên phải để lại ticket + quyết định cho người thật theo dõi. */
+  /** Lượt xử lý hỏng giữa chừng: khách chỉ nhận câu báo mất kết nối cố định (NETWORK_DISCONNECTED_EN), nên phải để lại ticket + quyết định cho người thật theo dõi. */
   private async recordFailure(batch: InboundBatch, e: unknown) {
     const { conv, ops } = this.d;
     if (await ops.getAdmin(batch.userId)) return;
@@ -360,7 +375,7 @@ export class BotPipeline {
     const open = await conv.openTicketFor(batch.userId, "system-error");
     const ticketId = open ? open.id : (await conv.createTicket({ episodeId: null, userId: batch.userId, category: "system-error", reason })).id;
     if (open) await conv.appendTicketNote(open.id, `[${now.toISOString()}] ${reason}`);
-    await conv.addDecision({ at: now, messageId: null, episodeId: null, userId: batch.userId, kind: "ESCALATE", tier: 0, templateId: HIGH_TRAFFIC_TEMPLATE_ID, via: "pipeline_error", reason, notes: { ticket_id: ticketId }, kbVersion: this.d.live.version });
+    await conv.addDecision({ at: now, messageId: null, episodeId: null, userId: batch.userId, kind: "UNAVAILABLE", tier: 0, templateId: null, via: "pipeline_error", reason, notes: { ticket_id: ticketId }, kbVersion: this.d.live.version });
   }
 
   private async linkMessage(messageId: number, episodeId: number | null) {
@@ -373,7 +388,7 @@ export class BotPipeline {
     const { conv, resolver } = this.d;
     const now = this.now();
     const lang = "en"; // câu cảnh báo cố định bằng tiếng Anh (nguyên văn theo AGENTS.md)
-    const alert = await resolver.forTemplate(SECURITY_TEMPLATE_ID, lang);
+    const alert = { text: fixedEnglish(this.d.live.index, SECURITY_TEMPLATE_ID) }; // ngoại lệ do code xử lý: chạy cả khi mất LLM
     await this.send(batch.chatId, alert.text, `fp0:${items[0]!.updateId}`);
 
     if (!isAdmin) {
@@ -431,6 +446,8 @@ export class BotPipeline {
       }
       case "OFFTOPIC":
         return { texts: [], lang }; // câu cảnh báo do nhánh anti-spam dựng
+      case "UNAVAILABLE":
+        return { texts: [NETWORK_DISCONNECTED_EN], lang: "en", mode: "fixed_en", note: outcome.reason };
       case "CLARIFY": {
         // câu hỏi lại đã được người duyệt viết (tiếng Anh) trong mục hỏi đáp: dịch trung thành như mọi câu đã duyệt
         const r = await this.d.resolver.dynamic(outcome.question, lang, "en");

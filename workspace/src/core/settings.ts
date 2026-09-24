@@ -5,8 +5,7 @@ export interface Settings {
   "router.semantic_confident": number;
   "router.semantic_margin": number;
   "router.semantic_suggest": number;
-  "router.mode": "hybrid" | "llm_first" | "code_first"; // hybrid (theo sơ đồ workflow): FAST PATH khi khớp chắc chắn bằng luật/từ khoá, còn lại đi AI/RAG. llm_first: mọi tin có chữ đi qua AI (hiểu -> tìm -> AI chọn -> dịch). code_first: luật/từ khoá trước, AI chỉ khi chưa rõ (rẻ, nhanh; cũng là chế độ dự phòng khi AI lỗi)
-  "router.fast_verify": boolean; // hybrid: câu trả lời khớp bằng luật/từ khoá ở FAST PATH phải được AI (model nhanh) xác nhận là trả lời đúng câu hỏi; không thì sang nhánh AI/RAG
+  "router.mode": "hybrid" | "llm_first"; // hybrid (theo sơ đồ workflow): FAST PATH khi khớp chắc chắn bằng luật/từ khoá — vẫn phải qua AI xác nhận —, còn lại đi AI/RAG. llm_first: mọi tin có chữ đi qua AI (hiểu -> tìm -> AI chọn -> dịch). Không có chế độ trả lời không qua AI.
   "router.tier3_mode": "extractive" | "generative";
   "router.tier3_min_score": number;
   "router.tier3_verify": boolean; // true: LLM phải xác nhận đoạn tri thức TRẢ LỜI ĐƯỢC câu hỏi rồi mới gửi (nguyên văn); không xác nhận được -> chuyển người thật
@@ -38,7 +37,6 @@ export const DEFAULT_SETTINGS: Settings = {
   "router.semantic_margin": 0.08,
   "router.semantic_suggest": 0.35,
   "router.mode": "hybrid",
-  "router.fast_verify": true,
   "router.tier3_mode": "generative",
   "router.tier3_min_score": 0.25,
   "router.tier3_verify": true,
@@ -90,7 +88,7 @@ export function validateSetting(key: string, value: unknown): string | null {
   if (typeof value !== typeof def) return `sai kiểu dữ liệu (cần ${typeof def})`;
   if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) return "giá trị phải là số không âm";
   if (key === "router.tier3_mode" && value !== "extractive" && value !== "generative") return "chỉ nhận extractive | generative";
-  if (key === "router.mode" && value !== "hybrid" && value !== "llm_first" && value !== "code_first") return "chỉ nhận hybrid | llm_first | code_first";
+  if (key === "router.mode" && value !== "hybrid" && value !== "llm_first") return "chỉ nhận hybrid | llm_first";
   if (key === "router.knowledge_lang" && value !== "vi" && value !== "en") return "chỉ nhận vi | en";
   if (key.startsWith("router.semantic") && (value as number) > 1) return "ngưỡng phải trong khoảng 0..1";
   return null;

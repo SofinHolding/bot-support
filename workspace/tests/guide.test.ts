@@ -198,5 +198,6 @@ describe("Kho tri thức: Draft -> kiểm tra -> đề xuất -> người KHÁC 
   it("hướng dẫn không làm đổi câu trả lời cho khách: câu lạ vẫn nhận nguyên văn câu chuyển nhân viên", async () => {
     await w.say(6101, "some completely strange statement about zebras");
     expect(w.channel.textsTo(6101).at(-1)).toContain("@interlink_technicalsupport");
+    expect(w.channel.textsTo(6101).at(-1)).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
   });
 });

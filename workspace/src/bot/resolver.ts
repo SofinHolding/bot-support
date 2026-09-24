@@ -8,7 +8,7 @@
 import { checkOutput, TELEGRAM_MAX_CHARS } from "../core/gate";
 import { sha1 } from "../core/knowledge";
 import { looksVietnamese, scriptProblem } from "../core/language";
-import { usableLlm, type LlmPort } from "../core/ports";
+import { LlmUnavailableError, usableLlm, type LlmPort } from "../core/ports";
 import { translationProblems } from "../core/translate";
 import type { TemplateIndex } from "../core/template-index";
 import type { KbRepo } from "../db/repo-kb";
@@ -63,7 +63,7 @@ export class ResponseResolver {
     }
 
     const llm = usableLlm(this.llm);
-    if (!llm) return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: "chưa cấu hình LLM để dịch" };
+    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
     try {
       const out = await llm.translate({ text: en, lang, from: "en" });
       const chk = checkOutput(out, { urlHostWhitelist: this.getHosts(), maxChars: TELEGRAM_MAX_CHARS });
@@ -73,6 +73,7 @@ export class ResponseResolver {
       if (loose) return { text: fill(out), lang, translated: true, mode: "machine_translation" };
       return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `đã tạo bản dịch ${lang} chờ duyệt: gửi nguyên văn tiếng Anh` };
     } catch (e) {
+      if (e instanceof LlmUnavailableError && !e.badOutput) throw e; // mất kết nối: bên gọi gửi câu báo mất kết nối
       return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `dịch lỗi: ${(e as Error).message.slice(0, 120)}` };
     }
   }
@@ -87,14 +88,15 @@ export class ResponseResolver {
   async translateFreeform(text: string, lang: string, from = "en"): Promise<{ text: string; translated: boolean }> {
     if (lang === from) return { text, translated: false };
     const llm = usableLlm(this.llm);
-    if (!llm) return { text, translated: false };
+    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
     try {
       const out = await llm.translate({ text, lang, from });
       const chk = checkOutput(out, { urlHostWhitelist: this.getHosts() });
       const faithful = translationProblems(text, out, lang);
       if (chk.ok && !faithful.length) return { text: out, translated: true };
-    } catch {
-      /* rơi về nguyên văn bên dưới */
+    } catch (e) {
+      if (e instanceof LlmUnavailableError && !e.badOutput) throw e;
+      /* bản dịch hỏng: rơi về nguyên văn bên dưới */
     }
     return { text, translated: false };
   }
@@ -119,8 +121,8 @@ export class ResponseResolver {
     }
     const llm = usableLlm(this.llm);
     let note: string | undefined;
-    if (!llm) note = "chưa cấu hình LLM để dịch";
-    else if (!loose) note = "chế độ chặt: không gửi bản dịch máy chưa duyệt";
+    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
+    if (!loose) note = "chế độ chặt: không gửi bản dịch máy chưa duyệt";
     else {
       try {
         const out = await llm.translate({ text, lang, from: sourceLang });
@@ -132,6 +134,7 @@ export class ResponseResolver {
         }
         note = [...chk.problems, ...faithful].join("; ");
       } catch (e) {
+        if (e instanceof LlmUnavailableError && !e.badOutput) throw e;
         note = `dịch lỗi: ${(e as Error).message.slice(0, 120)}`;
       }
     }

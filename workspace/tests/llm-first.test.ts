@@ -1,12 +1,14 @@
 /**
  * Luồng "AI hiểu trước" (router.mode = llm_first):
  *   khách -> AI hiểu (ngôn ngữ, ý định, truy vấn) -> code tìm trong kho -> AI chọn ứng viên ĐÚNG -> code kiểm -> dịch -> khách.
- * AI không bao giờ viết câu trả lời; mọi đầu ra của AI được code kiểm lại; AI hỏng thì quay về luồng luật/từ khoá.
+ * AI không bao giờ viết câu trả lời; mọi đầu ra của AI được code kiểm lại; mất kết nối AI thì khách nhận câu báo mất kết nối
+ * cố định bằng tiếng Anh (không bao giờ gửi thẳng nội dung trong kho khi AI chưa đánh giá).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { looksVietnamese } from "../src/core/language";
 import { LlmUnavailableError, type LlmPort, type SelectRequest, type UnderstandRequest, type UnderstandResult, type VerifyRequest, type VerifyResult } from "../src/core/ports";
 import type { Actor } from "../src/kb/service";
+import { NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
 const U = (over: Partial<UnderstandResult>): UnderstandResult => ({ language: "en", intent: "question", follow_up: "none", query_en: "", query_kb: "", ...over });
@@ -79,6 +81,7 @@ describe("luồng AI hiểu trước", () => {
     const { reply, d } = await ask(5104, "explain the tokenomics of the InterLink Mars colony staking pool");
     expect(d.kind).toBe("ESCALATE");
     expect(reply).toContain("@interlink_technicalsupport");
+    expect(reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
     expect((await w.db.query<{ n: number }>("SELECT count(*)::int AS n FROM tickets WHERE user_id = 5104")).rows[0]!.n).toBe(1);
   });
 
@@ -144,23 +147,40 @@ describe("luồng AI hiểu trước", () => {
     expect((await w.conv.touchUser({ id: 5113, name: "x", username: "x" }, w.clock.now)).language).toBe("en");
   });
 
-  it("AI không dùng được ở bước hiểu -> tự quay về luồng luật/từ khoá, khách vẫn được phục vụ", async () => {
+  it("AI không dùng được ở bước hiểu -> khách nhận câu báo mất kết nối cố định (tiếng Anh), KHÔNG gửi câu khớp từ khoá; đầu ra hỏng -> chuyển nhân viên", async () => {
     understand = () => { throw new LlmUnavailableError("503"); };
     const r = await ask(5114, "how do I withdraw my tokens?");
-    expect(r.d).toMatchObject({ kind: "TEMPLATE", template_id: "fp-2-withdraw", via: "keyword", tier: 0 });
-    expect(r.notes).toContain("quay về luồng code-first");
+    expect(r.d).toMatchObject({ kind: "UNAVAILABLE", template_id: null });
+    expect(r.reply).toBe(NETWORK_DISCONNECTED_EN);
+    expect(w.channel.textsTo(5114)).not.toContain(WITHDRAW_EN);
+    expect(seenSelect).toHaveLength(0);
     understand = () => { throw new Error("bad json"); };
-    expect((await ask(5115, "some strange statement about zebras")).d.kind).toBe("ESCALATE");
+    const bad = await ask(5115, "how do I withdraw my tokens?");
+    expect(bad.d.kind).toBe("ESCALATE");
+    expect(w.channel.textsTo(5115)).not.toContain(WITHDRAW_EN);
+    understand = () => { throw new LlmUnavailableError("bad json", true); };
+    expect((await ask(5119, "some strange statement about zebras")).d.kind).toBe("ESCALATE");
   });
 
-  it("các luật an toàn vẫn chạy TRƯỚC AI: seed phrase không bao giờ được gửi cho AI; sticker/tin quá ngắn không gọi AI", async () => {
+  it("các luật an toàn vẫn chạy TRƯỚC AI: seed phrase không bao giờ được gửi cho AI (cảnh báo tiếng Anh, chạy cả khi mất AI); sticker/tin quá ngắn cũng qua AI", async () => {
     understand = () => U({});
     const seed = "abandon ability able about above absent absorb abstract absurd abuse access accident";
     const r = await ask(5116, `my seed is ${seed}`);
     expect(seenUnderstand).toHaveLength(0);
     expect(r.d.kind).toBe("SECURITY");
-    await ask(5117, "ok");
-    expect(seenUnderstand).toHaveLength(0);
+    expect(r.reply).toContain("SECURITY ALERT");
+    // tin quá ngắn: AI vẫn đọc, rồi gửi lời chào đã duyệt
+    const short = await ask(5117, "ok");
+    expect(seenUnderstand).toHaveLength(1);
+    expect(short.d).toMatchObject({ kind: "TEMPLATE", via: "too_short" });
+    // mất kết nối AI: cảnh báo seed phrase vẫn gửi (do code), tin quá ngắn nhận câu báo mất kết nối
+    understand = () => { throw new LlmUnavailableError("503"); };
+    const seedDown = await ask(5120, `my seed is ${seed}`);
+    expect(seedDown.d.kind).toBe("SECURITY");
+    expect(seedDown.reply).toContain("SECURITY ALERT");
+    const shortDown = await ask(5121, "ok");
+    expect(shortDown.d.kind).toBe("UNAVAILABLE");
+    expect(shortDown.reply).toBe(NETWORK_DISCONNECTED_EN);
   });
 
   it("ràng buộc ngôn ngữ vẫn là lưới cuối: template tiếng Việt nạp nhầm vào answer:en không tới khách Anh dù AI chọn nó", async () => {
@@ -173,6 +193,7 @@ describe("luồng AI hiểu trước", () => {
     const r = await ask(5118, "walrus koala question please");
     expect(looksVietnamese(r.reply)).toBe(false);
     expect(r.reply).toContain("@interlink_technicalsupport");
+    expect(r.reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
   });
 });
 
@@ -247,14 +268,19 @@ describe("workflow hai nhánh (router.mode = hybrid): AI xác định ngôn ng�
   });
 });
 
-describe("workflow hai nhánh khi CHƯA cấu hình AI", () => {
-  it("dùng luồng luật/từ khoá; câu không khớp chắc chắn thì chuyển nhân viên", async () => {
-    const w = await makeWorld({ llm: null, mode: "hybrid" });
-    await w.say(6301, "how do I withdraw my tokens?");
-    expect(w.channel.textsTo(6301).at(-1)).toBe(WITHDRAW_EN);
-    await w.say(6302, "some strange statement about zebras");
-    expect(w.channel.textsTo(6302).at(-1)).toContain("@interlink_technicalsupport");
-    await w.close();
+describe("workflow khi CHƯA cấu hình AI", () => {
+  it("không trả thẳng nội dung trong kho: kể cả câu khớp từ khoá chắc chắn, khách nhận câu báo mất kết nối cố định (tiếng Anh)", async () => {
+    for (const mode of ["hybrid", "llm_first"] as const) {
+      const w = await makeWorld({ llm: null, mode });
+      const r1 = await w.say(6301, "how do I withdraw my tokens?");
+      expect(w.channel.textsTo(6301)).toEqual([NETWORK_DISCONNECTED_EN]);
+      expect(r1).toMatchObject({ decisionKind: "UNAVAILABLE" });
+      await w.say(6302, "some strange statement about zebras");
+      expect(w.channel.textsTo(6302)).toEqual([NETWORK_DISCONNECTED_EN]);
+      const d = (await w.db.query<{ kind: string; template_id: string | null }>("SELECT kind, template_id FROM decisions WHERE user_id = 6301")).rows;
+      expect(d).toEqual([{ kind: "UNAVAILABLE", template_id: null }]);
+      await w.close();
+    }
   });
 });
 
@@ -297,28 +323,55 @@ describe("kiểm duyệt FAST PATH (SKILL verify-answer)", () => {
     expect(selectCalls).toBe(1);
     expect(r.d).toMatchObject({ kind: "TEMPLATE", via: "llm_select" });
   });
-  it("AI kiểm duyệt lỗi -> sang AI/RAG, không gửi câu chưa được kiểm", async () => {
+  it("AI kiểm duyệt mất kết nối -> câu báo mất kết nối cố định, không gửi câu chưa được kiểm; lỗi khác -> sang AI/RAG", async () => {
     verify = () => { throw new LlmUnavailableError("503"); };
     const r = await ask(6403, "how do I withdraw my tokens?");
-    expect(r.notes).toContain("kiểm duyệt FAST PATH lỗi");
+    expect(verifyCalls).toHaveLength(1);
+    expect(selectCalls).toBe(0);
+    expect(r.d).toMatchObject({ kind: "UNAVAILABLE", template_id: null });
+    expect(r.reply).toBe(NETWORK_DISCONNECTED_EN);
+    expect(w.channel.textsTo(6403)).not.toContain(WITHDRAW_EN);
+
+    verify = () => { throw new Error("bad json"); };
+    const r2 = await ask(6406, "how do I withdraw my tokens?");
+    expect(r2.notes).toContain("kiểm duyệt lỗi");
     expect(selectCalls).toBe(1);
+    expect(r2.d).toMatchObject({ kind: "TEMPLATE", via: "llm_select" });
   });
-  it("luật nối tiếp (cảm ơn / chưa được) không qua kiểm duyệt: đó là nghiệp vụ admin đặt, không phải khớp nội dung", async () => {
+  it("luật nối tiếp (cảm ơn / không còn email cũ) cũng qua kiểm duyệt: mọi câu lấy từ kho đều được AI đánh giá", async () => {
     verify = () => ({ ok: true });
     await ask(6404, "how do I withdraw my tokens?");
-    verifyCalls = [];
-    const r = await ask(6404, "thanks");
-    expect(verifyCalls).toHaveLength(0);
-    expect(r.d.kind).toBe("TEMPLATE");
+    const thx = await ask(6404, "thanks");
+    expect(verifyCalls.map((v) => v.answer.id)).toEqual(["you-are-welcome"]);
+    expect(thx.d).toMatchObject({ kind: "TEMPLATE", template_id: "you-are-welcome", via: "follow_up:thanks" });
+
+    await ask(6407, "change email");
+    const noOld = await ask(6407, "I lost my old email");
+    expect(verifyCalls.map((v) => v.answer.id)).toEqual(["email-old-email-required"]);
+    expect(noOld.d).toMatchObject({ kind: "TEMPLATE", template_id: "email-old-email-required", via: "follow_up:no_old_email" });
+
+    // AI không xác nhận câu nối tiếp -> không gửi theo luật, tìm tiếp ở nhánh AI/RAG
+    await ask(6408, "change email");
+    verify = (r) => ({ ok: r.answer.id !== "email-old-email-required" });
+    const rejected = await ask(6408, "I lost my old email");
+    expect(rejected.notes).toContain("AI KHÔNG xác nhận email-old-email-required");
+    expect(rejected.d.via).not.toBe("follow_up:no_old_email");
+
+    // mất kết nối khi kiểm duyệt câu nối tiếp -> câu báo mất kết nối
+    verify = () => ({ ok: true });
+    await ask(6409, "change email");
+    verify = (r) => { if (r.answer.id === "email-old-email-required") throw new LlmUnavailableError("503"); return { ok: true }; };
+    const down = await ask(6409, "I lost my old email");
+    expect(down.d.kind).toBe("UNAVAILABLE");
+    expect(down.reply).toBe(NETWORK_DISCONNECTED_EN);
   });
-  it("tắt router.fast_verify -> gửi ngay khi khớp, không gọi AI kiểm duyệt", async () => {
+  it("không còn công tắc bỏ kiểm duyệt: setting cũ router.fast_verify = false không có tác dụng, câu khớp vẫn phải qua AI", async () => {
     await w.ops.setSetting("router.fast_verify", false, "test");
     w.settings.invalidate();
     verify = () => ({ ok: false });
     const r = await ask(6405, "how do I withdraw my tokens?");
-    expect(verifyCalls).toHaveLength(0);
-    expect(r.d).toMatchObject({ template_id: "fp-2-withdraw", via: "keyword" });
-    await w.ops.setSetting("router.fast_verify", true, "test");
-    w.settings.invalidate();
+    expect(verifyCalls).toHaveLength(1);
+    expect(r.d.via).not.toBe("keyword");
+    expect(r.notes).toContain("AI KHÔNG xác nhận fp-2-withdraw");
   });
 });

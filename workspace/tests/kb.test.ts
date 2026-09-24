@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KbError, type Actor } from "../src/kb/service";
-import type { GroundedChunk, GroundedResult } from "../src/core/ports";
+import type { GroundedChunk, GroundedResult, SelectRequest } from "../src/core/ports";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
 let w: World;
@@ -10,7 +10,14 @@ const admin: Actor = { id: 9002, role: "admin", label: "admin#9002" };
 const viewer: Actor = { id: 9003, role: "viewer", label: "viewer#9003" };
 
 beforeAll(async () => {
-  w = await makeWorld({ adminIds: [9001, 9002], ownerId: 9001, llm: fakeLlm({ grounded: async (r) => verdict(r.chunks) }) });
+  // SKILL select-answer chọn đoạn tri thức theo cùng phán quyết `verdict` (chỉ đoạn được xác nhận trả lời đúng câu hỏi mới được chọn)
+  const select = async (r: SelectRequest) => {
+    const chunks = r.candidates.filter((c) => c.ref.startsWith("K:")).map((c) => ({ id: c.ref.slice(2), heading: c.topic, text: c.text }));
+    const v = verdict(chunks);
+    const id = v.answerable ? v.cited.find((x) => chunks.some((c) => c.id === x)) : undefined;
+    return { ref: id ? `K:${id}` : "ESCALATE", reason: "" };
+  };
+  w = await makeWorld({ adminIds: [9001, 9002], ownerId: 9001, llm: fakeLlm({ grounded: async (r) => verdict(r.chunks), select }) });
 });
 afterAll(async () => w.close());
 
@@ -260,9 +267,10 @@ An unrelated paragraph about ambassadors and their monthly points.
 
     const hits = await w.pipeline["d"].knowledge!.search("tokenomics vesting schedule", 3);
     expect(hits[0]!.heading).toContain("Vesting");
-    // fakeLlm mặc định trả "không trả lời được" => bot KHÔNG gửi đoạn tri thức chưa được xác nhận, mà chuyển người thật
+    // AI mặc định trả "không trả lời được" => bot KHÔNG gửi đoạn tri thức chưa được xác nhận, mà chuyển người thật
     await w.say(4300, "explain tokenomics vesting schedule");
     expect(w.channel.textsTo(4300).at(-1)).toContain("@interlink_technicalsupport");
+    expect(w.channel.textsTo(4300).at(-1)).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
 
     verdict = (chunks) => ({ answerable: true, answer: "paraphrase must not be sent", cited: [chunks.find((c) => c.heading.includes("Vesting"))!.id] });
     await w.say(4301, "explain tokenomics vesting schedule");

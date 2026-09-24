@@ -2851,8 +2851,7 @@ Nội dung mục 2.
     "router.semantic_confident": "Điểm ngữ nghĩa tối thiểu để bot tin một ứng viên chỉ-ngữ-nghĩa (0-1).",
     "router.semantic_margin": "Chênh lệch điểm tối thiểu với ứng viên xếp sau (0-1).",
     "router.semantic_suggest": "Dưới mức này coi như không có ứng viên (0-1).",
-    "router.mode": "hybrid (mặc định, theo sơ đồ workflow): tin khớp CHẮC CHẮN bằng luật, điều kiện hoặc từ khoá (cụm khớp chiếm phần lớn câu hỏi, câu bằng tiếng Anh/Việt) đi FAST PATH, 0 token; mọi tin còn lại đi nhánh AI/RAG. llm_first: mọi tin nhắn có chữ đều đi qua AI — AI xác định ngôn ngữ và nội dung, hệ thống tìm trong kho, AI chọn kết quả đúng, rồi dịch về ngôn ngữ của khách. Khoảng 2–3 lời gọi AI và vài giây cho mỗi tin. code_first: khớp bằng luật/từ khoá trước (0 token), chỉ gọi AI khi chưa rõ; cũng là chế độ tự động dùng khi AI không khả dụng.",
-    "router.fast_verify": "Bật (mặc định): ở FAST PATH, câu trả lời khớp bằng từ khoá/luật phải được AI (model nhanh, ~1.000 token) xác nhận là giải quyết đúng câu hỏi trước khi gửi; không xác nhận được thì tin sang nhánh AI/RAG để tìm lại trong toàn bộ kho. Tắt: gửi ngay khi khớp (0 token, nhanh hơn, có thể trả sai ý với câu dài).",
+    "router.mode": "hybrid (mặc định, theo sơ đồ workflow): tin khớp CHẮC CHẮN bằng luật, điều kiện hoặc từ khoá (cụm khớp chiếm phần lớn câu hỏi, câu bằng tiếng Anh/Việt) đi FAST PATH và vẫn được AI xác nhận trước khi gửi; mọi tin còn lại đi nhánh AI/RAG. llm_first: mọi tin nhắn có chữ đều đi qua AI — AI xác định ngôn ngữ và nội dung, hệ thống tìm trong kho, AI chọn kết quả đúng, rồi dịch về ngôn ngữ của khách. Khoảng 2–3 lời gọi AI và vài giây cho mỗi tin. Mọi câu trả lời lấy từ kho đều phải qua AI đánh giá; mất kết nối AI thì bot gửi câu báo mất kết nối bằng tiếng Anh.",
     "router.tier3_mode": "Câu hỏi về dự án (tài liệu tri thức): generative (mặc định) = AI viết câu trả lời bằng ngôn ngữ của khách từ đoạn đã chọn, có trích dẫn; code kiểm số liệu, link, ngôn ngữ, không dự đoán giá; không đạt thì gửi nguyên văn đoạn. extractive = luôn gửi nguyên văn đoạn tài liệu (dịch trung thành nếu cần).",
     "router.tier3_min_score": "Điểm tối thiểu của đoạn tri thức để được dùng.",
     "router.tier3_verify": "Bật (khuyến nghị): LLM phải xác nhận đoạn tri thức trả lời đúng câu hỏi; khách vẫn nhận nguyên văn đoạn đã duyệt. Không xác nhận được thì chuyển người thật. Tắt: gửi đoạn có điểm cao nhất mà không kiểm tra.",
@@ -2878,7 +2877,6 @@ Nội dung mục 2.
     "router.semantic_margin": "Chênh lệch tối thiểu giữa hai ứng viên",
     "router.semantic_suggest": "Ngưỡng gợi ý ứng viên",
     "router.mode": "Luồng xử lý tin nhắn",
-    "router.fast_verify": "AI kiểm duyệt câu trả lời ở FAST PATH",
     "router.tier3_mode": "Cách trả lời từ tri thức",
     "router.tier3_min_score": "Điểm tối thiểu của đoạn tri thức",
     "router.tier3_verify": "Xác nhận đoạn tri thức trước khi gửi",
@@ -2899,7 +2897,7 @@ Nội dung mục 2.
     "batching.window_ms": "Cửa sổ gom tin nhắn (ms)",
     "retention.media_days": "Số ngày lưu ảnh",
   };
-  const SETTING_ENUM = { "router.mode": ["hybrid", "llm_first", "code_first"], "router.tier3_mode": ["extractive", "generative"], "router.knowledge_lang": ["vi", "en"] };
+  const SETTING_ENUM = { "router.mode": ["hybrid", "llm_first"], "router.tier3_mode": ["extractive", "generative"], "router.knowledge_lang": ["vi", "en"] };
 
   /** Mô hình LLM: URL + khoá của gateway (chỉ owner) và hai model nhanh/mạnh (admin). Khoá không bao giờ được máy chủ trả về. */
   /** Kết quả "kiểm tra model" giữ lại giữa các lần vẽ lại trang (đổi model xong trang tải lại). */

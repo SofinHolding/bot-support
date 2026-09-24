@@ -65,6 +65,8 @@ tin nhắn ─ AI hiểu (ngôn ngữ, ý định) ─┬─ ĐƯỜNG NHANH: kh
                                             └─ ESCALATE ─> chuyển nhân viên
 ```
 
+- **Mọi câu trả lời lấy từ kho đều qua AI.** Đường nhanh vẫn phải qua SKILL `verify-answer`, kể cả tin nối tiếp và luật theo ảnh có kèm chữ. Sticker/emoji cũng qua SKILL `understand`. Không có chế độ trả lời bằng từ khoá khi AI lỗi.
+- **Mất kết nối LLM** (hoặc chưa cấu hình, hết ngân sách token của khách) ở bất kỳ bước nào, kể cả lúc dịch: khách nhận một câu cố định bằng tiếng Anh ghi trong mã nguồn (`src/core/fixed-messages.ts`). Ngoại lệ do code xử lý, chạy cả khi mất kết nối, luôn tiếng Anh: cảnh báo lộ seed phrase / private key và cảnh báo chống spam.
 - Hai mục đã khai báo khác nhau cùng khớp thì cổng (`src/core/gate.ts`) trả "mơ hồ", không chọn theo thứ hạng.
 - **Hỏi lại khách** (`CLARIFY`) chỉ được nhận khi đủ ba điều kiện:
   - hai mục nằm trong danh sách ứng viên;

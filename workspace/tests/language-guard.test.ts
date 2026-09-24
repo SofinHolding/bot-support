@@ -6,7 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ResponseResolver } from "../src/bot/resolver";
 import { parseKnowledgeDoc } from "../src/core/knowledge";
 import { detectLanguage, looksVietnamese, sourceLangOf } from "../src/core/language";
-import type { GroundedChunk, KnowledgeHit, LlmPort } from "../src/core/ports";
+import { NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
+import { LlmUnavailableError, type GroundedChunk, type KnowledgeHit, type LlmPort } from "../src/core/ports";
 import { translationProblems } from "../src/core/translate";
 import type { Actor } from "../src/kb/service";
 import { IMAGE_COVER_SECRET_ID } from "../src/domain/types";
@@ -118,6 +119,8 @@ describe("bot: trả lời đúng ngôn ngữ của khách, không bao giờ ti�
   beforeAll(async () => {
     const llm: LlmPort = fakeLlm({
       classify: async () => ({ action: "knowledge" }),
+      // SKILL select-answer: chọn đoạn tri thức tìm được (test này kiểm ngôn ngữ của câu gửi đi, không kiểm việc chọn)
+      select: async (r) => ({ ref: r.candidates.find((c) => c.ref.startsWith("K:"))?.ref ?? "ESCALATE", reason: "" }),
       grounded: async (r: { chunks: GroundedChunk[] }) => ({ answerable: true, answer: "never sent", cited: [r.chunks[0]!.id] }),
       translate: async (r) => {
         translated.push(r);
@@ -136,7 +139,7 @@ describe("bot: trả lời đúng ngôn ngữ của khách, không bao giờ ti�
     await w.say(id, text);
     return w.channel.textsTo(id).at(-1)!;
   };
-  const isEscalation = (t: string) => t.includes("@interlink_technicalsupport");
+  const isEscalation = (t: string) => t.includes("@interlink_technicalsupport") && t !== NETWORK_DISCONNECTED_EN; // câu báo mất kết nối cũng có handle này
 
   it("khách Anh + đoạn tiếng Việt: dịch sang tiếng Anh, giữ nguyên số và link", async () => {
     hits = [viChunk];
@@ -197,13 +200,31 @@ describe("bot: trả lời đúng ngôn ngữ của khách, không bao giờ ti�
     expect(isEscalation(reply)).toBe(true);
     expect(looksVietnamese(reply)).toBe(false);
   });
-  it("dịch lỗi/quá tải -> chuyển người thật, không gửi đoạn tiếng Việt", async () => {
+  it("dịch lỗi (bản dịch hỏng, không phải mất kết nối) -> chuyển người thật, không gửi đoạn tiếng Việt", async () => {
     translateImpl = () => {
       throw new Error("503");
     };
     const reply = await ask(7108, "explain tokenomics vesting schedule");
     expect(isEscalation(reply)).toBe(true);
     expect(looksVietnamese(reply)).toBe(false);
+  });
+  it("mất kết nối LLM khi dịch -> câu báo mất kết nối cố định (tiếng Anh), không gửi đoạn tiếng Việt chưa dịch", async () => {
+    hits = [viChunk];
+    const before = translateImpl;
+    translateImpl = () => {
+      throw new LlmUnavailableError("503");
+    };
+    const reply = await ask(7112, "explain tokenomics vesting schedule");
+    expect(w.channel.textsTo(7112)).toEqual([NETWORK_DISCONNECTED_EN]);
+    expect(looksVietnamese(reply)).toBe(false);
+    const d = await w.db.query<{ kind: string }>("SELECT kind FROM decisions WHERE user_id = 7112 ORDER BY id DESC LIMIT 1");
+    expect(d.rows[0]!.kind).toBe("UNAVAILABLE");
+    // đoạn tiếng Anh cho khách Hàn: cũng không gửi nguyên văn khi không dịch được vì mất kết nối
+    hits = [enChunk];
+    await ask(7113, "tokenomics 베스팅 일정 설명해 주세요");
+    expect(w.channel.textsTo(7113)).toEqual([NETWORK_DISCONNECTED_EN]);
+    hits = [viChunk];
+    translateImpl = before;
   });
   it("đoạn tiếng Anh mà dịch sang ngôn ngữ khác lỗi -> vẫn gửi nguyên văn tiếng Anh đã duyệt (như mọi đường khác)", async () => {
     hits = [enChunk];
@@ -284,9 +305,15 @@ describe("resolver.translateFreeform: dịch văn bản tự do (khối tóm t�
     const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new Error("503"); } }), () => w.live.index, () => w.live.urlHosts);
     expect(await r.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
   });
-  it("chưa cấu hình LLM -> nguyên văn nguồn", async () => {
-    const r = new ResponseResolver(w.kb, undefined, () => w.live.index, () => w.live.urlHosts);
-    expect(await r.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
+  it("chưa cấu hình LLM hoặc mất kết nối -> ném LlmUnavailableError (bên gọi gửi câu báo mất kết nối), không gửi nguyên văn chưa dịch", async () => {
+    const none = new ResponseResolver(w.kb, undefined, () => w.live.index, () => w.live.urlHosts);
+    await expect(none.translateFreeform(EN, "fr")).rejects.toBeInstanceOf(LlmUnavailableError);
+    expect(await none.translateFreeform(EN, "en")).toEqual({ text: EN, translated: false }); // cùng ngôn ngữ: không cần LLM
+    const down = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new LlmUnavailableError("503"); } }), () => w.live.index, () => w.live.urlHosts);
+    await expect(down.translateFreeform(EN, "fr")).rejects.toBeInstanceOf(LlmUnavailableError);
+    // đầu ra hỏng (không phải mất kết nối) -> vẫn rơi về nguyên văn nguồn như cũ
+    const bad = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new LlmUnavailableError("bad json", true); } }), () => w.live.index, () => w.live.urlHosts);
+    expect(await bad.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
   });
 });
 
@@ -386,6 +413,7 @@ describe("rà soát: các đường gửi khác nhau đều không để lọt t
       expect(replies.length).toBeGreaterThan(0);
       expect(replies.some(looksVietnamese)).toBe(false);
       expect(replies[0]).toContain("@interlink_technicalsupport"); // bị thay bằng câu chuyển người thật cố định bằng tiếng Anh
+      expect(replies[0]).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
     } finally {
       resolver.forTemplate = original;
     }

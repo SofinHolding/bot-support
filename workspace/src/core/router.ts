@@ -6,7 +6,7 @@
  *   Tầng 3  tri thức (whitepaper...) — trích nguyên văn hoặc sinh có trích dẫn
  */
 import type { Template, Tier, VisionResult } from "../domain/types";
-import { ESCALATE_TEMPLATE_ID, GREETING_RETURNING_ID, GREETING_TEMPLATE_ID, HIGH_TRAFFIC_TEMPLATE_ID, IMAGE_UNREADABLE_ID } from "../domain/types";
+import { ESCALATE_TEMPLATE_ID, GREETING_RETURNING_ID, GREETING_TEMPLATE_ID, IMAGE_UNREADABLE_ID, THANKS_TEMPLATE_ID } from "../domain/types";
 import { checkOutput, decide, type GateContext, type GateResult, type GateSettings, DEFAULT_GATE_SETTINGS, type GateStep } from "./gate";
 import { detectStrongFollowUp, resolveFollowUp, type FollowUpKind } from "./followup";
 import { contentTokens } from "./knowledge";
@@ -27,8 +27,6 @@ export interface RouterSettings extends GateSettings {
   tier3Verify: boolean;
   /** Ngôn ngữ chính của kho tri thức: câu hỏi của khách được dịch sang ngôn ngữ này để tìm (SKILL translate-query) */
   knowledgeLang: string;
-  /** hybrid: AI xác nhận câu trả lời FAST PATH trước khi gửi (SKILL verify-answer) */
-  fastVerify: boolean;
   tooShortMaxChars: number;
   urlHostWhitelist: Set<string>;
   /** Cho AI hỏi lại khách 1 lần khi câu hỏi mơ hồ giữa hai mục hỏi đáp đã khai báo là khác nhau (setting episode.ask_when_unclear) */
@@ -41,7 +39,6 @@ export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> =
   tier3MinScore: 0.25,
   tier3Verify: true,
   knowledgeLang: "en",
-  fastVerify: true,
   tooShortMaxChars: 2,
   askWhenUnclear: false,
 };
@@ -71,7 +68,10 @@ export type Outcome =
   | { kind: "GROUNDED"; tier: 3; answer: string; /** ngôn ngữ thật của `answer` (khác ngôn ngữ khách => phải dịch trước khi gửi) */ sourceLang: string; /** sha1 của đoạn nguồn chính: khoá lưu câu trả lời đã gửi cho admin xem */ sourceHash?: string; sources: { chunkId: string; docSlug: string; heading: string; url?: string }[]; mode: "extractive" | "generative" }
   | { kind: "OFFTOPIC"; tier: Tier; reason: string }
   /** Hỏi lại khách (tối đa 1 lần) để phân biệt các mục đã khai báo là khác nhau. `question` là câu hỏi lại đã duyệt, tiếng Anh. */
-  | { kind: "CLARIFY"; tier: 2; question: string; items: string[] };
+  | { kind: "CLARIFY"; tier: 2; question: string; items: string[] }
+  /** Không gọi được LLM (mất kết nối, quá tải, chưa cấu hình, hết ngân sách): gửi câu cố định tiếng Anh (core/fixed-messages.ts),
+   * KHÔNG lấy nội dung trong kho trả thẳng cho khách. */
+  | { kind: "UNAVAILABLE"; tier: Tier; reason: string };
 
 export interface RouteTrace {
   gates: GateStep[];
@@ -205,15 +205,20 @@ export async function route(req: RouteRequest, deps: RouterDeps): Promise<RouteR
 }
 
 /**
- * LLM không cho kết quả dùng được. Quá tải/mất kết nối -> câu "high traffic" cố định (khách thử lại).
+ * LLM không cho kết quả dùng được. Mất kết nối / quá tải -> UNAVAILABLE (câu báo mất kết nối cố định, tiếng Anh; khách thử lại).
  * Mọi trường hợp khác (từ chối, đầu ra sai schema, lỗi bất ngờ) -> chuyển người thật: không đoán, không bỏ rơi khách.
  */
-function llmFailure(e: unknown, tier: 2 | 3, trace: RouteTrace, sourceTemplateId?: string): Outcome {
+export function llmFailure(e: unknown, tier: Tier, trace: RouteTrace, sourceTemplateId?: string): Outcome {
   const msg = e instanceof Error ? e.message : String(e);
   trace.notes.push(`LLM lỗi: ${msg.slice(0, 200)}`);
-  if (e instanceof LlmUnavailableError && !e.badOutput) return { kind: "TEMPLATE", templateId: HIGH_TRAFFIC_TEMPLATE_ID, tier, via: "llm_unavailable" };
+  if (e instanceof LlmUnavailableError && !e.badOutput) return { kind: "UNAVAILABLE", tier, reason: `không gọi được LLM: ${msg.slice(0, 120)}` };
   return { kind: "ESCALATE", tier, reason: "LLM không trả được kết quả hợp lệ", sourceTemplateId };
 }
+
+const noLlm = (trace: RouteTrace): RouteResult => {
+  trace.notes.push("không có LLM dùng được (chưa cấu hình hoặc hết ngân sách): không trả lời thẳng từ kho");
+  return { outcome: { kind: "UNAVAILABLE", tier: 0, reason: "không có LLM dùng được" }, trace };
+};
 
 /**
  * SKILL translate-query: dịch câu hỏi của khách sang ngôn ngữ của kho tri thức và làm nó đứng độc lập ("còn cái kia?" -> thực thể cụ thể).
@@ -364,7 +369,8 @@ export { ESCALATE_TEMPLATE_ID };
 //         -> [AI] chọn ứng viên ĐÚNG (chỉ được chọn ref có trong danh sách; không có thì chuyển nhân viên)
 //         -> [CODE] kiểm tra đầu ra -> (pipeline) dịch trung thành sang ngôn ngữ của khách -> gửi
 // AI không bao giờ viết câu trả lời: khách luôn nhận nguyên văn nội dung đã duyệt. Mọi đầu ra của AI được code kiểm lại.
-// AI không dùng được (chưa cấu hình, quá tải, đầu ra hỏng ở bước hiểu) -> quay về luồng code-first `route()` để bot không ngừng phục vụ.
+// AI không dùng được (mất kết nối, quá tải, chưa cấu hình) -> UNAVAILABLE (câu báo mất kết nối cố định, tiếng Anh); đầu ra hỏng -> chuyển nhân viên.
+// KHÔNG có đường nào gửi thẳng nội dung trong kho mà chưa qua SKILL AI (`route()` chỉ còn là bước sinh ứng viên cho FAST PATH / luật ảnh).
 // =====================================================================================================================
 
 // =====================================================================================================================
@@ -396,13 +402,12 @@ function fastPathReason(req: RouteRequest, r: RouteResult, index: TemplateIndex)
   return coverage >= FAST_KEYWORD_MIN_COVERAGE ? `từ khoá "${hit.phrase}" chiếm ${Math.round(coverage * 100)}% nội dung câu hỏi` : undefined;
 }
 
-/** Luồng hai nhánh của workflow. AI chưa cấu hình -> luồng luật/từ khoá thuần (câu không khớp chắc chắn thì chuyển nhân viên). */
+/**
+ * Luồng hai nhánh của workflow. MỌI câu trả lời lấy từ kho đều phải qua SKILL AI đánh giá trong lượt này (verify-answer ở
+ * FAST PATH, select-answer ở nhánh AI/RAG): không có AI -> UNAVAILABLE, không bao giờ trả thẳng kết quả khớp từ khoá.
+ */
 export async function routeHybrid(req: LlmFirstRequest, deps: RouterDeps): Promise<RouteResult> {
-  if (!deps.llm) {
-    const r = await route(req, deps);
-    r.trace.notes.unshift("AI chưa được cấu hình: không xác định ngôn ngữ/ý định bằng AI được — dùng luồng luật/từ khoá");
-    return r;
-  }
+  if (!deps.llm) return noLlm({ gates: [], ranked: [], candidates: [], notes: [] });
   return routeLlmFirst(req, deps, { fastPath: true });
 }
 
@@ -429,19 +434,60 @@ export interface LlmFirstRequest extends RouteRequest {
 export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts: { fastPath?: boolean } = {}): Promise<RouteResult> {
   const { index, evaluator, settings, knowledge } = deps;
   const llm = deps.llm;
-  if (!llm) return route(req, deps);
+  if (!llm) return noLlm({ gates: [], ranked: [], candidates: [], notes: [] });
   const last = req.ctx.lastTemplate;
   const matchText = [req.text, req.vision?.error_text].filter(Boolean).join(" ");
   const inp = { text: matchText, norm: req.text === matchText ? req.norm : normalize(matchText), imageType: req.vision?.screen_type, lastTemplateId: last?.id };
 
-  // ---- Không có nội dung ngữ nghĩa để AI hiểu, hoặc là luật theo LOẠI ẢNH: code xử lý như cũ ----
-  const noWords = !req.hasImage && (req.isSticker || (req.norm.length === 0 && isEmojiOnly(req.text)) || graphemeLength(req.text) <= settings.tooShortMaxChars);
-  const imageRule = req.hasImage && (!req.norm || index.hitsFor(inp).some((h) => (h.kind === "override" || h.kind === "image") && !isExcluded(index, evaluator, h.templateId, inp)));
-  if (noWords || imageRule) return route(req, deps);
-
   const trace: RouteTrace = { gates: [], ranked: [], candidates: [], notes: [opts.fastPath ? "luồng: workflow hai nhánh (AI xác định ngôn ngữ -> router)" : "luồng: AI hiểu trước"] };
   let queryEnOut: string | undefined;
   const done = (outcome: Outcome, lang?: string): RouteResult => ({ outcome, trace, lang, queryEn: queryEnOut });
+
+  /** SKILL verify-answer: câu trả lời đã duyệt này có trả lời đúng tin của khách không. Lỗi LLM -> Outcome thất bại để trả về ngay. */
+  const verifyTemplate = async (templateId: string, why: string | undefined, queryEn?: string): Promise<"ok" | "no" | Outcome> => {
+    const t = index.get(templateId);
+    const answerText = t ? index.resolveAnswerSource(t).answers.en ?? "" : "";
+    try {
+      // Câu mẫu của template là cách quản trị viên mô tả các tình huống câu trả lời này dành cho (một template có thể gom nhiều tình huống)
+      const intended = t ? [t.item?.title ?? t.group, t.item?.applies_when ?? t.sets_context.issue, ...t.match.examples.slice(0, 6)].filter(Boolean).join(" · ") : undefined;
+      const matched = why?.startsWith("từ khoá") ? /từ khoá "([^"]+)"/.exec(why)?.[1] : undefined;
+      const text = [req.text, req.vision?.error_text ? `(screenshot text: ${req.vision.error_text})` : ""].filter(Boolean).join(" ");
+      const v = await llm.verify({ text, queryEn, lang: req.lang, answer: { id: templateId, text: answerText }, intended, matched, lastAnswer: last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined, facts: req.ctx.contextPack?.facts });
+      trace.notes.push(v.ok ? `kiểm duyệt: AI xác nhận ${templateId} trả lời đúng tin của khách` : `kiểm duyệt: AI KHÔNG xác nhận ${templateId}${v.reason ? ` (${v.reason.slice(0, 100)})` : ""}`);
+      return v.ok ? "ok" : "no";
+    } catch (e) {
+      if (e instanceof LlmUnavailableError && !e.badOutput) return llmFailure(e, 2, trace, last?.id);
+      trace.notes.push(`kiểm duyệt lỗi (${(e as Error).message.slice(0, 80)})`);
+      return "no";
+    }
+  };
+
+  // ---- Sticker / emoji / tin quá ngắn: SKILL understand vẫn phải chạy (mất kết nối -> báo mất kết nối); được thì chào như cũ ----
+  const noWords = !req.hasImage && (req.isSticker || (req.norm.length === 0 && isEmojiOnly(req.text)) || graphemeLength(req.text) <= settings.tooShortMaxChars);
+  if (noWords) {
+    try {
+      const u0 = await llm.understand({ text: req.text || "(sticker)", knowledgeLang: settings.knowledgeLang, context: req.ctx.contextPack });
+      trace.llm = { action: `understand:${u0.intent}` };
+      const lang0 = resolveReplyLang(u0.language, req.lang, req.codeDetectedLang, trace);
+      trace.notes.push("tin không có nội dung câu hỏi (sticker/emoji/quá ngắn): AI đã đọc, gửi lời chào");
+      return done({ kind: "TEMPLATE", templateId: greeting(req), tier: 2, via: "too_short" }, lang0);
+    } catch (e) {
+      return done(llmFailure(e, 2, trace, last?.id));
+    }
+  }
+
+  // ---- Luật theo LOẠI ẢNH (vision là SKILL AI đã đọc ảnh): có kèm chữ thì câu trả lời còn phải qua verify-answer ----
+  const imageRule = req.hasImage && (!req.norm || index.hitsFor(inp).some((h) => (h.kind === "override" || h.kind === "image") && !isExcluded(index, evaluator, h.templateId, inp)));
+  if (imageRule) {
+    const r = await route(req, { ...deps, llm: undefined, knowledge: undefined });
+    r.trace.notes.unshift("luật theo loại ảnh (ảnh đã được SKILL đọc ảnh phân loại)");
+    if (r.outcome.kind !== "TEMPLATE" || !req.norm) return r;
+    trace.notes.push(...r.trace.notes);
+    const v = await verifyTemplate(r.outcome.templateId, undefined);
+    if (v === "ok") return { ...r, trace: { ...r.trace, notes: trace.notes } };
+    if (v !== "no") return done(v);
+    trace.notes.push("luật theo loại ảnh không được AI xác nhận với lời khách viết kèm -> tìm tiếp bằng AI");
+  }
 
   // ---- 1. AI HIỂU ----
   let u;
@@ -449,9 +495,8 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     const lastAnswer = last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined;
     u = await llm.understand({ text: req.text, imageText: req.vision?.error_text || undefined, knowledgeLang: settings.knowledgeLang, lastAnswer, context: req.ctx.contextPack });
   } catch (e) {
-    const r = await route(req, { ...deps, llm: undefined }); // không có AI: luồng code-first thuần (tầng 0-1), câu lạ -> chuyển nhân viên
-    r.trace.notes.unshift(`AI hiểu trước không dùng được (${(e as Error).message.slice(0, 100)}): quay về luồng code-first`);
-    return r;
+    // KHÔNG quay về khớp từ khoá: nội dung trong kho không bao giờ được gửi thẳng khi AI không đánh giá được
+    return done(llmFailure(e, 2, trace, last?.id));
   }
   const lang = resolveReplyLang(u.language, req.lang, req.codeDetectedLang, trace);
   trace.llm = { action: `understand:${u.intent}${u.follow_up !== "none" ? `/${u.follow_up}` : ""}` };
@@ -467,8 +512,12 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     const target = resolveFollowUp(u.follow_up, last);
     trace.followUp = u.follow_up;
     if (target === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: `follow-up (${u.follow_up}) sau template ${last?.id ?? "-"}`, sourceTemplateId: last?.id }, lang);
-    if (target && index.get(target)) return done({ kind: "TEMPLATE", templateId: target, tier: 2, via: `llm_follow_up:${u.follow_up}` }, lang);
-    trace.followUp = undefined; // template không có luật cho loại phản hồi này -> coi như câu hỏi, tìm tiếp
+    if (target && index.get(target)) {
+      const v = target === THANKS_TEMPLATE_ID ? "ok" : await verifyTemplate(target, undefined, u.query_en);
+      if (v === "ok") return done({ kind: "TEMPLATE", templateId: target, tier: 2, via: `llm_follow_up:${u.follow_up}` }, lang);
+      if (v !== "no") return done(v, lang);
+    }
+    trace.followUp = undefined; // template không có luật cho loại phản hồi này, hoặc AI không xác nhận -> coi như câu hỏi, tìm tiếp
   }
 
   // Câu truy vấn của AI chỉ dùng để TÌM; vẫn phải qua kiểm tra bằng code (con số, tên sản phẩm, chữ viết). Không đạt -> dùng câu gốc.
@@ -515,25 +564,12 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
       const fastReq: RouteRequest = { ...req, text: fastText, norm: normalize(fastText), lang: KEYWORD_LANGS.has(lang) ? lang : "en" };
       const fast = await route(fastReq, { ...deps, llm: undefined, knowledge: undefined }); // chỉ luật + từ khoá: không AI, không tìm tri thức
       let why = fastPathReason(fastReq, fast, index);
-      // KIỂM DUYỆT (SKILL verify-answer): khớp từ khoá/luật/exact chỉ nói "có từ trùng", chưa nói "trả lời đúng ý". AI xác nhận trước khi gửi;
-      // "no" hoặc AI lỗi -> sang nhánh AI/RAG (tìm lại trong toàn bộ kho), KHÔNG chuyển nhân viên ngay. Luật nối tiếp / luật theo ảnh không cần xác nhận.
-      if (why && settings.fastVerify && fast.outcome.kind === "TEMPLATE" && ["keyword", "exact", "rule"].includes(fast.outcome.via)) {
-        const t = index.get(fast.outcome.templateId);
-        const answerText = t ? index.resolveAnswerSource(t).answers.en ?? "" : "";
-        try {
-          // Câu mẫu của template là cách quản trị viên mô tả các tình huống câu trả lời này dành cho (một template có thể gom nhiều tình huống)
-          const intended = t ? [t.group, t.sets_context.issue, ...t.match.examples.slice(0, 6)].filter(Boolean).join(" · ") : undefined;
-          const matched = why.startsWith("từ khoá") ? /từ khoá "([^"]+)"/.exec(why)?.[1] : undefined;
-          const v = await llm.verify({ text: req.text, queryEn, lang, answer: { id: fast.outcome.templateId, text: answerText }, intended, matched, lastAnswer: last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined, facts: pack?.facts });
-          if (v.ok) trace.notes.push(`kiểm duyệt FAST PATH: AI xác nhận ${fast.outcome.templateId} trả lời đúng câu hỏi`);
-          else {
-            trace.notes.push(`kiểm duyệt FAST PATH: AI KHÔNG xác nhận ${fast.outcome.templateId}${v.reason ? ` (${v.reason.slice(0, 100)})` : ""} -> sang AI/RAG`);
-            why = undefined;
-          }
-        } catch (e) {
-          trace.notes.push(`kiểm duyệt FAST PATH lỗi (${(e as Error).message.slice(0, 80)}) -> sang AI/RAG`);
-          why = undefined;
-        }
+      // KIỂM DUYỆT (SKILL verify-answer) — BẮT BUỘC với mọi câu trả lời lấy từ kho ở FAST PATH (từ khoá, luật, exact, tin nối tiếp):
+      // khớp chỉ nói "có từ trùng", chưa nói "trả lời đúng ý". "no" -> sang nhánh AI/RAG; mất kết nối -> báo mất kết nối.
+      if (why && fast.outcome.kind === "TEMPLATE") {
+        const v = await verifyTemplate(fast.outcome.templateId, why, queryEn);
+        if (v === "no") why = undefined;
+        else if (v !== "ok") return done(v, lang);
       }
       if (why) {
         fast.trace.notes.unshift(...trace.notes, `nhánh: FAST PATH — ${why}${fastText === req.text ? "" : ` (khớp trên bản tiếng Anh: "${fastText}")`}`);

@@ -22,7 +22,7 @@ export interface LoadedEpisode {
   recent: EpisodeRow[];
 }
 
-export type TurnKind = "TEMPLATE" | "ESCALATE" | "GROUNDED" | "OFFTOPIC" | "SECURITY" | "BLOCKED" | "CLARIFY";
+export type TurnKind = "TEMPLATE" | "ESCALATE" | "GROUNDED" | "OFFTOPIC" | "SECURITY" | "BLOCKED" | "CLARIFY" | "UNAVAILABLE";
 
 export interface FinalizeInput {
   userId: number;

@@ -26,7 +26,7 @@ beforeAll(async () => {
   channel = new FakeChannel();
   (svc as { channel: unknown }).channel = channel;
   await svc.ops.upsertAdmin(9003, "viewer", null);
-  await svc.ops.setSetting("router.mode", "code_first", "test"); // các test ở đây kiểm luồng luật/từ khoá; luồng "AI hiểu trước" có test riêng (llm-first.test.ts)
+  await svc.ops.setSetting("router.mode", "hybrid", "test");
   svc.settings.invalidate();
   app = await buildAdminServer(svc, { now: () => clock.now, webDir: "src/admin/web" });
 });

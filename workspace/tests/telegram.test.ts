@@ -6,6 +6,7 @@ import { parseUpdate, TelegramClient, TelegramError, type TgUpdate } from "../sr
 import { createServices } from "../src/app";
 import { loadConfig } from "../src/config";
 import type { InboundBatch } from "../src/bot/types";
+import { fakeLlm } from "./helpers";
 
 const BOT = { id: 42, username: "SupportBot" };
 const upd = (m: Record<string, unknown>, id = 1): TgUpdate => ({ update_id: id, message: { message_id: 7, date: 1_780_000_000, chat: { id: 100, type: "private" }, from: { id: 100, first_name: "An", last_name: "Nguyen", username: "an" }, ...m } as never });
@@ -139,7 +140,7 @@ describe("webhook Telegram (Bot Service)", () => {
     const api = fakeApi({ getMe: () => ({ id: 42, username: "SupportBot", is_bot: true }), sendMessage: () => ({ message_id: 5 }) });
     const tg = new TelegramClient("TOKEN", api.f);
     (svc as { telegram: unknown }).telegram = tg;
-    (svc as { pipeline: unknown }).pipeline = new BotPipeline({ db: svc.db, conv: svc.conv, kb: svc.kb, ops: svc.ops, live: svc.live, settings: svc.settings, resolver: svc.resolver, channel: tg, llm: undefined, knowledge: svc.knowledge, ownerId: 9001, adminWebUrl: "http://x" });
+    (svc as { pipeline: unknown }).pipeline = new BotPipeline({ db: svc.db, conv: svc.conv, kb: svc.kb, ops: svc.ops, live: svc.live, settings: svc.settings, resolver: svc.resolver, channel: tg, llm: fakeLlm(), knowledge: svc.knowledge, ownerId: 9001, adminWebUrl: "http://x" }); // AI giả: mọi câu trả lời đều phải qua AI
 
     const running = await startBot(svc);
     try {

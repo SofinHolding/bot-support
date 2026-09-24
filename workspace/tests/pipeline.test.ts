@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DEFAULT_FIXED_EN, NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
 import { LlmUnavailableError } from "../src/core/ports";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
@@ -140,7 +141,7 @@ describe("FAST-PATH và ngữ cảnh", () => {
 
 describe("chống spam", () => {
   it("bậc thang cảnh báo -> chặn, và khi bị chặn thì im lặng", async () => {
-    const llm = fakeLlm({ classify: async () => ({ action: "offtopic" }) });
+    const llm = fakeLlm({ understand: async (r) => ({ language: "en", intent: "offtopic", follow_up: "none", query_en: r.text, query_kb: r.text }) });
     const w2 = await makeWorld({ llm });
     try {
       const u = 777;
@@ -166,8 +167,27 @@ describe("chống spam", () => {
     }
   });
 
+  it("cảnh báo chống spam là ngoại lệ do code xử lý: luôn gửi nguyên văn tiếng Anh, không qua dịch, kể cả với khách không dùng tiếng Anh", async () => {
+    let translateCalls = 0;
+    const llm = fakeLlm({
+      understand: async (r) => ({ language: "de", intent: "offtopic", follow_up: "none", query_en: r.text, query_kb: r.text }),
+      translate: async (r) => { translateCalls++; return `[${r.lang}] ${r.text}`; },
+    });
+    const w2 = await makeWorld({ llm });
+    try {
+      const u = 778;
+      await w2.say(u, "Wie ist das Wetter heute in Paris?");
+      expect(w2.channel.textsTo(u)).toEqual([DEFAULT_FIXED_EN["antispam-1"]]);
+      await w2.say(u, "Erzähl mir bitte einen Witz über Katzen");
+      expect(w2.channel.textsTo(u).at(-1)).toBe(DEFAULT_FIXED_EN["antispam-2"]);
+      expect(translateCalls).toBe(0);
+    } finally {
+      await w2.close();
+    }
+  });
+
   it("admin không bị chặn spam và không bị ghi hội thoại/antispam/context", async () => {
-    const llm = fakeLlm({ classify: async () => ({ action: "offtopic" }) });
+    const llm = fakeLlm({ understand: async (r) => ({ language: "en", intent: "offtopic", follow_up: "none", query_en: r.text, query_kb: r.text }) });
     const w2 = await makeWorld({ llm, adminIds: [9001], ownerId: 9001 });
     try {
       await w2.say(9001, "what is the weather in Paris today");
@@ -216,12 +236,28 @@ describe("nhóm chat và idempotency", () => {
 });
 
 describe("độ bền", () => {
-  it("LLM quá tải -> thông báo high traffic cố định, không lộ lỗi kỹ thuật", async () => {
-    const llm = fakeLlm({ classify: async () => { throw new LlmUnavailableError("429 usage limit"); } });
+  it("LLM quá tải / mất kết nối ở bất kỳ bước nào -> câu báo mất kết nối cố định (tiếng Anh), không lộ lỗi kỹ thuật, không gửi nội dung kho", async () => {
+    let failAt = "understand";
+    const down = (step: string) => async () => { if (failAt === step) throw new LlmUnavailableError("429 usage limit"); };
+    const llm = fakeLlm({
+      understand: async (r) => { await down("understand")(); return { language: "en", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }; },
+      verify: async () => { await down("verify")(); return { ok: true }; },
+      select: async (r) => { await down("select")(); return { ref: r.candidates[0]?.ref ?? "ESCALATE", reason: "" }; },
+    });
     const w2 = await makeWorld({ llm });
     try {
-      await w2.say(500, "some strange sentence about zebras and bananas");
-      expect(w2.channel.textsTo(500).at(-1)).toBe("⚠️ The system is currently experiencing high traffic. Please try again in a few minutes. We apologize for the inconvenience. If the issue persists, please contact @interlink_technicalsupport for assistance.");
+      const u = 500;
+      for (const step of ["understand", "verify", "select"]) {
+        failAt = step;
+        // "verify": câu khớp từ khoá chắc chắn ở FAST PATH; "select": câu lạ đi nhánh AI/RAG
+        const r = await w2.say(u, step === "verify" ? "how to withdraw" : "some strange sentence about zebras and withdraw tokens");
+        expect(r).toMatchObject({ decisionKind: "UNAVAILABLE" });
+        expect(w2.channel.textsTo(u).at(-1)).toBe(NETWORK_DISCONNECTED_EN);
+      }
+      expect(w2.channel.textsTo(u).every((t) => t === NETWORK_DISCONNECTED_EN)).toBe(true);
+      expect(w2.channel.textsTo(u).join(" ")).not.toContain("429");
+      const d = (await w2.db.query<{ kind: string; template_id: string | null }>("SELECT kind, template_id FROM decisions WHERE user_id = $1", [u])).rows;
+      expect(d).toEqual([{ kind: "UNAVAILABLE", template_id: null }, { kind: "UNAVAILABLE", template_id: null }, { kind: "UNAVAILABLE", template_id: null }]);
     } finally {
       await w2.close();
     }
@@ -243,7 +279,7 @@ describe("độ bền", () => {
       w2.conv.touchUser = async () => { throw new Error("db exploded at /secret/path"); };
       const r = await w2.say(601, "hello");
       expect(r.status).toBe("error");
-      expect(w2.channel.textsTo(601).at(-1)).toContain("high traffic");
+      expect(w2.channel.textsTo(601)).toEqual([NETWORK_DISCONNECTED_EN]);
       expect(w2.channel.textsTo(601).at(-1)).not.toContain("exploded");
       w2.conv.touchUser = orig;
     } finally {
@@ -368,20 +404,26 @@ describe("ghi nhận và riêng tư", () => {
 });
 
 describe("chống đốt chi phí và ảnh không liên quan", () => {
-  it("khách vượt hạn mức token/ngày thì KHÔNG gọi LLM nữa (câu lạ được chuyển người thật)", async () => {
-    let classifyCalls = 0;
-    const llm = fakeLlm({ classify: async () => { classifyCalls++; return { action: "offtopic" }; } });
+  it("khách vượt hạn mức token/ngày thì KHÔNG gọi LLM nữa: nhận câu báo mất kết nối cố định, không nhận nội dung kho chưa qua AI", async () => {
+    let llmCalls = 0;
+    const llm = fakeLlm({
+      understand: async (r) => { llmCalls++; return { language: "en", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }; },
+      verify: async () => { llmCalls++; return { ok: true }; },
+      select: async () => { llmCalls++; return { ref: "ESCALATE", reason: "" }; },
+    });
     const w2 = await makeWorld({ llm });
     try {
       const u = 8001;
       await w2.conv.touchUser({ id: u }, w2.clock.now);
       await w2.conv.addLlmCall({ userId: u, purpose: "classify", inputTokens: 190_000, outputTokens: 20_000 }, new Date(w2.clock.now.getTime() - 3600_000));
       await w2.say(u, "please explain quantum banana zebra protocol");
-      expect(classifyCalls).toBe(0);
-      expect(w2.channel.textsTo(u).at(-1)).toContain("I'm sorry, I don't have enough information");
+      await w2.say(u, "how to withdraw"); // câu khớp từ khoá chắc chắn cũng không được gửi thẳng
+      expect(llmCalls).toBe(0);
+      expect(w2.channel.textsTo(u)).toEqual([NETWORK_DISCONNECTED_EN, NETWORK_DISCONNECTED_EN]);
       // khách khác vẫn được phục vụ bằng LLM
       await w2.say(8002, "please explain quantum banana zebra protocol");
-      expect(classifyCalls).toBe(1);
+      expect(llmCalls).toBeGreaterThan(0);
+      expect(w2.channel.textsTo(8002).at(-1)).toContain("I'm sorry, I don't have enough information");
     } finally {
       await w2.close();
     }
