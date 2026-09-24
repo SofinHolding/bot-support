@@ -6,9 +6,14 @@ Tài liệu cho người vận hành và cho agent đọc trước khi sửa cod
 
 | Loại | Dùng làm gì | Ai sửa | Ở đâu trong code |
 |---|---|---|---|
-| **Mục hỏi đáp** (`items`) | Câu trả lời đã duyệt cho từng tình huống của khách | Người quản lý bot, bằng form trên Admin Web | `src/core/items.ts` |
-| **Tài liệu tham khảo** (`knowledge`) | Whitepaper, Infrastructure, Ambassador: bot trích nguyên văn đoạn phù hợp | Người quản lý bot, bằng Markdown | `src/core/knowledge.ts` |
-| **Hướng dẫn AI làm việc** (`guide`) | Luật cho AI | Chỉ qua duyệt hai người | `src/core/guide.ts` |
+| **Mục hỏi đáp** (`items`) | Câu trả lời đã duyệt cho từng tình huống của khách | Hệ thống tự tạo từ nội dung người dùng đưa vào ("Thêm nội dung") | `src/core/items.ts` |
+| **Tài liệu tham khảo** (`knowledge`) | Whitepaper, Infrastructure, Ambassador: bot trích nguyên văn đoạn phù hợp | Hệ thống tự tạo từ nội dung người dùng đưa vào ("Thêm nội dung") | `src/core/knowledge.ts` |
+| **Hướng dẫn AI làm việc** (`guide`) | Luật cho AI | Soạn trực tiếp, chỉ qua duyệt hai người | `src/core/guide.ts` |
+
+Người dùng **không** chọn loại, không soạn Markdown/YAML: Kho tri thức là nơi duy nhất, chỉ có một cửa "Thêm nội dung". Hệ
+thống (SKILL intake-draft) tự quyết là câu trả lời hay tài liệu, tự xếp chủ đề (`intakeToItems`, `GROUP_TOPIC`), tự so với dữ
+liệu đang có (`relationsForNew`) và chỉ hỏi người dùng những chỗ cần quyết. API soạn thẳng (`POST /api/kb/documents`,
+`PUT /api/kb/versions/:id`) chỉ còn nhận "Hướng dẫn AI làm việc".
 
 Loại `templates` là hệ thống cũ. Nó vẫn chạy trong thời gian chuyển đổi (xem mục 5).
 
@@ -39,11 +44,16 @@ Nhờ vậy tìm kiếm, dịch, ticket và kiểm tra hồi quy của hạ tầ
 ## 3. Vòng đời
 
 ```
-Form Admin Web ──> bản nháp của chủ đề ──> 6 bước kiểm tra ──> Publish (duyệt hai người nếu có luật bảo mật) ──> bot nạp lại
-                                                                                   └─ Rollback về phiên bản bất kỳ
+"Thêm nội dung" (dán văn bản / kéo-thả tệp; hoặc "Sửa nội dung" = dán bản mới cho một nội dung có sẵn)
+  ──> AI tách cấu trúc ──> bản nháp của đúng chủ đề / tài liệu ──> 6 bước kiểm tra + khung "cần bạn quyết"
+  ──> Publish (duyệt hai người nếu có luật bảo mật) ──> bot nạp lại
+                                                   └─ Rollback về phiên bản bất kỳ
 ```
 
-Code: `KbService.saveItem`, `createDraft`/`updateDraft`, `validateSource`, `publish`, `rollback` (`src/kb/service.ts`). API nằm ở `/api/items*` (`src/admin/server.ts`), giao diện ở `viewItems` (`src/admin/web/app.js`).
+Code: `/api/kb/intake` (`src/admin/server.ts`) → `intakeToItems` (`src/kb/intake.ts`) → `KbService.addIntakeItems` /
+`mutateItemsDoc` / `relationsForNew` / `versionUnits`, rồi `validateSource`, `publish`, `rollback` (`src/kb/service.ts`).
+Danh sách nội dung: `GET /api/kb/content` (`KbService.listContent`). Giao diện: `viewKb`, `kbContent`, `kbUnit`,
+`kbIntakeNew`, `kbIntakeReview`, `kbPending` (`src/admin/web/app.js`).
 
 ## 4. Luật chặn publish (bước 3, `itemGate`)
 

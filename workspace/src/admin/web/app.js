@@ -616,7 +616,6 @@
     { path: "conversations", label: "Hội thoại", view: viewConversations },
     { path: "users", label: "Người dùng", view: viewUsers },
     { path: "tickets", label: "Ticket", view: viewTickets },
-    { path: "items", label: "Mục hỏi đáp", view: viewItems },
     { path: "kb", label: "Kho tri thức", view: viewKb },
     { path: "translations", label: "Bản dịch", view: viewTranslations },
     { path: "changes", label: "Chờ duyệt", view: viewChanges, min: "admin" },
@@ -633,7 +632,6 @@
     conversations: ["M4 5h16v11H9l-5 4z"],
     users: ["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M4 20c0-4 3.5-6 8-6s8 2 8 6"],
     tickets: ["M4 6h16v3a2.5 2.5 0 0 0 0 6v3H4v-3a2.5 2.5 0 0 0 0-6z", "M14 6v12"],
-    items: ["M4 5h16v11H9l-5 4z", "M9 9h6", "M9 12h4"],
     kb: ["M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z", "M5 17a3 3 0 0 1 3-3h11"],
     translations: ["M4 6h9", "M8.5 4v2", "M6 6c0 4 3 7 7 8", "M11 6c-.5 3-3 6-7 8", "M14 20l4-9 4 9", "M15.5 17h5"],
     eval: ["M9 5h11", "M9 12h11", "M9 19h11", "M4 5l1 1 2-2", "M4 12l1 1 2-2", "M4 19l1 1 2-2"],
@@ -658,7 +656,7 @@
   const NAV_GROUPS = [
     { label: null, items: ["dashboard"] },
     { label: "Hỗ trợ khách", items: ["conversations", "tickets", "users"] },
-    { label: "Nội dung của bot", items: ["items", "kb", "translations", "eval", "changes"] },
+    { label: "Nội dung của bot", items: ["kb", "translations", "eval", "changes"] },
     { label: "Hệ thống", items: ["settings", "usage", "audit", "broadcasts"] },
   ];
 
@@ -788,8 +786,7 @@
     "Hội thoại": "Xem từng cuộc trò chuyện và lý do bot trả lời như vậy.",
     "Người dùng": "Những khách đã nhắn cho bot, kèm ngôn ngữ và số lần nhắn.",
     "Ticket": "Các ca bot đã chuyển cho người hỗ trợ: phân người phụ trách, ghi chú và cập nhật trạng thái.",
-    "Mục hỏi đáp": "Mỗi mục là một tình huống của khách: nhiều cách hỏi, một câu trả lời (có thể nhiều bước). Sửa bằng form, lưu thành bản nháp, kiểm tra rồi Publish.",
-    "Kho tri thức": "Template, tài liệu tri thức và Hướng dẫn AI làm việc. Sửa ở bản nháp, kiểm tra rồi mới Publish.",
+    "Kho tri thức": "Nơi duy nhất quản lý nội dung của bot. Đưa nội dung mới vào, hệ thống tự phân tích, tự so với dữ liệu đang có và chỉ hỏi bạn những chỗ cần quyết; publish sau khi kiểm tra đạt.",
     "Bản dịch": "Duyệt bản dịch template do LLM tạo trước khi khách nhận được.",
     "Chờ duyệt": "Thay đổi nhạy cảm cần một người khác duyệt trước khi có hiệu lực.",
     "Cấu hình": "Mô hình LLM, ngưỡng và giới hạn của bot. Thay đổi có hiệu lực không cần khởi động lại.",
@@ -1374,125 +1371,30 @@
   }
 
   // ---------------------------------------------------------------- 6. Kho tri thức
-  const KB_TABS = [["Tài liệu", "/kb"], ["Hướng dẫn AI làm việc", "/kb/guide"], ["SKILL AI", "/kb/skills"], ["Template", "/kb/templates"]];
+  const KB_TABS = [["Nội dung", "/kb"], ["Thêm nội dung", "/kb/add"], ["Chờ xử lý", "/kb/pending"], ["Hướng dẫn AI làm việc", "/kb/guide"], ["SKILL AI", "/kb/skills"]];
   const GUIDE_SLUG = "agent-guide";
   const KIND_BADGE = { templates: ["template", "info"], knowledge: ["tri thức", "muted"], guide: ["hướng dẫn AI", "warn"] };
   const docKindBadge = (k) => badge((KIND_BADGE[k] || [k, "muted"])[0], (KIND_BADGE[k] || [k, "muted"])[1]);
 
   function viewKb({ parts, query }) {
     const [sub, arg] = parts;
-    const active = sub === "templates" || sub === "guide" || sub === "skills" ? `/kb/${sub}` : sub === "doc" && arg === GUIDE_SLUG ? "/kb/guide" : "/kb";
+    const active = sub === "add" || sub === "intake" ? "/kb/add" : sub === "pending" || sub === "edit" ? "/kb/pending" : sub === "guide" || (sub === "doc" && arg === GUIDE_SLUG) ? "/kb/guide" : sub === "skills" ? "/kb/skills" : "/kb";
     const tabs = h("nav", { class: "tabs" }, KB_TABS.map(([label, path]) => h("a", { href: `#${path}`, class: path === active ? "active" : null }, label)));
     let body;
-    if (sub === "templates") body = kbTemplates();
-    else if (sub === "guide") body = kbGuide();
+    if (sub === "guide") body = kbGuide();
     else if (sub === "skills") body = kbSkills();
+    else if (sub === "add") body = kbIntakeNew(query);
     else if (sub === "intake" && arg) body = kbIntakeReview(arg);
-    else if (sub === "intake") body = kbIntakeNew();
+    else if (sub === "pending") body = kbPending();
+    else if (sub === "unit") body = kbUnit(query.get("key") || "");
     else if (sub === "doc" && arg) body = kbDoc(arg);
     else if (sub === "new") body = kbEditorNew(query);
     else if (sub === "edit" && arg) body = kbEditorEdit(arg);
-    else body = kbDocs();
-    return h("div", null, pageHead("Kho tri thức"), kbSearchBar(), tabs, body);
+    else body = kbContent();
+    return h("div", null, pageHead("Kho tri thức"), tabs, body);
   }
 
-  /** Tìm xuyên suốt kho: tài liệu, đoạn tri thức đang publish, template — dù đang ở tab nào. Kết quả bấm vào là mở đúng chỗ. */
-  const KB_SEARCH_TYPE = { template: ["template", "info"], chunk: ["đoạn tri thức", "muted"], doc: ["tài liệu", "muted"] };
-  function kbSearchBar() {
-    const input = h("input", { type: "search", placeholder: "Tìm id template, từ khoá, hoặc nội dung — vd. esc-login-fail, wallet creation failed..." });
-    const holder = h("div", { class: "search-results" });
-    let timer = null;
-    let seq = 0;
-    const openHit = (it) => {
-      if (it.type === "template") {
-        if (!it.docSlug) return toast("Template này chưa nằm trong tài liệu đang publish", "info");
-        editTemplate(it.docSlug, it.id);
-      } else if (it.docSlug) go(`/kb/doc/${enc(it.docSlug)}`);
-    };
-    const draw = async () => {
-      const q = input.value.trim();
-      const my = ++seq;
-      if (q.length < 2) {
-        clear(holder);
-        return;
-      }
-      let r;
-      try {
-        r = await get("/api/kb/search", { q });
-      } catch {
-        return;
-      }
-      if (my !== seq) return; // kết quả của lần gõ trước, đến muộn: bỏ
-      clear(holder);
-      if (!r.items.length) {
-        holder.append(h("p", { class: "muted" }, "Không tìm thấy."));
-        return;
-      }
-      holder.append(
-        h(
-          "div",
-          { class: "list" },
-          r.items.map((it) => {
-            const tag = KB_SEARCH_TYPE[it.type] || [it.type, "muted"];
-            return h(
-              "div",
-              { class: "row-card row-card-clickable", on: { click: () => openHit(it) } },
-              h("div", { class: "row-top" }, badge(tag[0], tag[1]), it.type === "template" ? h("code", null, it.id) : h("b", null, it.title), it.docSlug ? h("span", { class: "muted small" }, "trong tài liệu ", h("code", null, it.docSlug)) : null),
-              it.snippet ? h("div", { class: "hint pre-wrap" }, short(it.snippet, 160)) : null,
-            );
-          }),
-        ),
-      );
-    };
-    input.addEventListener("input", () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(draw, 250);
-    });
-    return card(null, h("div", { class: "field" }, input), holder);
-  }
 
-  function kbDocs() {
-    return lazy(async () => {
-      const r = await get("/api/kb/documents");
-      noteKb(r.kbVersion);
-      return h(
-        "div",
-        null,
-        can("admin")
-          ? h(
-              "div",
-              { class: "actions" },
-              link("+ Nạp nội dung mới", "/kb/intake", "btn btn-primary"),
-              link("+ Tài liệu mới (tự viết cấu trúc)", "/kb/new", "btn"),
-              h("span", { class: "hint" }, "Không rành cấu trúc YAML, hoặc chưa cấu hình LLM? Dùng \"Nạp nội dung mới\" — hệ thống tự phân loại và dựng đúng cấu trúc. Tự viết chỉ cần khi cần các trường nâng cao (follow_up, ticket, luật bảo mật, nhiều ngôn ngữ...)."),
-            )
-          : null,
-        card(
-          null,
-          table(
-            [
-              { label: "Slug", cell: (d) => link(d.slug, `/kb/doc/${enc(d.slug)}`) },
-              { label: "Tiêu đề", cell: (d) => d.title },
-              { label: "Loại", cell: (d) => docKindBadge(d.kind) },
-              { label: "Đang chạy", cell: (d) => (d.published_version ? badge(`v${d.published_version}`, "ok") : badge("chưa publish", "warn")) },
-              { label: "Mới nhất", cell: (d) => `v${d.latest_version}` },
-              {
-                label: "Xung đột",
-                cell: (d) =>
-                  d.conflicts
-                    ? h("a", { href: `#/kb/doc/${enc(d.slug)}`, class: "conflict-dot", title: d.conflictHint || `${d.conflicts} xung đột đang mở` }, h("span", { class: "dot dot-err", "aria-hidden": "true" }), ` ${d.conflicts}`)
-                    : null,
-              },
-              { label: "", cell: (d) => link("Các phiên bản", `/kb/doc/${enc(d.slug)}`) },
-            ],
-            r.items,
-          ),
-        ),
-      );
-    });
-  }
-
-  /** Giải thích ngắn cho người quản trị: tài liệu này tác động tới đâu, và tới đâu thì KHÔNG. */
   function guideIntro() {
     return notice(
       "info",
@@ -1618,13 +1520,13 @@
       return h(
         "div",
         null,
-        h("div", { class: "page-head" }, h("h2", null, doc.kind === "guide" ? "Hướng dẫn AI làm việc" : doc.slug), docKindBadge(doc.kind), link("← Tài liệu", "/kb", "small")),
+        h("div", { class: "page-head" }, h("h2", null, doc.kind === "guide" ? "Hướng dẫn AI làm việc" : `Lịch sử phiên bản — ${doc.title || doc.slug}`), link("← Nội dung", "/kb", "small")),
         doc.kind === "guide" ? guideIntro() : null,
         can("admin")
           ? h(
               "div",
               { class: "actions" },
-              link("Tạo phiên bản mới", `/kb/new?${newQuery}`, "btn btn-primary"),
+              doc.kind === "guide" ? link("Tạo phiên bản mới", `/kb/new?${newQuery}`, "btn btn-primary") : null,
               // "Hướng dẫn AI làm việc" là tài liệu bắt buộc duy nhất, không cho xoá (khớp kb/service.ts).
               doc.kind !== "guide"
                 ? btn("Xoá tài liệu", {
@@ -1977,21 +1879,30 @@ Nội dung mục 2.
     return zone;
   }
 
-  function kbIntakeNew() {
+  function kbIntakeNew(query) {
     return lazy(async () => {
-      if (!can("admin")) return notice("warn", "Chỉ admin/owner được dùng trợ lý này.");
-      const raw = h("textarea", { class: "editor", spellcheck: "false", "aria-label": "Nội dung tự do" });
-      const kindHint = select([["", "Để AI phân tích"], ["templates", "Câu trả lời cố định (template)"], ["knowledge", "Tài liệu tri thức"]], "");
-      const submit = btn("Phân tích & tạo bản nháp", {
+      if (!can("admin")) return notice("warn", "Chỉ admin/owner được thêm nội dung.");
+      const target = query.get("target") || "";
+      const raw = h("textarea", { class: "editor", spellcheck: "false", "aria-label": "Nội dung" });
+      let targetTitle = "";
+      if (target) {
+        // sửa: điền sẵn nội dung đang dùng để người dùng sửa trực tiếp
+        const r = await get("/api/kb/content");
+        const a = r.topics.flatMap((t) => t.answers).find((x) => x.key === target);
+        const sec = a ? null : r.documents.flatMap((d) => d.sections).find((x) => x.key === target);
+        if (!a && !sec) return notice("warn", "Không tìm thấy nội dung cần sửa. ", link("Về danh sách", "/kb"));
+        targetTitle = a ? a.title : sec.heading;
+        raw.value = a ? [a.questions.length ? `Khách hỏi:\n${a.questions.map((q) => `- ${q}`).join("\n")}` : "", `Trả lời:\n${a.steps[0] || ""}`].filter(Boolean).join("\n\n") : sec.text;
+      }
+      const submit = btn(target ? "Phân tích & tạo bản nháp sửa" : "Phân tích & tạo bản nháp", {
         kind: "primary",
         on: {
           click: (ev) => {
             if (raw.value.trim().length < 20) return toast("Nội dung quá ngắn (tối thiểu 20 ký tự)");
             run(ev.currentTarget, async () => {
-              const body = { rawText: raw.value.trim() };
-              if (kindHint.value) body.kindHint = kindHint.value;
-              const r = await post("/api/kb/intake", body);
-              toast(`Đã tạo bản nháp ${r.version.slug}${r.boxes.length ? ` — ${r.boxes.length} khung xung đột cần xem` : ""}`, r.boxes.length ? "info" : "ok");
+              const r = await post("/api/kb/intake", { rawText: raw.value.trim(), ...(target ? { target } : {}) });
+              const more = (r.drafts || []).length > 1 ? ` Nội dung thuộc ${r.drafts.length} chủ đề — các bản nháp còn lại ở mục Chờ xử lý.` : "";
+              toast(`Đã tạo bản nháp${r.boxes.length ? ` — ${r.boxes.length} chỗ cần bạn xem` : ""}.${more}`, r.boxes.length ? "info" : "ok");
               go(`/kb/intake/${r.version.id}`);
             });
           },
@@ -2000,31 +1911,25 @@ Nội dung mục 2.
       return h(
         "div",
         null,
-        h("div", { class: "page-head" }, h("h2", null, "Nạp nội dung mới"), link("← Tài liệu", "/kb", "small")),
+        h("div", { class: "page-head" }, h("h2", null, target ? `Sửa nội dung — ${targetTitle}` : "Thêm nội dung"), link("← Nội dung", "/kb", "small")),
         notice(
           "info",
-          'Dán văn bản tự do — ghi chú, câu trả lời hỗ trợ đã có, bản dịch... Hệ thống tự đoán loại nội dung và tạo đúng cấu trúc, không cần bạn tự viết YAML. Không tạo được tài liệu "Hướng dẫn AI làm việc" qua đường này.',
+          target
+            ? "Sửa trực tiếp nội dung bên dưới rồi bấm phân tích. Hệ thống tạo bản nháp, so với bản đang dùng và kiểm tra lại; chưa có gì thay đổi với khách cho tới khi publish."
+            : 'Dán văn bản tự do hoặc kéo-thả tệp — câu trả lời hỗ trợ, ghi chú, tài liệu... Hệ thống tự phân tích: là câu trả lời hay tài liệu tham khảo, thuộc chủ đề nào, trùng hay mâu thuẫn với nội dung đang có. Không tạo được "Hướng dẫn AI làm việc" qua đường này.',
         ),
-        h(
-          "div",
-          { class: "card" },
-          intakeDropzone(raw),
-          field("Nội dung", raw, "Càng đầy đủ càng tốt: tình huống khách hỏi, câu trả lời, các trường hợp liên quan. Kéo-thả tệp ở trên sẽ điền (nối thêm) vào đây."),
-          field("Gợi ý loại (tuỳ chọn)", kindHint, "Không chắc thì để AI phân tích."),
-          h("div", { class: "actions" }, submit),
-        ),
+        h("div", { class: "card" }, target ? null : intakeDropzone(raw), field("Nội dung", raw, "Càng đầy đủ càng tốt: tình huống khách hỏi, câu trả lời, các trường hợp liên quan."), h("div", { class: "actions" }, submit)),
       );
     });
   }
 
+
   function kbIntakeReview(idStr) {
     return lazy(async () => {
-      const v = (await get(`/api/kb/versions/${enc(idStr)}`)).version;
-      const editable = can("admin") && (v.status === "draft" || v.status === "rejected");
-      const pane = editorPane({ md: v.source_md || "", readonly: !editable });
+      const vr = await get(`/api/kb/versions/${enc(idStr)}`);
+      const v = vr.version;
       const reportBox = h("div");
-      const saved = { md: v.source_md || "" };
-      const dirty = () => pane.ta.value !== saved.md;
+      const dirty = () => false;
       const showReport = (r) => {
         clear(reportBox);
         reportBox.append(renderReport(r, { versionId: v.id, onReport: showReport }));
@@ -2048,17 +1953,6 @@ Nội dung mục 2.
       };
       await loadBoxes();
 
-      const save = btn("Lưu Draft", {
-        on: {
-          click: () =>
-            run(save, async () => {
-              const r = await put(`/api/kb/versions/${v.id}`, { md: pane.ta.value });
-              saved.md = pane.ta.value;
-              showReport(r.report);
-              toast(r.report.ok ? "Đã lưu, kiểm tra đạt." : "Đã lưu nhưng kiểm tra chưa đạt.", r.report.ok ? "ok" : "info");
-            }),
-        },
-      });
       const validate = btn("Kiểm tra lại toàn bộ", {
         title: "Chạy lại 6 bước kiểm tra + dựng lại các khung xung đột trên bản đã lưu",
         on: {
@@ -2085,7 +1979,7 @@ Nội dung mục 2.
               const r = await post(`/api/kb/intake/${v.id}/publish-all`, { versionIds: ids });
               const ok = r.results.filter((x) => x.status).length;
               toast(`${ok}/${r.results.length} bản đã publish.` + (ok < r.results.length ? " Xem lỗi ở từng tài liệu, có thể thử lại." : ""), ok === r.results.length ? "ok" : "info");
-              if (ok) go(`/kb/doc/${v.slug}`);
+              if (ok) go("/kb");
             });
           },
         },
@@ -2094,10 +1988,11 @@ Nội dung mục 2.
       return h(
         "div",
         null,
-        h("div", { class: "page-head" }, h("h2", null, `Nạp nội dung mới — ${v.slug}`), link("← Tài liệu", "/kb", "small")),
+        h("div", { class: "page-head" }, h("h2", null, "Thêm nội dung — kết quả phân tích"), link("← Nội dung", "/kb", "small")),
         notice("info", "Nội dung bạn vừa đưa vào đã được tạo đúng cấu trúc hệ thống cần. Xem báo cáo bên dưới; nếu có khung xung đột, mở từng khung để xem gợi ý và xử lý trước khi Publish."),
-        h("div", { class: "card" }, editable ? pane.node : h("pre", { class: "pre-wrap" }, v.source_md)),
-        editable ? h("div", { class: "actions" }, save, validate) : null,
+        unitsView(vr.units),
+        tryBox(v.id),
+        can("admin") ? h("div", { class: "actions" }, validate) : null,
         reportBox,
         boxesCard,
         h("div", { class: "actions" }, publishAll),
@@ -2107,6 +2002,7 @@ Nội dung mục 2.
 
   function kbEditorNew(query) {
     return lazy(async () => {
+      if (query.get("kind") !== "guide") return notice("info", 'Nội dung tri thức không còn soạn bằng Markdown/YAML: dùng "Thêm nội dung" để hệ thống tự phân tích. ', link("Thêm nội dung", "/kb/add"));
       if (!can("admin")) return notice("warn", "Chỉ admin/owner được tạo tài liệu.");
       const from = query.get("from");
       let md = "";
@@ -2163,13 +2059,15 @@ Nội dung mục 2.
 
   function kbEditorEdit(idStr) {
     return lazy(async (reload) => {
-      const v = (await get(`/api/kb/versions/${enc(idStr)}`)).version;
+      const vr = await get(`/api/kb/versions/${enc(idStr)}`);
+      const v = vr.version;
       const doc = (await get(`/api/kb/documents/${enc(v.slug)}`)).document;
-      const editable = can("admin") && (v.status === "draft" || v.status === "rejected");
-      const pane = editorPane({ md: v.source_md || "", readonly: !editable });
+      const isGuide = doc.kind === "guide"; // chỉ Hướng dẫn AI làm việc còn soạn thẳng; nội dung tri thức sửa qua "Thêm nội dung"
+      const editable = isGuide && can("admin") && (v.status === "draft" || v.status === "rejected");
+      const pane = isGuide ? editorPane({ md: v.source_md || "", readonly: !editable }) : null;
       const reportBox = h("div");
       const saved = { md: v.source_md || "" };
-      const dirty = () => pane.ta.value !== saved.md;
+      const dirty = () => !!pane && pane.ta.value !== saved.md;
       const showReport = (r) => {
         clear(reportBox);
         reportBox.append(renderReport(r, { versionId: v.id, onReport: showReport }));
@@ -2219,7 +2117,7 @@ Nội dung mục 2.
       const actions = [];
       if (editable) actions.push(save, validate);
       if (can("admin") && v.status === "draft") actions.push(publish);
-      if (can("admin") && v.status !== "draft" && v.status !== "rejected") actions.push(link("Tạo Draft mới từ bản này", `/kb/new?slug=${enc(v.slug)}&kind=${enc(doc.kind)}&title=${enc(doc.title || v.slug)}&from=${v.id}`, "btn"));
+      if (isGuide && can("admin") && v.status !== "draft" && v.status !== "rejected") actions.push(link("Tạo Draft mới từ bản này", `/kb/new?slug=${enc(v.slug)}&kind=${enc(doc.kind)}&title=${enc(doc.title || v.slug)}&from=${v.id}`, "btn"));
       if (!can("admin")) actions.push(h("span", { class: "muted" }, "Quyền viewer: chỉ xem."));
 
       const statusNote =
@@ -2236,10 +2134,12 @@ Nội dung mục 2.
       return h(
         "div",
         null,
-        h("div", { class: "page-head" }, h("h2", null, `${v.slug} · v${v.version}`), statusBadge(v.status), link("← Các phiên bản", `/kb/doc/${enc(v.slug)}`, "small")),
+        h("div", { class: "page-head" }, h("h2", null, `${doc.title || v.slug} · v${v.version}`), statusBadge(v.status), link("← Các phiên bản", `/kb/doc/${enc(v.slug)}`, "small")),
         dl([["Tác giả", v.author], ["Tạo", fmtDate(v.created_at)], ["Duyệt bởi", v.approved_by], ["Loại", doc.kind]]),
         statusNote,
-        h("div", { class: "card" }, h("div", { class: "actions" }, actions), editable ? h("p", { class: "hint" }, "Publish có thể trả về \"chờ duyệt\": nếu tài liệu có luật bảo mật (SECURITY_RULE) thì chỉ owner được đề xuất và một người khác phải duyệt; Hướng dẫn AI làm việc thì luôn cần một người khác duyệt.") : null, pane.node),
+        h("div", { class: "card" }, h("div", { class: "actions" }, actions), can("admin") ? h("p", { class: "hint" }, "Publish có thể trả về \"chờ duyệt\": nếu có luật bảo mật (SECURITY_RULE) thì chỉ owner được đề xuất và một người khác phải duyệt; Hướng dẫn AI làm việc thì luôn cần một người khác duyệt.") : null, pane ? pane.node : null),
+        isGuide ? null : unitsView(vr.units),
+        isGuide || v.status !== "draft" ? null : tryBox(v.id),
         reportBox,
       );
     });
@@ -2275,7 +2175,7 @@ Nội dung mục 2.
             on: {
               click: () =>
                 run(b, async () => {
-                  const res = await post("/api/items/decide", { versionId: ctx.versionId, itemId: x.itemId, chunkId: x.chunkId });
+                  const res = await post("/api/kb/decide", { versionId: ctx.versionId, itemId: x.itemId, chunkId: x.chunkId });
                   toast("Đã ghi nhận, kiểm tra lại bản nháp.", "ok");
                   if (ctx.onReport) ctx.onReport(res.report);
                 }),
@@ -2326,13 +2226,6 @@ Nội dung mục 2.
     return wrap;
   }
 
-  /** Mở trình soạn thảo phiên bản mới của tài liệu chứa template, đặt con trỏ tại template đó. */
-  async function editTemplate(docSlug, templateId) {
-    const d = await get(`/api/kb/documents/${enc(docSlug)}`);
-    const published = d.versions.find((v) => v.status === "published") || d.versions[0];
-    go(`/kb/new?slug=${enc(docSlug)}&kind=templates&title=${enc(d.document.title || docSlug)}${published ? `&from=${published.id}` : ""}&focus=${enc(templateId)}`);
-  }
-
   // ---- Chồng lấn nội dung: code cờ cặp (chính bộ tìm kiếm lúc chạy thật) -> AI phán xét từng cặp -> admin quyết ----
   const VERDICT = { duplicate: ["trùng", "err"], subset: ["bao hàm", "warn"], conflict: ["mâu thuẫn", "err"], distinct: ["khác nhau", "ok"] };
   function overlapCard(docs) {
@@ -2342,7 +2235,7 @@ Nội dung mục 2.
     let pairs = [];
     const keyOf = (p) => `${p.a.kind}:${p.a.id}|${p.b.kind}:${p.b.id}`;
     const refCell = (r) => h("div", null, h("div", null, badge(r.kind === "template" ? "template" : "đoạn tri thức", r.kind === "template" ? "info" : "muted"), " ", h("code", null, r.kind === "template" ? r.id : r.doc)), h("div", { class: "small muted" }, r.title));
-    const fix = (r) => (r.kind === "template" ? (can("admin") && docs[r.id] ? btn("Sửa " + r.id, { small: true, on: { click: () => editTemplate(docs[r.id], r.id) } }) : null) : link("Mở " + r.doc, `/kb/doc/${enc(r.doc)}`, "small"));
+    const fix = (r) => (r.kind === "template" ? (docs[r.id] ? link("Mở nội dung", `/kb/unit?key=${enc("item:" + r.id)}`, "small") : null) : link("Mở tài liệu", `/kb/doc/${enc(r.doc)}`, "small"));
     const reviewPairs = async (list) => {
       const res = await post("/api/kb/overlap/review", { pairs: list.map((p) => ({ a: { kind: p.a.kind, id: p.a.id }, b: { kind: p.b.kind, id: p.b.id }, signals: p.signals.slice(0, 5) })) });
       for (const x of res.results) reviews.set(`${x.a.kind}:${x.a.id}|${x.b.kind}:${x.b.id}`, x);
@@ -2422,76 +2315,15 @@ Nội dung mục 2.
     );
   }
 
-  function kbTemplates() {
-    return lazy(async () => {
-      const r = await get("/api/templates");
-      noteKb(r.kbVersion);
-      const search = h("input", { type: "search", placeholder: "Tìm theo id hoặc nhóm..." });
-      const holder = h("div");
-      const draw = () => {
-        const s = search.value.trim().toLowerCase();
-        const rows = r.items.filter((t) => !s || t.id.toLowerCase().includes(s) || String(t.group || "").toLowerCase().includes(s));
-        clear(holder);
-        holder.append(
-          h("p", { class: "hint" }, `${fmtNum(rows.length)} / ${fmtNum(r.items.length)} template${rows.length > 300 ? " (hiển thị 300 đầu)" : ""}`),
-          table(
-            [
-              { label: "ID", cell: (t) => h("code", null, t.id) },
-              { label: "Nhóm", cell: (t) => t.group },
-              { label: "Chế độ", cell: (t) => t.response_mode },
-              { label: "Ưu tiên", cell: (t) => t.priority, cls: "num" },
-              { label: "Ngôn ngữ", cell: (t) => h("div", { class: "chips" }, t.langs.map((l) => chip(l))) },
-              { label: "Từ khoá", cell: (t) => t.keywords, cls: "num" },
-              { label: "Ticket", cell: (t) => (t.ticket ? h("span", { class: "small mono" }, short(jsonText(t.ticket, 0), 60)) : "-") },
-              { label: "Câu trả lời (EN)", cell: (t) => h("span", { class: "small pre-wrap" }, t.answer_en) },
-              { label: "Khớp bằng", cell: (t) => h("div", { class: "small" }, (t.keyword_list || []).length ? h("div", null, h("span", { class: "muted" }, "từ khoá: "), t.keyword_list.join(", "), t.keywords > t.keyword_list.length ? "…" : "") : null, (t.examples || []).length ? h("div", null, h("span", { class: "muted" }, "câu mẫu: "), t.examples.join(" · ")) : h("div", { class: "muted" }, "chưa có câu mẫu")) },
-              {
-                // Đọc ngay tại đây thay vì phải nhớ ID rồi mở tab "Câu hỏi mẫu" / chạy quét chồng lấn riêng.
-                label: "Sức khoẻ",
-                cell: (t) =>
-                  h(
-                    "div",
-                    { class: "small" },
-                    t.evalCount > 0 ? badge(`✔ ${t.evalCount} câu kiểm tra`, "ok") : badge("⚠ chưa có câu kiểm tra", "warn"),
-                    (t.conflicts || []).length
-                      ? h(
-                          "div",
-                          { title: t.conflicts.map((c) => `${c.withTitle} — độ giống ${c.score.toFixed(2)}`).join("\n") },
-                          badge(`⚠ dễ nhầm với ${t.conflicts.length === 1 ? t.conflicts[0].withTitle : `${t.conflicts.length} mục khác`}`, "warn"),
-                        )
-                      : null,
-                  ),
-              },
-              { label: "", cell: (t) => (can("admin") && r.docs[t.id] ? btn("Sửa", { small: true, on: { click: () => editTemplate(r.docs[t.id], t.id) } }) : null) },
-            ],
-            rows.slice(0, 300),
-          ),
-        );
-      };
-      search.addEventListener("input", draw);
-      draw();
-      return h("div", null, overlapCard(r.docs), h("div", { class: "form-row" }, h("div", { class: "field" }, search)), card(null, holder));
-    });
-  }
-
-  // ---------------------------------------------------------------- 7. Bản dịch
   // ==================================================================================================
-  // Mục hỏi đáp (src/core/items.ts): mỗi mục = một tình huống của khách — nhiều cách hỏi, một câu trả lời (có thể nhiều bước).
-  // Người quản lý bot nhập bằng form, không cần biết YAML/Markdown. Lưu = bản nháp của chủ đề + chạy đủ bước kiểm tra;
-  // Publish đi qua đúng quy trình duyệt của Kho tri thức.
+  // Kho tri thức — MỘT nơi duy nhất: xem toàn bộ nội dung, thêm nội dung (hệ thống tự phân tích), xử lý việc chờ.
+  // Người dùng không chọn loại (câu trả lời / tài liệu), không soạn cấu trúc: hệ thống tự tách, tự so, tự kiểm tra.
   // ==================================================================================================
-  const ITEM_KIND = { answer: ["Trả lời", "info"], handoff: ["Chuyển nhân viên", "warn"], system: ["Tin hệ thống", "muted"] };
-  const itemKindBadge = (k) => badge((ITEM_KIND[k] || [k])[0], (ITEM_KIND[k] || [k, "muted"])[1]);
-  const NEXT_OPTS = [["", "Coi như câu hỏi mới"], ["next", "Sang bước kế tiếp"], ["handoff", "Chuyển nhân viên"]];
-  const lines = (s) => String(s || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  const UNIT_KIND = { answer: ["Câu trả lời", "info"], handoff: ["Chuyển nhân viên", "warn"], system: ["Tin hệ thống", "muted"], document: ["Tài liệu", "muted"] };
+  const unitKindBadge = (k) => badge((UNIT_KIND[k] || [k])[0], (UNIT_KIND[k] || [k, "muted"])[1]);
+  const CHANGE = { new: ["Mới", "ok"], changed: ["Thay đổi", "warn"], same: ["Giữ nguyên", "muted"], removed: ["Bị bỏ", "err"] };
 
-  function viewItems({ parts }) {
-    const [topic, itemId] = parts;
-    const body = topic && itemId ? itemForm(topic, itemId) : itemTopics();
-    return h("div", null, pageHead("Mục hỏi đáp"), body);
-  }
-
-  /** Ô "Thử hỏi bot": câu này bot trả lời bằng mục nào (không gọi AI). `versionId` = thử trên bộ sau khi đưa bản nháp lên. */
+  /** Ô "Thử hỏi bot": câu này bot trả lời bằng nội dung nào (không gọi AI). `versionId` = thử trên bộ sau khi đưa bản nháp lên. */
   function tryBox(versionId) {
     const input = h("input", { type: "search", placeholder: "Gõ một câu khách có thể hỏi, vd. I forgot my login ID" });
     const out = h("div");
@@ -2500,16 +2332,16 @@ Nội dung mục 2.
         click: () =>
           run(ask, async () => {
             if (!input.value.trim()) return;
-            const r = await post("/api/items/try", { question: input.value.trim(), ...(versionId ? { versionId } : {}) });
+            const r = await post("/api/kb/try", { question: input.value.trim(), ...(versionId ? { versionId } : {}) });
             clear(out);
             if (r.result === "TEMPLATE")
-              out.append(notice("ok", h("b", null, `Bot trả lời bằng mục "${r.title}"`), r.answer ? h("div", { class: "pre-wrap small" }, short(r.answer, 400)) : null));
+              out.append(notice("ok", h("b", null, `Khớp chắc chắn: "${r.title}"`), h("div", { class: "small" }, "Trong bot thật, AI vẫn xác nhận câu trả lời này đúng ý khách trước khi gửi."), r.answer ? h("div", { class: "pre-wrap small" }, short(r.answer, 400)) : null));
             else
               out.append(
                 notice(
                   "info",
-                  h("b", null, "Không khớp chắc chắn bằng luật — trong bot thật, AI sẽ chọn trong các mục gần nghĩa nhất:"),
-                  r.suggestions.length ? h("ul", null, r.suggestions.map((s) => h("li", null, `${s.title} (giống ${Math.round(s.score * 100)}%)`))) : h("div", { class: "muted" }, "Không có mục nào gần nghĩa: bot sẽ tìm trong tài liệu tham khảo hoặc chuyển nhân viên."),
+                  h("b", null, "Không khớp chắc chắn — trong bot thật, AI sẽ chọn trong các nội dung gần nghĩa nhất:"),
+                  r.suggestions.length ? h("ul", null, r.suggestions.map((s) => h("li", null, `${s.title} (giống ${Math.round(s.score * 100)}%)`))) : h("div", { class: "muted" }, "Không có câu trả lời nào gần nghĩa: bot sẽ tìm trong tài liệu tham khảo hoặc chuyển nhân viên."),
                   r.ranked.length > 1 ? h("div", { class: "small" }, `Khớp ngang nhau: ${r.ranked.map((x) => x.title).join(", ")}`) : null,
                 ),
               );
@@ -2520,7 +2352,7 @@ Nội dung mục 2.
     return card(versionId ? "Thử hỏi bot (trên bản nháp này)" : "Thử hỏi bot", h("div", { class: "form-row" }, h("label", { class: "field" }, input), ask), out);
   }
 
-  /** Nhập file rà soát khách hàng trả về (.xlsx): quyết định của khách thành bản nháp các chủ đề (không publish). */
+  /** Nhập file rà soát khách hàng trả về (.xlsx): quyết định của khách thành bản nháp (không publish). */
   function reviewImportCard(reload) {
     const input = h("input", { type: "file", accept: ".xlsx" });
     const out = h("div");
@@ -2530,216 +2362,166 @@ Nội dung mục 2.
           run(go1, async () => {
             const f = input.files && input.files[0];
             if (!f) return toast("Chọn file rà soát (.xlsx) khách đã điền.");
-            const r = await uploadFile("/api/items/import-review", f);
+            const r = await uploadFile("/api/kb/import-review", f);
             clear(out);
             out.append(
-              notice(r.drafts.length ? "ok" : "info", `Đã áp ${r.applied.length} quyết định; ${r.drafts.length} chủ đề có bản nháp mới${r.decisionsSaved ? `, ${r.decisionsSaved} quyết định cặp mục ↔ tài liệu đã lưu` : ""}. Chưa publish.`),
+              notice(r.drafts.length ? "ok" : "info", `Đã áp ${r.applied.length} quyết định; ${r.drafts.length} bản nháp mới${r.decisionsSaved ? `, ${r.decisionsSaved} quyết định cặp đã lưu` : ""}. Chưa publish.`),
               r.drafts.length ? h("ul", null, r.drafts.map((d) => h("li", null, link(`${d.title}: bản nháp ${d.ok ? "kiểm tra đạt" : "chưa đạt"}`, `/kb/edit/${d.versionId}`)))) : null,
-              r.todo.length ? card("Việc người quản lý bot còn phải làm", h("ul", null, r.todo.map((x) => h("li", null, x)))) : null,
-              r.chunkChanges.length ? card("Đoạn tài liệu tham khảo khách muốn sửa / bỏ (sửa ở tài liệu gốc)", h("ul", null, r.chunkChanges.map((c) => h("li", null, `${c.action === "drop" ? "Bỏ" : "Sửa"} — ${c.doc}: ${c.heading}${c.text ? ` → ${short(c.text, 200)}` : ""}`)))) : null,
-              btn("Tải lại danh sách mục", { small: true, on: { click: () => reload() } }),
+              r.todo.length ? card("Việc còn phải làm", h("ul", null, r.todo.map((x) => h("li", null, x)))) : null,
+              r.chunkChanges.length ? card("Đoạn tài liệu khách muốn sửa / bỏ", h("ul", null, r.chunkChanges.map((c) => h("li", null, `${c.action === "drop" ? "Bỏ" : "Sửa"} — ${c.doc}: ${c.heading}${c.text ? ` → ${short(c.text, 200)}` : ""}`)))) : null,
+              btn("Tải lại", { small: true, on: { click: () => reload() } }),
             );
           }),
       },
     });
-    return h("details", { class: "card" }, h("summary", null, "Nhập file rà soát khách hàng trả về (.xlsx)"), h("p", { class: "hint" }, "Quyết định của khách (giữ / gộp / sửa / thêm cách hỏi) được áp vào bản nháp; câu hỏi lại khách để trống cho bạn viết. Không có gì được publish."), h("div", { class: "form-row" }, input, go1), out);
+    return h("details", { class: "card" }, h("summary", null, "Nhập file rà soát khách hàng trả về (.xlsx)"), h("p", { class: "hint" }, "Quyết định của khách (giữ / gộp / sửa / thêm cách hỏi) được áp vào bản nháp; không có gì được publish."), h("div", { class: "form-row" }, input, go1), out);
   }
 
-  function itemTopics() {
-    return lazy(async (reload) => {
-      const { topics } = await get("/api/items");
-      const cards = topics.map((t) => {
-        const status = [
-          t.published ? badge(`Đang chạy v${t.published.version}`, "ok") : badge("Chưa có bản chạy"),
-          t.draft ? badge(`Bản nháp v${t.draft.version} · ${t.draft.ok ? "kiểm tra đạt" : "chưa đạt"}`, t.draft.ok ? "info" : "warn") : null,
-          t.pending ? badge(`Chờ người thứ hai duyệt v${t.pending.version}`, "warn") : null,
-        ];
-        const rows = t.items.map((it) =>
-          h(
-            "div",
-            { class: "row-card row-card-clickable", on: { click: () => go(`/items/${enc(t.topic)}/${enc(it.id)}`) } },
-            h("div", { class: "row-top" }, h("span", { class: "row-title" }, it.title), itemKindBadge(it.kind)),
-            h("div", { class: "row-meta small muted" }, `${it.questions.length} cách hỏi · ${Math.max(1, it.steps.length)} bước${it.distinct_from.length ? ` · khác với ${it.distinct_from.length} mục` : ""}${it.applies_when ? ` · dùng khi: ${short(it.applies_when, 80)}` : ""}`),
-          ),
-        );
-        const actions = [];
-        if (can("admin") && !t.pending) actions.push(link("+ Thêm mục", `/items/${enc(t.topic)}/new`, "btn btn-sm"));
-        const openDraft = t.draft || t.pending;
-        if (openDraft) actions.push(link(t.draft ? "Kiểm tra & Publish bản nháp" : "Xem bản chờ duyệt", `/kb/edit/${openDraft.id}`, "btn btn-sm btn-primary"));
-        return h("div", { class: "card" }, h("div", { class: "row-top" }, h("h2", null, t.title), status), rows.length ? h("div", { class: "list" }, rows) : emptyBox("Chưa có mục nào."), actions.length ? h("div", { class: "actions" }, actions) : null);
-      });
-      return h("div", null, tryBox(null), can("admin") ? reviewImportCard(reload) : null, cards);
-    });
-  }
+  const answerRow = (u) =>
+    h(
+      "div",
+      { class: "row-card row-card-clickable", on: { click: () => go(`/kb/unit?key=${enc(u.key)}`) } },
+      h("div", { class: "row-top" }, h("span", { class: "row-title" }, u.title), unitKindBadge(u.kind), u.converted ? null : badge("dữ liệu cũ", "muted")),
+      h("div", { class: "row-meta small muted" }, [u.questions.length ? `Khách hỏi: ${short(u.questions.slice(0, 3).join(" · "), 140)}` : null, u.steps.length > 1 ? `${u.steps.length} bước` : null].filter(Boolean).join(" — ")),
+    );
 
-  function itemForm(topic, itemId) {
-    return lazy(async (reload) => {
-      const { topics } = await get("/api/items");
-      const t = topics.find((x) => x.topic === topic);
-      if (!t) return notice("err", "Không có chủ đề này.");
-      const isNew = itemId === "new";
-      const orig = isNew ? null : t.items.find((x) => x.id === itemId);
-      if (!isNew && !orig) return notice("warn", "Không tìm thấy mục (có thể đã bị xoá trong bản nháp). ", link("Về danh sách", "/items"));
-      const it = orig ? JSON.parse(JSON.stringify(orig)) : { title: "", kind: "answer", questions: [], phrases: [], distinct_from: [], steps: [{ say: { en: "" } }] };
-      const system = it.kind === "system";
-      const editable = can("admin") && !t.pending;
-      const allItems = topics.flatMap((x) => x.items.map((i) => ({ id: i.id, title: i.title, topic: x.title }))).filter((i) => i.id !== it.id);
-      const ta = (value, rows = 3, extra = {}) => h("textarea", { rows, value: value || "", disabled: !editable, ...extra });
-
-      const title = h("input", { type: "text", value: it.title, disabled: !editable });
-      const kind = select([["answer", "Trả lời khách"], ["handoff", "Chuyển nhân viên (tạo ticket)"]], it.kind === "handoff" ? "handoff" : "answer", { disabled: !editable || system });
-      const questions = ta(it.questions.join("\n"), 5);
-      const appliesWhen = ta(it.applies_when, 2);
-      const phrases = ta(it.phrases.join("\n"), 2);
-
-      // ---- các bước ----
-      const stepsBox = h("div");
-      const stepRows = [];
-      const addStep = (s) => {
-        const say = ta((s.say && s.say.en) || "", 5, { disabled: !editable || system });
-        const neg = select(NEXT_OPTS, (s.next && s.next.negative) || "", { disabled: !editable || system });
-        const info = select(NEXT_OPTS, (s.next && s.next.info_provided) || "", { disabled: !editable || system });
-        const row = { s, say, neg, info, node: null };
-        const rm = editable && !system ? btn("Bỏ bước này", { small: true, kind: "danger", on: { click: () => { stepRows.splice(stepRows.indexOf(row), 1); row.node.remove(); renumber(); } } }) : null;
-        row.node = h("div", { class: "card" }, h("h3", { class: "step-title" }, ""), field("Bot trả lời (tiếng Anh — bản gốc, bot tự dịch cho khách)", say), h("div", { class: "form-row" }, field('Nếu khách nói "vẫn chưa được"', neg), field("Nếu khách gửi thông tin bot vừa xin", info)), rm);
-        stepRows.push(row);
-        stepsBox.append(row.node);
-        renumber();
+  /** Trang chính: mọi nội dung bot đang dùng, gom theo chủ đề / tài liệu. */
+  function kbContent() {
+    return lazy(async () => {
+      const r = await get("/api/kb/content");
+      noteKb(r.kbVersion);
+      const filter = h("input", { type: "search", placeholder: "Lọc theo tên, câu khách hỏi hoặc nội dung..." });
+      const holder = h("div");
+      const draw = () => {
+        const q = filter.value.trim().toLowerCase();
+        const hit = (u) => !q || [u.title, ...(u.questions || []), ...(u.steps || []), u.heading || "", u.text || ""].join(" ").toLowerCase().includes(q);
+        clear(holder);
+        for (const t of r.topics) {
+          const rows = t.answers.filter(hit);
+          if (rows.length) holder.append(h("div", { class: "card" }, h("h2", null, `${t.title} (${rows.length})`), h("div", { class: "list" }, rows.map(answerRow))));
+        }
+        for (const d of r.documents) {
+          const rows = d.sections.filter(hit);
+          if (!rows.length) continue;
+          holder.append(
+            h(
+              "div",
+              { class: "card" },
+              h("h2", null, `Tài liệu: ${d.title} (${rows.length} đoạn)`),
+              h("div", { class: "list" }, rows.map((s) => h("div", { class: "row-card row-card-clickable", on: { click: () => go(`/kb/unit?key=${enc(s.key)}`) } }, h("div", { class: "row-top" }, h("span", { class: "row-title" }, s.heading), unitKindBadge("document")), h("div", { class: "row-meta small muted" }, short(s.text, 160))))),
+            ),
+          );
+        }
+        if (!holder.childNodes.length) holder.append(emptyBox("Không có nội dung nào khớp."));
       };
-      const renumber = () => stepRows.forEach((r, i) => (r.node.querySelector(".step-title").textContent = `Bước ${i + 1}`));
-      (it.steps.length ? it.steps : [{ say: { en: "" } }]).forEach(addStep);
-      const addStepBtn = editable && !system ? btn("+ Thêm bước", { small: true, on: { click: () => addStep({ say: { en: "" } }) } }) : null;
-
-      // ---- chuyển nhân viên ----
-      const ho = it.handoff || {};
-      const hoCat = h("input", { type: "text", value: ho.category || "", disabled: !editable });
-      const hoCode = h("input", { type: "text", value: ho.error_code || "", disabled: !editable });
-      const hoPic = h("input", { type: "text", value: ho.pic || "", disabled: !editable });
-      const hoAsk = ta((ho.ask_customer || []).join("\n"), 3);
-
-      // ---- khác với mục ----
-      const distinctBox = h("div");
-      const distinctRows = [];
-      const addDistinct = (d) => {
-        const target = select([["", "— chọn mục —"], ...allItems.map((i) => [i.id, `${i.title} (${i.topic})`])], d.item || "", { disabled: !editable });
-        const diff = ta(d.difference, 2);
-        const clarify = ta(d.clarify, 2);
-        const row = { target, diff, clarify, node: null };
-        const rm = editable ? btn("Bỏ", { small: true, kind: "danger", on: { click: () => { distinctRows.splice(distinctRows.indexOf(row), 1); row.node.remove(); } } }) : null;
-        row.node = h("div", { class: "card" }, field("Mục dễ bị lẫn", target), field("Hai mục khác nhau ở điểm nào", diff), field("Câu hỏi lại khách khi không phân biệt được (tiếng Anh)", clarify, "Bot chỉ hỏi lại 1 lần; khách vẫn không rõ thì chuyển nhân viên."), rm);
-        distinctRows.push(row);
-        distinctBox.append(row.node);
-      };
-      it.distinct_from.forEach(addDistinct);
-      const addDistinctBtn = editable ? btn("+ Thêm mục dễ bị lẫn", { small: true, on: { click: () => addDistinct({}) } }) : null;
-
-      const collect = () => {
-        const steps = stepRows.map((r, i) => {
-          const old = it.steps[i] || { say: {} };
-          const en = r.say.value.trim();
-          // câu gốc đổi thì các bản ngôn ngữ khác đi kèm không còn đúng: bỏ, bot dịch lại
-          const say = en === ((old.say && old.say.en) || "").trim() ? { ...old.say, en } : { en };
-          const next = { ...(old.next || {}) };
-          delete next.negative;
-          delete next.info_provided;
-          if (r.neg.value) next.negative = r.neg.value;
-          if (r.info.value) next.info_provided = r.info.value;
-          if (i === stepRows.length - 1) for (const k of Object.keys(next)) if (next[k] === "next") delete next[k];
-          return Object.keys(next).length ? { say, next } : { say };
-        });
-        const handoff = { category: hoCat.value.trim() || undefined, error_code: hoCode.value.trim() || undefined, pic: hoPic.value.trim() || undefined, ask_customer: lines(hoAsk.value) };
-        return {
-          title: title.value.trim(),
-          kind: system ? "system" : kind.value,
-          questions: lines(questions.value),
-          phrases: lines(phrases.value),
-          applies_when: appliesWhen.value.trim() || undefined,
-          distinct_from: distinctRows.filter((r) => r.target.value).map((r) => ({ item: r.target.value, difference: r.diff.value.trim(), clarify: r.clarify.value.trim() })),
-          steps: kind.value === "handoff" && !system ? [] : steps,
-          handoff: handoff.category || handoff.error_code || handoff.pic || handoff.ask_customer.length ? handoff : undefined,
-        };
-      };
-
-      const stepsCard = card("Bot trả lời", stepsBox, addStepBtn, h("p", { class: "hint" }, 'Nhiều bước: khách nói "vẫn chưa được" thì bot gửi bước tiếp theo; bước cuối thường chọn "Chuyển nhân viên".'));
-      const syncKind = () => (stepsCard.hidden = kind.value === "handoff" && !system); // mục chuyển nhân viên dùng câu chuyển nhân viên chuẩn
-      kind.addEventListener("change", syncKind);
-      syncKind();
-
-      const reportBox = h("div");
-      const afterSave = h("div");
-      const showReport = (versionId, r) => {
-        clear(reportBox);
-        reportBox.append(renderReport(r, { versionId, onReport: (nr) => showReport(versionId, nr) }));
-        clear(afterSave);
-        const pub = btn("Publish chủ đề này", {
-          kind: "primary",
-          disabled: !r.ok,
-          title: r.ok ? null : "Bản nháp chưa qua kiểm tra: xử lý các lỗi bên dưới trước",
-          on: {
-            click: () => {
-              if (!confirm(`Publish chủ đề "${t.title}"? Bot dùng nội dung mới ngay sau khi nạp lại.`)) return;
-              run(pub, async () => {
-                const x = await post(`/api/kb/versions/${versionId}/publish`, {});
-                toast(x.status === "pending_approval" ? "Đã gửi đề xuất Publish: cần một quản trị viên KHÁC duyệt tại mục Chờ duyệt." : "Đã publish. Bot sẽ nạp nội dung mới.", "ok");
-                go("/items");
-              });
-            },
-          },
-        });
-        afterSave.append(h("div", { class: "actions" }, pub, link("Mở bản nháp đầy đủ", `/kb/edit/${versionId}`, "btn")), tryBox(versionId));
-      };
-      if (t.draft && !isNew) get(`/api/kb/versions/${t.draft.id}`).then((x) => showReport(t.draft.id, x.version.report)).catch(() => undefined);
-
-      const save = btn("Lưu bản nháp & kiểm tra", {
-        kind: "primary",
-        on: {
-          click: () =>
-            run(save, async () => {
-              const r = await post(`/api/items/${enc(topic)}`, { item: collect(), ...(isNew ? {} : { originalId: it.id }) });
-              toast(r.report.ok ? "Đã lưu bản nháp, kiểm tra đạt." : "Đã lưu bản nháp nhưng kiểm tra chưa đạt — xem bên dưới.", r.report.ok ? "ok" : "info");
-              if (isNew) return go(`/items/${enc(topic)}/${enc(r.itemId)}`);
-              showReport(r.versionId, r.report);
-            }),
-        },
-      });
-      const remove = !isNew && !system && editable
-        ? btn("Xoá mục", {
-            kind: "danger",
-            on: {
-              click: () => {
-                if (!confirm(`Xoá mục "${it.title}" khỏi bản nháp? Bản đang chạy chỉ đổi khi Publish.`)) return;
-                run(remove, async () => {
-                  const r = await post(`/api/items/${enc(topic)}`, { originalId: it.id, remove: true });
-                  toast("Đã xoá khỏi bản nháp.", "ok");
-                  go(`/kb/edit/${r.versionId}`);
-                });
-              },
-            },
-          })
-        : null;
-
+      filter.addEventListener("input", draw);
+      draw();
       return h(
         "div",
         null,
-        h("div", { class: "page-head" }, h("h2", null, isNew ? `Mục mới — ${t.title}` : it.title), isNew ? null : itemKindBadge(it.kind), link("← Tất cả mục", "/items", "small")),
-        t.pending ? notice("warn", "Chủ đề này đang có bản chờ người thứ hai duyệt: chỉ xem, sửa lại sau khi bản đó được duyệt hoặc từ chối.") : null,
-        system ? notice("info", "Tin hệ thống do code gửi (luật bảo mật, chống spam, ảnh...): nội dung giữ nguyên từng chữ, chỉ sửa được tên và cách hỏi.") : null,
-        card(
-          "Mục này dùng cho tình huống nào",
-          field("Tên mục", title, "Tên ngắn cho người đọc, vd. Quên Login ID. Mã hệ thống tự sinh từ tên lúc tạo và không đổi."),
-          system ? null : field("Loại", kind),
-          field("Khách thường hỏi thế nào (mỗi dòng một câu)", questions, "Ít nhất 3 câu, diễn đạt khác nhau — bot hiểu theo nghĩa, không cần chép đúng từng chữ."),
-          field("Dùng khi (không bắt buộc)", appliesWhen, "Viết bằng lời thường, vd. Khách quên ID dùng để đăng nhập (không phải InterLink ID)."),
-        ),
-        stepsCard,
-        h("details", { class: "card", open: !!it.handoff }, h("summary", null, "Khi chuyển nhân viên: thông tin cho ticket"), h("div", { class: "form-row" }, field("Loại vấn đề", hoCat), field("Mã lỗi", hoCode), field("Người phụ trách", hoPic)), field("Cần xin khách (mỗi dòng một thứ)", hoAsk)),
-        card("Mục dễ bị lẫn", h("p", { class: "hint" }, "Khai báo khi có mục khác gần giống: bot không tự đoán giữa hai mục này mà hỏi lại khách."), distinctBox, addDistinctBtn),
-        h("details", { class: "card" }, h("summary", null, "Nâng cao"), field("Cụm nhận biết chắc chắn (mỗi dòng một cụm, ít nhất 2 từ)", phrases, "Tin nhắn chứa đúng cụm này thì bot trả lời ngay không cần AI. Để trống cũng được."), it.advanced ? field("Điều kiện kỹ thuật (chỉ đọc)", jsonBlock(it.advanced)) : null),
-        editable ? h("div", { class: "actions" }, save, remove) : h("p", { class: "muted" }, "Chỉ xem."),
-        reportBox,
-        afterSave,
+        r.pending.length ? notice("warn", `${r.pending.length} bản nháp đang chờ xử lý. `, link("Mở mục Chờ xử lý", "/kb/pending")) : null,
+        can("admin") ? h("div", { class: "actions" }, link("+ Thêm nội dung", "/kb/add", "btn btn-primary")) : null,
+        tryBox(null),
+        h("div", { class: "form-row" }, h("label", { class: "field" }, filter)),
+        holder,
       );
     });
+  }
+
+  /** Một nội dung: xem đầy đủ, các xung đột đang mở, sửa bằng cách đưa nội dung mới vào. */
+  function kbUnit(key) {
+    return lazy(async () => {
+      const r = await get("/api/kb/content");
+      const answer = r.topics.flatMap((t) => t.answers.map((a) => ({ ...a, topicTitle: t.title }))).find((a) => a.key === key);
+      const doc = answer ? null : r.documents.find((d) => d.sections.some((s) => s.key === key));
+      const section = doc ? doc.sections.find((s) => s.key === key) : null;
+      if (!answer && !section) return notice("warn", "Không tìm thấy nội dung này (có thể đã được thay đổi). ", link("Về danh sách", "/kb"));
+      const slug = answer ? answer.docSlug : doc.slug;
+      const selfId = answer ? answer.id : section.chunkId;
+      const conflicts = slug ? (await get("/api/kb/conflicts", { doc: slug })).items.filter((c) => c.a.id === selfId || c.b.id === selfId) : [];
+      const editable = can("admin") && !(answer && answer.kind === "system");
+      const body = answer
+        ? [
+            dl([["Chủ đề", answer.topicTitle], ["Loại", (UNIT_KIND[answer.kind] || [answer.kind])[0]], ["Dùng khi", answer.appliesWhen]]),
+            card("Khách thường hỏi", answer.questions.length ? h("ul", null, answer.questions.map((q) => h("li", null, q))) : emptyBox("Không có câu hỏi mẫu (khớp bằng điều kiện của hệ thống).")),
+            card(answer.steps.length > 1 ? "Bot trả lời (theo từng bước)" : "Bot trả lời", answer.steps.map((s, i) => h("div", { class: "tpl-answer pre-wrap" }, answer.steps.length > 1 ? h("b", null, `Bước ${i + 1}: `) : null, s))),
+          ]
+        : [dl([["Tài liệu", doc.title], ["Link gửi kèm", section.url]]), card("Nội dung", h("div", { class: "pre-wrap" }, section.text))];
+      return h(
+        "div",
+        null,
+        h("div", { class: "page-head" }, h("h2", null, answer ? answer.title : section.heading), unitKindBadge(answer ? answer.kind : "document"), link("← Nội dung", "/kb", "small")),
+        answer && answer.kind === "system" ? notice("info", "Tin hệ thống do code gửi (bảo mật, chống spam, ảnh...): nội dung khoá, không sửa qua đây.") : null,
+        body,
+        conflicts.length
+          ? card(
+              `Xung đột đang mở (${conflicts.length})`,
+              h("ul", null, conflicts.map((c) => { const other = c.a.id === selfId ? c.b : c.a; return h("li", null, h("b", null, other.title), c.reason ? ` — ${c.reason}` : "", c.suggestion ? h("div", { class: "small muted" }, `Gợi ý: ${c.suggestion}`) : null); })),
+            )
+          : null,
+        h(
+          "div",
+          { class: "actions" },
+          editable ? link("Sửa nội dung", `/kb/add?target=${enc(key)}`, "btn btn-primary") : null,
+          slug ? link("Lịch sử phiên bản", `/kb/doc/${enc(slug)}`, "btn") : null,
+        ),
+      );
+    });
+  }
+
+  /** Việc chờ xử lý: bản nháp chưa publish, nhập file rà soát của khách, kiểm tra toàn kho. */
+  function kbPending() {
+    return lazy(async (reload) => {
+      const r = await get("/api/kb/content");
+      const docs = {};
+      for (const t of r.topics) for (const a of t.answers) if (a.docSlug) docs[a.id] = a.docSlug;
+      const ST = { draft: ["Bản nháp", "info"], rejected: ["Bị từ chối", "err"], pending_approval: ["Chờ người thứ hai duyệt", "warn"] };
+      return h(
+        "div",
+        null,
+        card(
+          `Bản nháp chờ xử lý (${r.pending.length})`,
+          r.pending.length
+            ? h(
+                "div",
+                { class: "list" },
+                r.pending.map((p) =>
+                  h(
+                    "div",
+                    { class: "row-card row-card-clickable", on: { click: () => go(`/kb/edit/${p.versionId}`) } },
+                    h("div", { class: "row-top" }, h("span", { class: "row-title" }, p.title), badge(ST[p.status][0], ST[p.status][1]), p.status === "pending_approval" ? null : badge(p.ok ? "kiểm tra đạt" : "chưa đạt", p.ok ? "ok" : "err")),
+                    h("div", { class: "row-meta small muted" }, `${p.author || "-"} · ${fmtDate(p.createdAt)}`),
+                  ),
+                ),
+              )
+            : emptyBox("Không có bản nháp nào."),
+        ),
+        can("admin") ? reviewImportCard(reload) : null,
+        can("admin") ? overlapCard(docs) : null,
+      );
+    });
+  }
+
+  /** Nội dung của một phiên bản (không Markdown), đánh dấu so với bản đang chạy. */
+  function unitsView(units) {
+    if (!units || !units.length) return null;
+    const changed = units.filter((u) => u.change !== "same");
+    const same = units.filter((u) => u.change === "same");
+    const row = (u) =>
+      h(
+        "div",
+        { class: "row-card" },
+        h("div", { class: "row-top" }, h("span", { class: "row-title" }, u.title), unitKindBadge(u.kind), badge(CHANGE[u.change][0], CHANGE[u.change][1])),
+        u.questions.length ? h("div", { class: "small muted" }, `Khách hỏi: ${u.questions.slice(0, 6).join(" · ")}`) : null,
+        u.steps.map((s, i) => h("div", { class: "tpl-answer pre-wrap small" }, u.steps.length > 1 ? h("b", null, `Bước ${i + 1}: `) : null, s)),
+      );
+    return h(
+      "div",
+      { class: "card" },
+      h("h2", null, `Nội dung của phiên bản này`),
+      changed.length ? h("div", { class: "list" }, changed.map(row)) : h("p", { class: "muted" }, "Không có nội dung nào khác bản đang chạy."),
+      same.length ? h("details", null, h("summary", null, `${same.length} nội dung giữ nguyên`), h("div", { class: "list" }, same.map(row))) : null,
+    );
   }
 
   function viewTranslations({ query }) {

@@ -27,7 +27,7 @@ import { activeEmbedder, cosine } from "../core/embedding";
 import { containsPhrase } from "../core/text";
 import { DEFAULT_OVERLAP_MIN, scanCorpus } from "../kb/overlap";
 import { CONFUSION_FIX_HINT, confusionsOf, describeConfusion, findConfusions } from "../kb/routing-check";
-import { renderIntakeMarkdown } from "../kb/intake";
+import { intakeToItems, renderIntakeMarkdown } from "../kb/intake";
 import { extractText, MAX_UPLOAD_BYTES } from "../kb/doc-extract";
 import { GUIDE_SLUG } from "../core/guide";
 import { GatewayConfigError, listGatewayModels, runningInDocker, testGateway } from "../llm/gateway-config";
@@ -261,11 +261,14 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   app.get("/api/kb/versions/:id", { preHandler: need("admin") }, async (req, reply) => {
     const v = await kb.getVersion(z.coerce.number().parse((req.params as { id: string }).id));
     if (!v) return reply.code(404).send({ error: "không tìm thấy" });
-    return { version: v };
+    const doc = await kb.getDocument(v.slug);
+    return { version: v, units: doc ? await kbService.versionUnits(v, doc.kind) : [] };
   });
 
   app.post("/api/kb/documents", { preHandler: need("admin") }, async (req) => {
     const b = z.object({ slug: z.string().min(2).max(80), kind: z.enum(["templates", "knowledge", "guide", "items"]), title: z.string().max(200).optional(), md: z.string().min(10).max(1_000_000) }).parse(req.body);
+    // Nội dung tri thức chỉ vào qua "Thêm nội dung" (hệ thống tự phân tích); soạn thẳng chỉ còn cho Hướng dẫn AI làm việc
+    if (b.kind !== "guide") throw new KbError('Nội dung tri thức chỉ thêm qua "Thêm nội dung" ở Kho tri thức — hệ thống tự phân tích, không soạn cấu trúc bằng tay', 403);
     const r = await kbService.createDraft({ slug: b.slug, kind: b.kind, title: b.title, md: b.md, author: actor(req) });
     await audit(req, "kb.create_draft", b.slug, null, { version: r.version.version, ok: r.report.ok });
     return { version: { ...r.version, source_md: undefined }, report: r.report };
@@ -274,6 +277,8 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   app.put("/api/kb/versions/:id", { preHandler: need("admin") }, async (req) => {
     const id = z.coerce.number().parse((req.params as { id: string }).id);
     const b = z.object({ md: z.string().min(10).max(1_000_000) }).parse(req.body);
+    const v0 = await kb.getVersion(id);
+    if (v0 && (await kb.getDocument(v0.slug))?.kind !== "guide") throw new KbError('Nội dung tri thức chỉ sửa qua "Thêm nội dung" (dán nội dung mới) — hệ thống tự phân tích', 403);
     const report = await kbService.updateDraft(id, b.md);
     await audit(req, "kb.update_draft", `version:${id}`, null, { ok: report.ok });
     return { report };
@@ -300,48 +305,26 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     return { ok: true };
   });
 
-  // ---------------------------------------------------------------- mục hỏi đáp (form cho người không rành kỹ thuật)
-  const itemStep = z.object({
-    say: z.record(z.string(), z.string().max(4096)),
-    next: z.partialRecord(z.enum(FOLLOW_UP_KINDS), z.string().max(120)).optional(),
-  });
-  const itemBody = z.object({
-    title: z.string().trim().min(2).max(200),
-    kind: z.enum(["answer", "handoff", "system"]),
-    questions: z.array(z.string().trim().min(1).max(500)).max(100),
-    phrases: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
-    applies_when: z.string().trim().max(1000).optional(),
-    distinct_from: z.array(z.object({ item: z.string().max(120), difference: z.string().max(1000), clarify: z.string().max(1000) })).max(20).default([]),
-    steps: z.array(itemStep).max(10),
-    handoff: z.object({ category: z.string().max(80).optional(), error_code: z.string().max(40).optional(), pic: z.string().max(80).optional(), ask_customer: z.array(z.string().max(300)).max(20).optional() }).optional(),
-  });
-
-  app.get("/api/items", async () => ({ topics: await kbService.listItemTopics() }));
-
-  app.post("/api/items/:topic", { preHandler: need("admin") }, async (req) => {
-    const topic = (req.params as { topic: string }).topic;
-    const b = z.object({ originalId: z.string().max(120).optional(), remove: z.boolean().optional(), item: itemBody.optional() }).parse(req.body);
-    const r = await kbService.saveItem({ topic, originalId: b.originalId, remove: b.remove, item: b.item ? { ...b.item, id: b.originalId ?? "" } : undefined }, actor(req));
-    await audit(req, b.remove ? "items.remove" : b.originalId ? "items.update" : "items.create", `${topic}:${r.itemId ?? b.originalId ?? ""}`, null, { versionId: r.versionId, ok: r.report.ok });
-    return r;
-  });
+  // ---------------------------------------------------------------- Kho tri thức: một danh sách, một cửa thêm nội dung
+  /** Mọi nội dung bot đang dùng (câu trả lời theo chủ đề, đoạn tài liệu theo tài liệu) + bản nháp đang chờ xử lý. */
+  app.get("/api/kb/content", async () => kbService.listContent());
 
   /** "Thử hỏi bot": câu này bot trả lời bằng mục nào (bộ đang chạy, hoặc sau khi đưa bản nháp lên). Không gọi AI. */
-  app.post("/api/items/try", async (req) => {
+  app.post("/api/kb/try", async (req) => {
     const b = z.object({ question: z.string().trim().min(1).max(500), versionId: z.number().int().positive().optional() }).parse(req.body);
     return kbService.tryQuestion(b.question, b.versionId);
   });
 
   /** Ghi nhận "giữ nguyên có chủ ý" cho cặp mục hỏi đáp ↔ đoạn tài liệu mà bước kiểm tra chặn, rồi kiểm tra lại bản nháp. */
-  app.post("/api/items/decide", { preHandler: need("admin") }, async (req) => {
+  app.post("/api/kb/decide", { preHandler: need("admin") }, async (req) => {
     const b = z.object({ versionId: z.number().int().positive(), itemId: z.string().max(120), chunkId: z.string().max(40), note: z.string().max(1000).optional() }).parse(req.body);
     const report = await kbService.decideItemChunk({ ...b, decision: "keep_both" }, actor(req));
-    await audit(req, "items.pair_decision", `${b.itemId}|chunk:${b.chunkId}`, null, { decision: "keep_both", note: b.note ?? null });
+    await audit(req, "kb.pair_decision", `${b.itemId}|chunk:${b.chunkId}`, null, { decision: "keep_both", note: b.note ?? null });
     return { report };
   });
 
   /** Nhập file rà soát khách hàng trả về (.xlsx): áp quyết định thành bản nháp của các chủ đề. Không publish. */
-  app.post("/api/items/import-review", { preHandler: need("admin") }, async (req) => {
+  app.post("/api/kb/import-review", { preHandler: need("admin") }, async (req) => {
     const file = await req.file();
     if (!file) throw new KbError("thiếu tệp");
     if (!/\.xlsx$/i.test(file.filename)) throw new KbError("chỉ nhận tệp .xlsx (file rà soát nội dung)");
@@ -354,7 +337,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
       throw new KbError(`không đọc được tệp Excel: ${(e as Error).message}`, 422);
     }
     const r = await kbService.applyReviewToDrafts(read.input, actor(req));
-    await audit(req, "items.import_review", file.filename, null, { drafts: r.drafts, applied: r.applied.length, decisions: r.decisionsSaved });
+    await audit(req, "kb.import_review", file.filename, null, { drafts: r.drafts, applied: r.applied.length, decisions: r.decisionsSaved });
     return { ...r, todo: [...read.unknown, ...r.todo] };
   });
 
@@ -503,13 +486,13 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
    * chỉ MỘT chỗ dựng OverlapSide cho phía "a" (chính nội dung bản nháp, chưa publish nên không dò qua live.index/kb được
    * như `/api/kb/overlap/review` làm cho cả hai phía).
    */
-  async function buildIntakeBoxes(llm: NonNullable<ReturnType<typeof usableLlm>>, kind: "templates" | "knowledge", slug: string, md: string, overlapPairs: import("../kb/overlap").OverlapPair[]) {
+  async function buildIntakeBoxes(llm: NonNullable<ReturnType<typeof usableLlm>>, kind: "templates" | "knowledge" | "items", slug: string, md: string, overlapPairs: import("../kb/overlap").OverlapPair[]) {
     const parsedDraft = kbService.parse(kind, md, slug);
     const rows = await kb.loadPublishedTemplateRows();
     const docOf = new Map(rows.map((r) => [r.template.id, r.docSlug]));
     const liveChunks = await kb.listPublishedChunks();
     const draftSide = (id: string): OverlapSide | null => {
-      if (kind === "templates") {
+      if (kind !== "knowledge") {
         const t = parsedDraft.templates.find((x) => x.id === id);
         return t ? { kind: "template", id: t.id, doc: slug, title: `${t.group} — ${t.id}`, keywords: t.match.keywords, examples: t.match.examples, text: t.answers.en ?? "" } : null;
       }
@@ -528,7 +511,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     // Cụm gỡ máy móc có thể trỏ về CHÍNH template trong bản nháp vừa tạo (chưa publish) khi tín hiệu mạnh nhất là ví dụ của
     // chính nó — không dùng được với applyNarrow/applyBoxEdit (chỉ sửa tài liệu ĐÃ publish): khung vẫn hiện đủ tín hiệu +
     // gợi ý AI, chỉ ẩn narrow để không có nút "Áp dụng" trỏ sai chỗ; admin sửa trực tiếp trong ô nội dung mới của mình.
-    const ownTemplateIds = new Set(kind === "templates" ? parsedDraft.templates.map((t) => t.id) : []);
+    const ownTemplateIds = new Set(kind !== "knowledge" ? parsedDraft.templates.map((t) => t.id) : []);
     const isDraft = (r: { kind: string; id: string }) => (r.kind === "template" ? ownTemplateIds.has(r.id) : r.id.startsWith(`${slug}#`));
     // Khung chỉ dành cho VẤN ĐỀ THẬT: chỗ hỏi thử thấy bot trả lời nhầm (routing-check) hoặc đoạn trùng nguyên văn — luôn hiện;
     // thêm vài cặp giống chữ điểm cao để AI soi xem nội dung có MÂU THUẪN / TRÙNG hẳn không (bot chọn đúng vẫn có thể nói sai).
@@ -580,17 +563,45 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   });
 
   app.post("/api/kb/intake", { preHandler: need("admin") }, async (req) => {
-    const b = z.object({ rawText: z.string().min(20).max(200_000), kindHint: z.enum(["templates", "knowledge"]).optional() }).parse(req.body);
+    const b = z.object({ rawText: z.string().min(20).max(200_000), target: z.string().max(400).optional() }).parse(req.body);
     const llm = usableLlm(svc.llm);
-    if (!llm) throw new KbError("chưa cấu hình LLM");
+    if (!llm) throw new KbError("chưa cấu hình LLM — hệ thống cần AI để phân tích nội dung");
+    // Sửa một đoạn tài liệu tham khảo: nội dung mới thay đúng đoạn đó (không cần AI tách cấu trúc)
+    const chunkTarget = b.target ? /^chunk:([^#]+)#(.+)$/.exec(b.target) : null;
+    if (chunkTarget) {
+      const { version, report } = await kbService.applyBoxEdit({ targetDoc: chunkTarget[1]!, kind: "chunk", chunkHeading: chunkTarget[2]!, newText: b.rawText }, actor(req));
+      const boxes = await buildIntakeBoxes(llm, "knowledge", version.slug, version.source_md, report.overlapPairs ?? []);
+      await audit(req, "kb.intake_edit", b.target!, null, { version: version.version });
+      return { version: { ...version, source_md: undefined }, report, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: report.ok }] };
+    }
+    const itemTarget = b.target?.startsWith("item:") ? b.target.slice(5) : undefined;
     const existingGroups = [...new Set(live.index.templates.map((t) => t.group).filter(Boolean))].sort();
-    const draft = await llm.draftIntake({ rawText: b.rawText, kindHint: b.kindHint, existingGroups });
+    const draft = await llm.draftIntake({ rawText: b.rawText, kindHint: itemTarget ? "templates" : undefined, existingGroups });
     if (draft.slug === GUIDE_SLUG) throw new KbError(`slug "${GUIDE_SLUG}" dành riêng cho Hướng dẫn AI làm việc, không dùng được ở đây`, 400);
-    const md = renderIntakeMarkdown(draft);
-    const { version, report } = await kbService.createDraft({ slug: draft.slug, kind: draft.kind, title: draft.title, md, author: actor(req) });
-    const boxes = await buildIntakeBoxes(llm, draft.kind, draft.slug, md, report.overlapPairs ?? []);
-    await audit(req, "kb.intake_draft", draft.slug, null, { version: version.version, kind: draft.kind, boxes: boxes.length });
-    return { version: { ...version, source_md: undefined }, report, boxes };
+    if (draft.kind === "knowledge") {
+      const md = renderIntakeMarkdown(draft);
+      const { version, report } = await kbService.createDraft({ slug: draft.slug, kind: "knowledge", title: draft.title, md, author: actor(req) });
+      const boxes = await buildIntakeBoxes(llm, "knowledge", draft.slug, md, report.overlapPairs ?? []);
+      await audit(req, "kb.intake_draft", draft.slug, null, { version: version.version, kind: "knowledge", boxes: boxes.length });
+      return { version: { ...version, source_md: undefined }, report, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: report.ok }] };
+    }
+    // Câu trả lời: thành mục hỏi đáp trong bản nháp của đúng chủ đề (AI xếp chủ đề, người dùng không chọn)
+    const res = await kbService.addIntakeItems(intakeToItems(draft), actor(req), itemTarget);
+    const newIds = new Set(res.newIds);
+    const boxes = [];
+    const drafts = [];
+    for (const d of res.drafts) {
+      const v = (await kb.getVersion(d.versionId))!;
+      const all = kbService.parse("items", v.source_md, v.slug).templates;
+      const fresh = all.filter((t) => newIds.has(t.id) || newIds.has(t.item?.id ?? ""));
+      const pairs = await kbService.relationsForNew(fresh, v.slug, all);
+      await kb.updateVersion(v.id, { report: { ...d.report, overlapPairs: pairs } }); // mở lại trang vẫn thấy đúng các khung của phần mới
+      boxes.push(...(await buildIntakeBoxes(llm, "items", v.slug, v.source_md, pairs)));
+      drafts.push({ versionId: v.id, slug: v.slug, ok: d.report.ok });
+    }
+    const first = (await kb.getVersion(res.drafts[0]!.versionId))!;
+    await audit(req, "kb.intake_draft", first.slug, null, { versions: drafts.map((x) => x.versionId), kind: "items", target: b.target ?? null, boxes: boxes.length });
+    return { version: { ...first, source_md: undefined }, report: res.drafts[0]!.report, boxes, drafts };
   });
 
   /** Dựng lại các khung xung đột của một bản nháp intake đã có — dùng khi mở lại trang (không tạo mới, không gọi LLM để phân loại lại). */
@@ -599,7 +610,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const v = await kb.getVersion(id);
     if (!v) return reply.code(404).send({ error: "không tìm thấy" });
     const doc = await kb.getDocument(v.slug);
-    if (!doc || doc.kind === "guide" || doc.kind === "items") return reply.code(404).send({ error: "không tìm thấy" });
+    if (!doc || doc.kind === "guide") return reply.code(404).send({ error: "không tìm thấy" });
     const llm = usableLlm(svc.llm);
     if (!llm) throw new KbError("chưa cấu hình LLM");
     const report = v.report as { overlapPairs?: import("../kb/overlap").OverlapPair[] } | null;

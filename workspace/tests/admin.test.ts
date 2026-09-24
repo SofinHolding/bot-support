@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -161,8 +161,15 @@ describe("nạp dữ liệu qua web, không cần lập trình viên", () => {
   it("tạo Draft (.md) -> báo cáo kiểm tra -> publish -> bot dùng ngay", async () => {
     const c = await login(9002);
     const md = "---\nid: web-added\ngroup: Test\nresponse_mode: EXACT_TEMPLATE\npriority: 300\nmatch:\n  keywords:\n    - moon base access\nsets_context:\n  status: pending\n---\n<!-- answer:en -->\nMoon base is not open yet.\n";
-    const created = (await send("POST", "/api/kb/documents", c, { slug: "web-added", kind: "templates", md })).json();
+    // soạn Markdown thẳng qua web chỉ còn cho Hướng dẫn AI: nội dung tri thức chỉ vào qua "Thêm nội dung" (/api/kb/intake)
+    const denied = await send("POST", "/api/kb/documents", c, { slug: "web-added", kind: "templates", md });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error).toContain("Thêm nội dung");
+    expect((await get("/api/kb/documents/web-added", c)).statusCode).toBe(404); // bị chặn trước khi tạo gì
+    // bên trong hệ thống (nạp sẵn / di chuyển) vẫn tạo được bản nháp; publish qua web -> bot dùng ngay
+    const created = await svc.kbService.createDraft({ slug: "web-added", kind: "templates", md, author: "test" });
     expect(created.report.ok).toBe(true);
+    expect((await send("PUT", `/api/kb/versions/${created.version.id}`, c, { md })).statusCode).toBe(403); // sửa Markdown thẳng cũng bị chặn
     expect((await send("POST", `/api/kb/versions/${created.version.id}/publish`, c)).json()).toEqual({ status: "published" });
     expect((await get("/api/templates", c)).json().items.some((t: { id: string }) => t.id === "web-added")).toBe(true);
     // bot dùng ngay, không cần khởi động lại
@@ -173,11 +180,23 @@ describe("nạp dữ liệu qua web, không cần lập trình viên", () => {
 
   it("dữ liệu sai bị từ chối với lý do cụ thể", async () => {
     const c = await login(9002);
-    const bad = (await send("POST", "/api/kb/documents", c, { slug: "web-bad", kind: "templates", md: "---\nid: bad\ngroup: X\n---\n<!-- answer:en -->\nhello there friend\n" })).json();
+    // nội dung tri thức sai (tạo trong hệ thống): báo cáo không đạt, publish qua web bị chặn
+    const bad = await svc.kbService.createDraft({ slug: "web-bad", kind: "templates", md: "---\nid: bad\ngroup: X\n---\n<!-- answer:en -->\nhello there friend\n", author: "test" });
     expect(bad.report.ok).toBe(false);
     const r = await send("POST", `/api/kb/versions/${bad.version.id}/publish`, c);
     expect(r.statusCode).toBe(400);
-    expect((await send("POST", "/api/kb/documents", c, { slug: "Bad Slug!", kind: "templates", md: "x".repeat(20) })).statusCode).toBe(400);
+    // Hướng dẫn AI (loại duy nhất còn soạn thẳng): nội dung sai -> báo cáo nêu lý do ở bước cấu trúc
+    const g = await send("POST", "/api/kb/documents", c, { slug: "agent-guide", kind: "guide", md: "chỉ là một dòng chữ, không có mục nào cả" });
+    expect(g.statusCode, g.body).toBe(200);
+    const gr = g.json().report;
+    expect(gr.ok).toBe(false);
+    const structure = gr.steps.find((s: { name: string }) => s.name === "1. Cấu trúc");
+    expect(structure.status).toBe("error");
+    expect(structure.details.length).toBeGreaterThan(0);
+    expect((await send("POST", `/api/kb/versions/${g.json().version.id}/publish`, c)).statusCode).toBe(400);
+    // slug sai: guide có slug cố định -> 400; loại khác bị chặn ngay (403) dù slug sai
+    expect((await send("POST", "/api/kb/documents", c, { slug: "Bad Slug!", kind: "guide", md: "x".repeat(20) })).statusCode).toBe(400);
+    expect((await send("POST", "/api/kb/documents", c, { slug: "Bad Slug!", kind: "templates", md: "x".repeat(20) })).statusCode).toBe(403);
   });
 });
 
@@ -299,10 +318,17 @@ describe("siết quyền và sửa lỗi sau rà soát giao diện", () => {
 
   it("phiên bản mới không ghi đè tiêu đề tài liệu bằng slug", async () => {
     const c = await login(9002);
+    // qua web: bản nháp mới của Hướng dẫn AI không kèm tiêu đề -> tiêu đề tài liệu giữ nguyên
+    const title0 = (await get("/api/kb/documents/agent-guide", c)).json().document.title;
+    expect(title0).not.toBe("agent-guide");
+    const guideMd = readFileSync("content/guide/agent-guide.md", "utf8");
+    expect((await send("POST", "/api/kb/documents", c, { slug: "agent-guide", kind: "guide", md: guideMd })).statusCode).toBe(200);
+    expect((await get("/api/kb/documents/agent-guide", c)).json().document.title).toBe(title0);
+    // bên trong hệ thống (nội dung tri thức): phiên bản sau không kèm tiêu đề cũng không ghi đè bằng slug
     const md = (kw: string) => `---\nid: title-keep\ngroup: Test\nresponse_mode: EXACT_TEMPLATE\npriority: 300\nmatch:\n  keywords:\n    - ${kw}\nsets_context:\n  status: pending\n---\n<!-- answer:en -->\nHello there.\n`;
-    const first = (await send("POST", "/api/kb/documents", c, { slug: "title-keep", kind: "templates", title: "Tiêu đề gốc", md: md("alpha keyword one") })).json();
+    const first = await svc.kbService.createDraft({ slug: "title-keep", kind: "templates", title: "Tiêu đề gốc", md: md("alpha keyword one"), author: "test" });
     expect((await send("POST", `/api/kb/versions/${first.version.id}/publish`, c)).statusCode).toBe(200);
-    expect((await send("POST", "/api/kb/documents", c, { slug: "title-keep", kind: "templates", md: md("alpha keyword two") })).statusCode).toBe(200);
+    await svc.kbService.createDraft({ slug: "title-keep", kind: "templates", md: md("alpha keyword two"), author: "test" });
     expect((await get("/api/kb/documents/title-keep", c)).json().document.title).toBe("Tiêu đề gốc");
   });
 
@@ -608,27 +634,38 @@ describe("trợ lý Nạp nội dung mới (Admin Web) — /api/kb/intake*", () 
   it("dán nội dung sạch (không trùng gì) -> tạo bản nháp, không có khung xung đột, publish-all lên được ngay", async () => {
     const c = await login(9002);
     const r = await send("POST", "/api/kb/intake", c, { rawText: "Một đoạn văn bản tự do dài hơn hai mươi ký tự để mô tả một tình huống hỗ trợ khách hàng hoàn toàn mới, không đụng gì tới nội dung cũ." });
-    expect(r.statusCode).toBe(200);
+    expect(r.statusCode, r.body).toBe(200);
     const body = r.json();
-    expect(body.version.slug).toBe("intake-clean-doc");
+    // câu trả lời thành mục hỏi đáp trong bản nháp của chủ đề (nhóm "Test" không có trong bảng -> "general")
+    expect(body.version.slug).toBe("items-general");
+    expect(body.drafts).toEqual([{ versionId: body.version.id, slug: "items-general", ok: true }]);
     expect(body.report.ok).toBe(true);
     expect(body.boxes).toEqual([]);
 
     const pub = (await send("POST", `/api/kb/intake/${body.version.id}/publish-all`, c, { versionIds: [body.version.id] })).json();
     expect(pub.results).toEqual([{ versionId: body.version.id, status: "published" }]);
+    const general = (await get("/api/kb/content", c)).json().topics.find((t: { topic: string }) => t.topic === "general");
+    expect(general.answers.find((x: { id: string }) => x.id === "intake-clean-tpl")).toMatchObject({ converted: true, docSlug: "items-general", steps: ["Clean test answer."] });
   });
 
   it("dán nội dung trùng với template có sẵn -> khung xung đột có narrow + gợi ý AI; kiểm tra lại/gỡ máy móc/publish-all hoạt động đúng", async () => {
     const c = await login(9002);
     const r = await send("POST", "/api/kb/intake", c, { rawText: `Nội dung có chủ đích trùng lặp để kiểm thử. ${CONFLICT_MARKER} — đủ dài hơn hai mươi ký tự.` });
-    expect(r.statusCode).toBe(200);
+    expect(r.statusCode, r.body).toBe(200);
     const body = r.json();
-    expect(body.version.slug).toBe("intake-conflict-doc");
+    expect(body.version.slug).toBe("items-general");
+    // mục hỏi đáp: bot sẽ trả lời câu của mục mới bằng esc-login-fail -> bước kiểm tra CHẶN publish cho tới khi xử lý xong
+    const step3 = body.report.steps.find((st: { name: string }) => st.name === "3. Trùng và mâu thuẫn");
+    expect(step3.status).toBe("error");
+    expect(step3.details.join("\n")).toContain("esc-login-fail");
+    // ... nên người dùng phải thấy đúng chỗ đó thành khung "cần bạn quyết" (kèm nút gỡ máy móc + gợi ý AI)
     expect(body.boxes.length).toBeGreaterThan(0);
+    expect(body.boxes.every((x: { a: { id: string } }) => x.a.id === "intake-conflict-tpl"), "khung chỉ dành cho phần nội dung MỚI").toBe(true);
     const box = body.boxes.find((x: { narrow: { templateId: string; phrase: string } | null }) => x.narrow?.templateId === "esc-login-fail");
     expect(box, "phải bắt được chồng lấn với esc-login-fail qua cụm 'face verify fail'").toBeTruthy();
     expect(box.verdict).toBe("subset");
     expect(box.reason).toBe("test reason");
+    expect(box.suggestion).toBe("test suggestion");
 
     // Kiểm tra lại: cụm còn trong văn bản gốc -> vẫn xung đột; đã sửa hết -> hết xung đột
     const still = await send("POST", "/api/kb/intake/conflicts/recheck", c, { narrow: box.narrow, editedText: "face verify fail" });
@@ -645,10 +682,13 @@ describe("trợ lý Nạp nội dung mới (Admin Web) — /api/kb/intake*", () 
     // Gỡ đúng cụm "face verify fail" khỏi esc-login-fail lại phá một câu trong Bộ câu hỏi mẫu thật (content/eval/eval_cases.jsonl
     // mong đợi "face verify fail" -> esc-login-fail) — bước "5. Test hồi quy" đúng vai trò của nó: chặn publish thay vì âm
     // thầm làm hỏng một hành vi đã kiểm chứng, dù cụm này đến từ nút "Áp dụng" chứ không phải admin gõ tay.
+    // publish-all trả kết quả từng bản: mục hỏi đáp còn xung đột chưa xử lý bị chặn ở bước 3 (khác template cũ chỉ cảnh báo)
     const pub = (await send("POST", `/api/kb/intake/${body.version.id}/publish-all`, c, { versionIds: [body.version.id, appliedBody.versionId] })).json();
-    expect(pub.results[0]).toEqual({ versionId: body.version.id, status: "published" });
+    expect(pub.results[0].versionId).toBe(body.version.id);
+    expect(pub.results[0].error).toContain("3. Trùng và mâu thuẫn");
     expect(pub.results[1].versionId).toBe(appliedBody.versionId);
     expect(pub.results[1].error).toContain("5. Test hồi quy");
+    expect((await get("/api/kb/content", c)).json().topics.flatMap((t: { answers: { id: string }[] }) => t.answers).some((a: { id: string }) => a.id === "intake-conflict-tpl")).toBe(false);
   });
 
   it("sửa tự do một khung (không có narrow) -> applyBoxEdit tạo bản nháp mới cho đúng template/đúng đoạn", async () => {
@@ -672,10 +712,15 @@ describe("trợ lý Nạp nội dung mới (Admin Web) — /api/kb/intake*", () 
   it("mở lại trang (GET boxes) dựng lại đúng khung như lúc tạo, không cần AI phân loại lại", async () => {
     const c = await login(9002);
     const created = (await send("POST", "/api/kb/intake", c, { rawText: `Nội dung khác để kiểm tra tải lại trang. ${CONFLICT_MARKER} — đủ dài.` })).json();
+    expect(created.version.slug).toBe("items-general");
     expect(created.boxes.length).toBeGreaterThan(0);
+    // bản nháp trước (chưa publish được) được thêm tiếp: mục mới cùng mã nhận mã khác; khung chỉ tính cho mục mới đó
+    expect(created.boxes.every((x: { a: { id: string } }) => x.a.id === "intake-conflict-tpl-2")).toBe(true);
+    expect(((await get(`/api/kb/versions/${created.version.id}`, c)).json().version.report.overlapPairs ?? []).length).toBeGreaterThan(0); // lưu lại để dựng lại
     const reloaded = (await get(`/api/kb/intake/${created.version.id}/boxes`, c)).json();
     expect(reloaded.boxes.length).toBe(created.boxes.length);
-    expect(reloaded.boxes[0].narrow).toEqual(created.boxes[0].narrow);
+    expect(reloaded.boxes.map((x: { narrow: unknown }) => x.narrow)).toEqual(created.boxes.map((x: { narrow: unknown }) => x.narrow));
+    expect(reloaded.boxes.map((x: { b: { id: string } }) => x.b.id)).toEqual(created.boxes.map((x: { b: { id: string } }) => x.b.id));
     expect((await get(`/api/kb/intake/999999/boxes`, c)).statusCode).toBe(404);
   });
 
