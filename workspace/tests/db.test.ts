@@ -10,7 +10,7 @@ afterAll(async () => db.close());
 describe("PGlite + migration", () => {
   it("chạy migration, có pgvector và tsvector", async () => {
     const applied = await migrate(db);
-    expect(applied).toEqual(["001_init.sql", "002_secrets.sql", "003_guide_kind.sql", "004_chunk_embeddings.sql", "005_kb_conflicts.sql", "006_items.sql"]);
+    expect(applied).toEqual(["001_init.sql", "002_secrets.sql", "003_guide_kind.sql", "004_chunk_embeddings.sql", "005_kb_conflicts.sql", "006_items.sql", "007_content_history.sql"]);
     expect(await migrate(db)).toEqual([]); // idempotent
 
     await db.query("INSERT INTO kb_documents (slug, title, kind) VALUES ('d', 'D', 'knowledge')");

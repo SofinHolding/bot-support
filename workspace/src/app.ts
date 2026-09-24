@@ -123,6 +123,11 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   if (opts.seed !== false) {
     const r = await seedContent(kbService, kb, ops, db, { contentDir: cfg.CONTENT_DIR, adminIds: cfg.adminIds, ownerId: cfg.ownerId });
     if (r.templatesSeeded || r.admins || r.evalCases) log("info", "seed", r);
+    // mốc lịch sử ban đầu (V1) cho dữ liệu chưa có lịch sử — chỉ dịch vụ admin làm, tránh bot/worker khởi động cùng lúc ghi trùng
+    if (service === "admin") {
+      const base = await kbService.ensureHistoryBaseline().catch((e: Error) => (log("warn", "không ghi được mốc lịch sử ban đầu", { err: e.message }), 0));
+      if (base) log("info", "ghi mốc lịch sử ban đầu (V1)", { documents: base });
+    }
   }
   await live.rebuild();
 

@@ -63,6 +63,13 @@ export class TemplateIndex {
     return this.byId.get(id);
   }
 
+  /** Nội dung đang trong thời gian hiệu lực (theo ngày UTC). Nội dung hết / chưa tới hiệu lực không được đưa làm ứng viên. */
+  static isActive(t: Template, now: Date = new Date()): boolean {
+    if (!t.valid) return true;
+    const today = now.toISOString().slice(0, 10);
+    return (!t.valid.from || t.valid.from <= today) && (!t.valid.until || t.valid.until >= today);
+  }
+
   /** Câu trả lời `en` của template (đi qua answer_from nếu có). */
   resolveAnswerSource(t: Template): Template {
     let cur = t;
@@ -77,6 +84,7 @@ export class TemplateIndex {
   /** Danh mục gọn của mọi template có thể được chọn (gửi cho tầng 2 khi không có ứng viên xác định). */
   catalogue(): { id: string; group: string; gist: string }[] {
     return this.matchable
+      .filter((t) => TemplateIndex.isActive(t))
       .filter((t) => t.match.keywords.length || t.match.examples.length || t.match.rules.length || t.match.image_types.length || t.match.exact.length)
       .map((t) => ({ id: t.id, group: t.group, gist: t.match.examples[0] ?? t.match.keywords[0] ?? t.sets_context.issue ?? t.id }));
   }
@@ -105,6 +113,7 @@ export class TemplateIndex {
     const evalInp = makeInput(inp.text, { imageType: inp.imageType, lastTemplateId: inp.lastTemplateId });
     evalInp.norm = inp.norm;
     for (const t of this.matchable) {
+      if (!TemplateIndex.isActive(t)) continue;
       const m = t.match;
 
       if (m.exact.some((p) => normalize(p) === inp.norm && inp.norm.length > 0)) {
@@ -183,6 +192,8 @@ export class TemplateIndex {
     const scored: Suggestion[] = [];
     for (const [id, vecs] of this.vectors) {
       if (!opts.includeShortcuts && this.isEscalateShortcut(id)) continue;
+      const tpl = this.byId.get(id);
+      if (tpl && !TemplateIndex.isActive(tpl)) continue;
       let best = 0;
       for (const v of vecs) best = Math.max(best, cosine(q, v));
       if (best > 0) scored.push({ templateId: id, score: best });

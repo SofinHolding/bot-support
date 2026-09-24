@@ -2389,7 +2389,7 @@ Nội dung mục 2.
     h(
       "div",
       { class: "row-card row-card-clickable", on: { click: () => go(`/kb/unit?key=${enc(u.key)}`) } },
-      h("div", { class: "row-top" }, h("span", { class: "row-title" }, u.title), unitKindBadge(u.kind), u.converted ? null : badge("dữ liệu cũ", "muted")),
+      h("div", { class: "row-top" }, h("span", { class: "row-title" }, u.title), unitKindBadge(u.kind), u.active === false ? badge("ngoài thời gian hiệu lực", "warn") : null, u.converted ? null : badge("dữ liệu cũ", "muted")),
       h("div", { class: "row-meta small muted" }, [u.questions.length ? `Khách hỏi: ${short(u.questions.slice(0, 3).join(" · "), 140)}` : null, u.steps.length > 1 ? `${u.steps.length} bước` : null].filter(Boolean).join(" — ")),
     );
 
@@ -2448,9 +2448,35 @@ Nội dung mục 2.
       const selfId = answer ? answer.id : section.chunkId;
       const conflicts = slug ? (await get("/api/kb/conflicts", { doc: slug })).items.filter((c) => c.a.id === selfId || c.b.id === selfId) : [];
       const editable = can("admin") && !(answer && answer.kind === "system");
+      const hist = await get("/api/kb/history", { key });
+      const CH = { created: ["khởi tạo", "ok"], updated: ["sửa", "warn"], removed: ["bỏ", "err"] };
+      const validText = (v) => (v ? [v.from ? `từ ${v.from}` : null, v.until ? `đến hết ${v.until}` : null].filter(Boolean).join(" ") : "luôn hiệu lực");
+      const historyCard = card(
+        "Lịch sử thay đổi theo từng phần",
+        hist.parts.length
+          ? table(
+              [
+                { label: "Phần", cell: (p) => p.part },
+                { label: "Mốc hiện tại", cell: (p) => fmtDate(p.since) },
+                { label: "Lần đổi", cell: (p) => badge(CH[p.change][0], CH[p.change][1]) },
+                { label: "Phiên bản", cell: (p) => `v${p.version}` },
+                { label: "Người thực hiện", cell: (p) => p.by || "-" },
+              ],
+              hist.parts,
+            )
+          : emptyBox("Chưa có lịch sử (nội dung chưa từng được publish kể từ khi bật tính năng này)."),
+        hist.changes.some((c) => c.change !== "created")
+          ? h(
+              "details",
+              null,
+              h("summary", null, `Chi tiết ${hist.changes.filter((c) => c.change !== "created").length} lần sửa (trước → sau)`),
+              h("div", { class: "list" }, hist.changes.filter((c) => c.change !== "created").map((c) => h("div", { class: "row-card" }, h("div", { class: "row-top" }, h("b", null, c.part), badge(CH[c.change][0], CH[c.change][1]), h("span", { class: "small muted" }, `${fmtDate(c.changedAt)} · v${c.version} · ${c.changedBy || "-"}`)), c.before ? h("div", { class: "small pre-wrap strike" }, short(c.before, 400)) : null, c.after ? h("div", { class: "small pre-wrap" }, short(c.after, 400)) : null))),
+            )
+          : null,
+      );
       const body = answer
         ? [
-            dl([["Chủ đề", answer.topicTitle], ["Loại", (UNIT_KIND[answer.kind] || [answer.kind])[0]], ["Dùng khi", answer.appliesWhen]]),
+            dl([["Chủ đề", answer.topicTitle], ["Loại", (UNIT_KIND[answer.kind] || [answer.kind])[0]], ["Dùng khi", answer.appliesWhen], ["Thời gian hiệu lực", validText(answer.valid) + (answer.active === false ? " — HIỆN KHÔNG ĐƯỢC DÙNG" : "")]]),
             card("Khách thường hỏi", answer.questions.length ? h("ul", null, answer.questions.map((q) => h("li", null, q))) : emptyBox("Không có câu hỏi mẫu (khớp bằng điều kiện của hệ thống).")),
             card(answer.steps.length > 1 ? "Bot trả lời (theo từng bước)" : "Bot trả lời", answer.steps.map((s, i) => h("div", { class: "tpl-answer pre-wrap" }, answer.steps.length > 1 ? h("b", null, `Bước ${i + 1}: `) : null, s))),
           ]
@@ -2461,6 +2487,7 @@ Nội dung mục 2.
         h("div", { class: "page-head" }, h("h2", null, answer ? answer.title : section.heading), unitKindBadge(answer ? answer.kind : "document"), link("← Nội dung", "/kb", "small")),
         answer && answer.kind === "system" ? notice("info", "Tin hệ thống do code gửi (bảo mật, chống spam, ảnh...): nội dung khoá, không sửa qua đây.") : null,
         body,
+        historyCard,
         conflicts.length
           ? card(
               `Xung đột đang mở (${conflicts.length})`,

@@ -72,6 +72,10 @@ export interface VersionRow {
 
 const mapVersion = (r: Record<string, unknown>): VersionRow => ({ ...(r as unknown as VersionRow), id: num(r.id), version: num(r.version) });
 
+/** Đoạn tài liệu đang trong thời gian hiệu lực (metadata valid_from / valid_until, YYYY-MM-DD, theo ngày UTC). */
+const ACTIVE_CHUNK = `(c.metadata->>'valid_from' IS NULL OR c.metadata->>'valid_from' <= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))
+  AND (c.metadata->>'valid_until' IS NULL OR c.metadata->>'valid_until' >= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))`;
+
 export interface ChunkInsert {
   index: number;
   heading: string;
@@ -80,6 +84,7 @@ export interface ChunkInsert {
   searchText: string;
   hash: string;
   lang?: string;
+  valid?: { from?: string; until?: string };
   embedding?: number[];
   embeddingModel?: string;
 }
@@ -213,7 +218,7 @@ export function kbRepo(db: Db) {
         await db.query(
           `INSERT INTO kb_chunks (version_id, doc_slug, chunk_index, chunk_hash, heading, text, url, search_text, tsv, embedding, embedding_model, metadata)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8, to_tsvector('simple', $8), $9::vector, $10, $11::jsonb)`,
-          [versionId, slug, c.index, c.hash, c.heading, c.text, c.url ?? null, c.searchText, c.embedding ? vecLiteral(c.embedding) : null, c.embeddingModel ?? null, JSON.stringify(c.lang ? { lang: c.lang } : {})],
+          [versionId, slug, c.index, c.hash, c.heading, c.text, c.url ?? null, c.searchText, c.embedding ? vecLiteral(c.embedding) : null, c.embeddingModel ?? null, JSON.stringify({ ...(c.lang ? { lang: c.lang } : {}), ...(c.valid?.from ? { valid_from: c.valid.from } : {}), ...(c.valid?.until ? { valid_until: c.valid.until } : {}) })],
         );
       }
       // bảng vector theo model (kb_chunks.embedding chỉ còn là bản sao của model lúc publish)
@@ -230,7 +235,7 @@ export function kbRepo(db: Db) {
         ? await db.query(
             `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, c.metadata->>'lang' AS lang, ts_rank(c.tsv, to_tsquery('simple', $1))::float8 AS rank
              FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
-             WHERE v.status = 'published' AND c.tsv @@ to_tsquery('simple', $1) ORDER BY rank DESC LIMIT $2`,
+             WHERE v.status = 'published' AND c.tsv @@ to_tsquery('simple', $1) AND ${ACTIVE_CHUNK} ORDER BY rank DESC LIMIT $2`,
             [opts.tsQuery, opts.limit],
           )
         : { rows: [] as Record<string, unknown>[] };
@@ -239,7 +244,7 @@ export function kbRepo(db: Db) {
           ? await db.query(
               `SELECT c.id, c.doc_slug, c.heading, c.text, c.url, c.search_text, c.metadata->>'lang' AS lang, (1 - (e.embedding <=> $1::vector))::float8 AS sim
                FROM kb_chunk_embeddings e JOIN kb_chunks c ON c.id = e.chunk_id JOIN kb_document_versions v ON v.id = c.version_id
-               WHERE v.status = 'published' AND e.model = $2
+               WHERE v.status = 'published' AND e.model = $2 AND ${ACTIVE_CHUNK}
                ORDER BY e.embedding <=> $1::vector LIMIT $3`,
               [vecLiteral(opts.embedding), opts.embeddingModel, opts.limit],
             )
@@ -380,6 +385,24 @@ export function kbRepo(db: Db) {
     },
 
     // ---- Quyết định về cặp nội dung chồng lấn (kb/pair-decisions.ts) ----
+    // ---- Lịch sử theo từng phần (007_content_history.sql) ----
+    async addContentHistory(rows: { unitKey: string; unitTitle: string; part: string; change: string; before: string | null; after: string | null; docSlug: string; version: number; changedBy: string | null; changedAt: Date }[]) {
+      for (const r of rows) {
+        await db.query(
+          "INSERT INTO kb_content_history (unit_key, unit_title, part, change, before_value, after_value, doc_slug, version, changed_by, changed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          [r.unitKey, r.unitTitle, r.part, r.change, r.before, r.after, r.docSlug, r.version, r.changedBy, iso(r.changedAt)],
+        );
+      }
+    },
+    async hasContentHistory(docSlug: string): Promise<boolean> {
+      const r = await db.query("SELECT 1 FROM kb_content_history WHERE doc_slug = $1 LIMIT 1", [docSlug]);
+      return r.rows.length > 0;
+    },
+    async listContentHistory(unitKey: string) {
+      const r = await db.query("SELECT * FROM kb_content_history WHERE unit_key = $1 ORDER BY changed_at DESC, id DESC", [unitKey]);
+      return r.rows.map((x) => ({ part: String(x.part), change: String(x.change), before: (x.before_value as string | null) ?? null, after: (x.after_value as string | null) ?? null, docSlug: String(x.doc_slug), version: num(x.version), changedBy: (x.changed_by as string | null) ?? null, changedAt: new Date(String(x.changed_at)) }));
+    },
+
     async listPairDecisions(): Promise<PairDecision[]> {
       const r = await db.query("SELECT * FROM kb_pair_decisions ORDER BY decided_at DESC");
       return r.rows.map((x) => ({ aKey: String(x.a_key), bKey: String(x.b_key), aHash: String(x.a_hash), bHash: String(x.b_hash), decision: x.decision as PairDecisionKind, note: (x.note as string | null) ?? null, decidedBy: String(x.decided_by), decidedAt: new Date(String(x.decided_at)) }));

@@ -309,6 +309,8 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   // ---------------------------------------------------------------- Kho tri thức: một danh sách, một cửa thêm nội dung
   /** Mọi nội dung bot đang dùng (câu trả lời theo chủ đề, đoạn tài liệu theo tài liệu) + bản nháp đang chờ xử lý. */
   app.get("/api/kb/content", async () => kbService.listContent());
+  /** Lịch sử theo từng phần của một nội dung: phần nào đổi khi nào, ai đổi, trước/sau. */
+  app.get("/api/kb/history", async (req) => kbService.unitHistory(z.object({ key: z.string().min(3).max(400) }).parse(req.query).key));
 
   /** "Thử hỏi bot": câu này bot trả lời bằng mục nào (bộ đang chạy, hoặc sau khi đưa bản nháp lên). Không gọi AI. */
   app.post("/api/kb/try", async (req) => {

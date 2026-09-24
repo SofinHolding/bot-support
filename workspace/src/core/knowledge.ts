@@ -27,6 +27,8 @@ export interface KnowledgeChunk {
   hash: string;
   /** Câu dùng để tính vector: như `text` nhưng mang đủ đường dẫn tiêu đề "A › B" (đoạn của mục con không mất ngữ cảnh mục cha) */
   embedText: string;
+  /** Thời gian hiệu lực khai ở đầu tài liệu (valid_from / valid_until, YYYY-MM-DD) */
+  valid?: { from?: string; until?: string };
   /** Ngôn ngữ THẬT của đoạn (vi | en | ...): quyết định có phải dịch trước khi gửi khách hay không */
   lang: string;
 }
@@ -115,6 +117,11 @@ export function parseKnowledgeDoc(md: string, fallbackSlug?: string): { doc?: Kn
   const sourceUrl = meta.source_url ? String(meta.source_url) : undefined;
   const links = Array.isArray(meta.section_links) ? (meta.section_links as { match: string; url: string }[]) : [];
 
+  const day = (v: unknown) => (v instanceof Date ? v.toISOString().slice(0, 10) : v ? String(v).trim().slice(0, 10) : undefined);
+  const vf = day(meta.valid_from);
+  const vu = day(meta.valid_until);
+  for (const [k, v] of [["valid_from", vf], ["valid_until", vu]] as const) if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) issues.push({ level: "error", message: `${k} phải có dạng YYYY-MM-DD` });
+  const docValid = vf || vu ? { ...(vf ? { from: vf } : {}), ...(vu ? { until: vu } : {}) } : undefined;
   const lines = body.split("\n");
   const sections: { heading: string; lines: string[] }[] = [];
   let h2 = "";
@@ -151,6 +158,7 @@ export function parseKnowledgeDoc(md: string, fallbackSlug?: string): { doc?: Kn
         searchText: normalize(`${s.heading} ${part}`),
         hash: sha1(full),
         embedText: chunkEmbedText(s.heading, full),
+        ...(docValid ? { valid: docValid } : {}),
         lang: sourceLangOf(full, declared),
       });
     }

@@ -54,6 +54,8 @@ export interface Template {
   /** Thông tin cần xin khách khi escalate (hiển thị trong ticket cho support). */
   required_info?: string[];
   source?: string;
+  /** Thời gian hiệu lực (ngày YYYY-MM-DD, tính cả hai đầu). Ngoài khoảng này bot không dùng nội dung. */
+  valid?: { from?: string; until?: string };
   /** Có khi template được dịch từ "mục hỏi đáp" (src/core/items.ts): tên, ngữ cảnh, bước, mục tương tự đã xác nhận là khác. */
   item?: TemplateItemMeta;
 }

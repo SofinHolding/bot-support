@@ -14,6 +14,7 @@ import { parseTemplateFile, validateBundle } from "../core/templates";
 import { compileItems, ITEM_TOPICS, itemsDocToYaml, parseItemsDoc, type ItemsDoc, type KnowledgeItem } from "../core/items";
 import { chunkKey, hasValidDecision, itemKey, orderPair, templateHash, textHash, type PairDecisionKind } from "./pair-decisions";
 import { applyReview, type ReviewInput } from "./review-import";
+import { contentParts, diffParts } from "./content-history";
 import { GROUP_TOPIC, migrateTemplates } from "./migrate-items";
 import { containsPhrase, normalize, wordCount } from "../core/text";
 import type { ParseIssue, Template } from "../domain/types";
@@ -506,6 +507,8 @@ export class KbService {
         appliesWhen: t.item?.applies_when ?? null,
         steps,
         handoff: kind === "handoff",
+        valid: t.valid ?? null,
+        active: TemplateIndex.isActive(t),
       });
     }
     const chunks = await this.d.kb.listPublishedChunks();
@@ -524,6 +527,31 @@ export class KbService {
       pending.push({ slug: d.slug, title, versionId: latest.id, version: latest.version, status: latest.status, ok: !!rep?.ok, author: latest.author, createdAt: latest.created_at });
     }
     return { topics: [...topics.values()].filter((t) => t.answers.length), documents: [...documents.values()], pending, kbVersion: this.d.live.version };
+  }
+
+  /**
+   * Mốc khởi tạo cho dữ liệu đang chạy mà chưa có lịch sử (dữ liệu có từ trước khi có tính năng này, hoặc nạp bằng seed): ghi mọi
+   * phần là "khởi tạo" tại thời điểm publish của phiên bản đang chạy. Chạy khi khởi động; tài liệu đã có lịch sử thì bỏ qua.
+   */
+  async ensureHistoryBaseline(): Promise<number> {
+    let n = 0;
+    for (const d of await this.d.kb.listDocuments()) {
+      if (d.kind === "guide" || (await this.d.kb.hasContentHistory(d.slug))) continue;
+      const pub = (await this.d.kb.listVersions(d.slug)).find((x) => x.status === "published");
+      if (!pub) continue;
+      const rows = diffParts(undefined, contentParts(this.parse(d.kind, pub.source_md, d.slug)));
+      await this.d.kb.addContentHistory(rows.map((h) => ({ ...h, docSlug: d.slug, version: pub.version, changedBy: pub.approved_by ?? pub.author ?? "hệ thống", changedAt: pub.published_at ?? pub.created_at })));
+      n++;
+    }
+    return n;
+  }
+
+  /** Lịch sử theo từng phần của một nội dung + mốc hiện tại của từng phần (lần đổi gần nhất). */
+  async unitHistory(unitKey: string) {
+    const rows = await this.d.kb.listContentHistory(unitKey);
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) if (!latest.has(r.part)) latest.set(r.part, r);
+    return { parts: [...latest.values()].filter((r) => r.change !== "removed").map((r) => ({ part: r.part, since: r.changedAt, version: r.version, by: r.changedBy, change: r.change })), changes: rows };
   }
 
   /**
@@ -1055,10 +1083,14 @@ export class KbService {
       if (errs.length) throw new KbError("không nhất quán với phần còn lại của kho: " + errs.map((e) => e.message).join("; "));
     }
     const at = this.now();
+    // Lịch sử theo từng phần: so với bản đang chạy trước đó (không có = dữ liệu V1, mọi phần là "khởi tạo")
+    const prevPublished = kind === "guide" ? undefined : (await this.d.kb.listVersions(v.slug)).find((x) => x.status === "published" && x.id !== v.id);
+    const history = kind === "guide" ? [] : diffParts(prevPublished ? contentParts(this.parse(kind, prevPublished.source_md, v.slug)) : undefined, contentParts(parsed));
     await this.d.db.tx(async (tx) => {
       const kb = kbRepo(tx);
       const ops = opsRepo(tx);
       await kb.activateVersion(v.id, v.slug, by, at);
+      await kb.addContentHistory(history.map((h) => ({ ...h, docSlug: v.slug, version: v.version, changedBy: by, changedAt: at })));
       if (compiled(kind)) await kb.replaceTemplates(v.id, v.slug, parsed.templates);
       else if (kind === "knowledge") await kb.replaceChunks(v.id, v.slug, chunkRows); // guide: nội dung nằm ở source_md của phiên bản, LiveContent đọc lại
       await kb.clearArchivedContent(v.slug); // dọn template/chunk/vector của các phiên bản archived, đỡ tích rác qua nhiều lần publish

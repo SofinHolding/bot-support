@@ -86,6 +86,10 @@ export interface KnowledgeItem {
   steps: ItemStep[];
   handoff?: ItemHandoff;
   source?: string;
+  /** Thời gian hiệu lực (YYYY-MM-DD, tính cả hai đầu). Bỏ trống = luôn hiệu lực. Chỉ là giới hạn dùng, KHÔNG phải căn cứ để
+   * coi nội dung mới hơn là đúng hơn (xem docs/KIEN_TRUC_KIEN_THUC.md). */
+  valid_from?: string;
+  valid_until?: string;
   advanced?: ItemAdvanced;
 }
 
@@ -149,6 +153,8 @@ export function parseItemsDoc(src: string): { doc?: ItemsDoc; issues: ParseIssue
       }),
       handoff: h ? { category: str(h.category) || undefined, error_code: str(h.error_code) || undefined, pic: str(h.pic) || undefined, ask_customer: strList(h.ask_customer) } : undefined,
       source: str(o.source) || undefined,
+      valid_from: str(o.valid_from) || undefined,
+      valid_until: str(o.valid_until) || undefined,
       advanced: adv,
     });
   }
@@ -199,6 +205,8 @@ export function validateItemsDoc(doc: ItemsDoc): ParseIssue[] {
       if (owner && owner !== it.id) err(it.id, `cụm nhận biết "${p}" trùng với mục ${owner}`);
       phraseOwner.set(n, it.id);
     }
+    for (const [k, v] of [["bắt đầu", it.valid_from], ["kết thúc", it.valid_until]] as const) if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) err(it.id, `ngày ${k} hiệu lực phải có dạng YYYY-MM-DD: "${v}"`);
+    if (it.valid_from && it.valid_until && it.valid_from > it.valid_until) err(it.id, "ngày bắt đầu hiệu lực sau ngày kết thúc");
     for (const d of it.distinct_from) {
       if (!d.item) err(it.id, "khai báo \"khác với mục\" nhưng thiếu mã mục");
       if (d.item === it.id) err(it.id, "không thể khai báo khác với chính nó");
@@ -230,6 +238,7 @@ export function compileItems(doc: ItemsDoc): Template[] {
     const requiredInfo = it.handoff?.ask_customer?.length ? it.handoff.ask_customer : undefined;
     const context = { issue: adv.issue ?? it.title, status: adv.status ?? (it.kind === "answer" ? ("pending" as const) : ("none" as const)) };
     const steps = it.kind === "handoff" ? [] : it.steps;
+    const valid = it.valid_from || it.valid_until ? { ...(it.valid_from ? { from: it.valid_from } : {}), ...(it.valid_until ? { until: it.valid_until } : {}) } : undefined;
     const meta = (step: number): ItemMeta => ({ id: it.id, title: it.title, topic: doc.topic, kind: it.kind, step, steps: Math.max(1, steps.length), applies_when: it.applies_when, distinct_from: it.distinct_from });
     const followUp = (i: number) => {
       const f: Record<string, string> = {};
@@ -261,6 +270,7 @@ export function compileItems(doc: ItemsDoc): Template[] {
       ...(ticket ? { ticket } : {}),
       ...(requiredInfo ? { required_info: requiredInfo } : {}),
       ...(it.source ? { source: it.source } : {}),
+      ...(valid ? { valid } : {}),
       item: meta(0),
     });
     for (let i = 1; i < steps.length; i++) {
@@ -275,6 +285,7 @@ export function compileItems(doc: ItemsDoc): Template[] {
         sets_context: context,
         ...(ticket ? { ticket } : {}),
         ...(requiredInfo ? { required_info: requiredInfo } : {}),
+        ...(valid ? { valid } : {}),
         item: meta(i),
       });
     }
@@ -293,6 +304,8 @@ export function itemsDocToYaml(doc: ItemsDoc): string {
     if (it.steps.length) o.steps = it.steps.map((s) => ({ say: Object.keys(s.say).length === 1 && s.say.en ? s.say.en : s.say, ...(s.next && Object.keys(s.next).length ? { next: s.next } : {}) }));
     if (it.handoff) o.handoff = Object.fromEntries(Object.entries(it.handoff).filter(([, v]) => (Array.isArray(v) ? v.length : v)));
     if (it.source) o.source = it.source;
+    if (it.valid_from) o.valid_from = it.valid_from;
+    if (it.valid_until) o.valid_until = it.valid_until;
     if (it.advanced && Object.keys(it.advanced).length) o.advanced = it.advanced;
     return o;
   });
