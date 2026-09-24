@@ -314,3 +314,9 @@ export function replaceChunkSection(md: string, heading: string, newText: string
   const bodyEnd = i + 1 < headings.length ? headings[i + 1]!.index : md.length;
   return { md: md.slice(0, bodyStart) + `\n\n${newText.trim()}\n` + md.slice(bodyEnd), replaced: true };
 }
+
+/**
+ * Nhận xét của AI (SKILL review-overlap) cần NGƯỜI quyết: trùng, xung đột, mâu thuẫn trực tiếp, và "có thể thay thế" — dữ liệu
+ * mới chỉ thay dữ liệu cũ khi người duyệt xác nhận, không bao giờ vì nhập sau.
+ */
+export const NEEDS_DECISION: ReadonlySet<string> = new Set(["duplicate", "conflict", "contradiction", "supersedes"]);

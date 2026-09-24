@@ -23,7 +23,7 @@ import { opsRepo, type AdminRole, type OpsRepo } from "../db/repo-ops";
 import { usableLlm, type LlmPort, type OverlapSide } from "../core/ports";
 import { evalSettings, outcomeKey, routeOffline, runEval, type EvalCase } from "./eval";
 import type { LiveContent } from "./live-content";
-import { findOverlaps, narrowTemplateMatch, probesFromChunks, probesFromTemplates, replaceChunkSection, replaceTemplateAnswer, type OverlapPair, type OverlapRef, type ProbeItem } from "./overlap";
+import { findOverlaps, NEEDS_DECISION, narrowTemplateMatch, probesFromChunks, probesFromTemplates, replaceChunkSection, replaceTemplateAnswer, type OverlapPair, type OverlapRef, type ProbeItem } from "./overlap";
 import { CONFUSION_FIX_HINT, confusionKey, confusionsOf, describeConfusion, findConfusions, withExampleCache, type Confusion } from "./routing-check";
 import type { Evaluator } from "../core/predicates";
 import { TemplateIndex } from "../core/template-index";
@@ -838,7 +838,7 @@ export class KbService {
         }
         // Chỉ GHI LẠI (hiện dấu đỏ trên danh sách Tài liệu) vấn đề thật: bot trả lời nhầm / đoạn trùng nguyên văn, hoặc AI thấy hai
         // bên nói MÂU THUẪN / TRÙNG hẳn nhau. Cặp chỉ giống chữ mà bot vẫn phân biệt đúng thì không làm phiền người dùng.
-        if (!confirmed(p) && verdict !== "conflict" && verdict !== "duplicate") continue;
+        if (!confirmed(p) && !NEEDS_DECISION.has(verdict ?? "")) continue;
         const said = (p.confusions ?? []).slice(0, 3).map((c) => describeConfusion(c, titleOf));
         inputs.push({ a: p.a, b: p.b, score: p.score, signals: [...said, ...p.signals], narrow: p.narrow ?? null, verdict, reason, suggestion });
       }

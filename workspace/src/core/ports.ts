@@ -131,7 +131,8 @@ export interface ReviewOverlapRequest {
   signals: string[];
 }
 export interface OverlapVerdict {
-  verdict: "duplicate" | "subset" | "conflict" | "distinct";
+  /** bản 3 của SKILL thêm complement / supersedes / contradiction; bản 2 chỉ trả 4 loại đầu — code nhận cả hai */
+  verdict: "duplicate" | "subset" | "conflict" | "distinct" | "complement" | "supersedes" | "contradiction";
   reason?: string;
   suggestion?: string;
 }

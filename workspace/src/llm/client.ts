@@ -28,7 +28,7 @@ const UnderstandSchema = z.object({
 
 const SelectSchema = z.object({ ref: z.string(), reason: z.string().default("") });
 const VerifySchema = z.object({ ok: z.boolean(), reason: z.string().optional() });
-const OverlapSchema = z.object({ verdict: z.enum(["duplicate", "subset", "conflict", "distinct"]), reason: z.string().optional(), suggestion: z.string().optional() });
+const OverlapSchema = z.object({ verdict: z.enum(["duplicate", "subset", "conflict", "distinct", "complement", "supersedes", "contradiction"]), reason: z.string().optional(), suggestion: z.string().optional() });
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 const IntakeDraftSchema = z.object({
   kind: z.enum(["templates", "knowledge"]),

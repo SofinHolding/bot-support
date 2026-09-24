@@ -28,6 +28,7 @@ import { containsPhrase } from "../core/text";
 import { DEFAULT_OVERLAP_MIN, scanCorpus } from "../kb/overlap";
 import { CONFUSION_FIX_HINT, confusionsOf, describeConfusion, findConfusions } from "../kb/routing-check";
 import { intakeToItems, renderIntakeMarkdown } from "../kb/intake";
+import { NEEDS_DECISION } from "../kb/overlap";
 import { extractText, MAX_UPLOAD_BYTES } from "../kb/doc-extract";
 import { GUIDE_SLUG } from "../core/guide";
 import { GatewayConfigError, listGatewayModels, runningInDocker, testGateway } from "../llm/gateway-config";
@@ -538,7 +539,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
         /* AI chỉ mô tả thêm: khung vẫn hiện với tín hiệu code, không chặn */
       }
       // giống chữ, bot vẫn trả lời đúng, AI cũng không thấy mâu thuẫn/trùng => không phải việc của người dùng
-      if (!confirmed(p) && verdict !== "conflict" && verdict !== "duplicate") continue;
+      if (!confirmed(p) && !NEEDS_DECISION.has(verdict ?? "")) continue;
       boxes.push({ a, b: bSide, score: p.score, signals: p.signals, explain, narrow, updateHint: p.updateHint, verdict, reason, suggestion });
     }
     return boxes;

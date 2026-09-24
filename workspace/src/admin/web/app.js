@@ -1453,7 +1453,17 @@
     });
   }
 
-  const CONFLICT_VERDICT = { duplicate: ["trùng", "err"], subset: ["bao hàm", "warn"], conflict: ["mâu thuẫn", "err"], distinct: ["khác nhau", "ok"] };
+  /** Quan hệ giữa hai nội dung do AI nhận xét (SKILL review-overlap; bản 3 thêm complement / supersedes / contradiction). */
+  const OVERLAP_VERDICT = {
+    duplicate: ["trùng lặp", "err"],
+    subset: ["trường hợp hẹp hơn", "warn"],
+    complement: ["bổ sung cho nhau", "ok"],
+    supersedes: ["có thể thay thế — cần xác nhận", "warn"],
+    conflict: ["xung đột", "err"],
+    contradiction: ["mâu thuẫn trực tiếp", "err"],
+    distinct: ["khác phạm vi", "ok"],
+  };
+  const CONFLICT_VERDICT = OVERLAP_VERDICT;
   /**
    * Thẻ "Xung đột nội dung" trên trang tài liệu: xung đột đã CHỐT lúc publish (kb_conflicts), không phải quét tạm thời.
    * Mỗi dòng là một cặp — bên nào không phải tài liệu đang xem thì có link mở; nếu code đã biết chính xác cụm khớp gây
@@ -1497,7 +1507,7 @@
           return h(
             "div",
             { class: "row-card" },
-            h("div", { class: "row-top" }, badge(/^Khách hỏi/.test(p.signals[0] || "") ? "bot trả lời nhầm" : p.verdict === "conflict" ? "nội dung mâu thuẫn" : p.verdict === "duplicate" ? "nội dung trùng" : "cần xem", "err")),
+            h("div", { class: "row-top" }, badge(/^Khách hỏi/.test(p.signals[0] || "") ? "bot trả lời nhầm" : p.verdict && OVERLAP_VERDICT[p.verdict] ? OVERLAP_VERDICT[p.verdict][0] : "cần xem", "err")),
             h("div", { class: "form-row" }, h("div", { class: "field" }, refLine(ownSide(p), abLabel(p, ownSide(p)))), h("div", { class: "field" }, refLine(otherSide(p), abLabel(p, otherSide(p))))),
             h("div", { class: "small" }, h("ul", null, p.signals.slice(0, 2).map((x) => h("li", null, x)))),
             ai ? h("div", { class: "hint" }, badge(ai[0], ai[1]), " ", p.reason, p.suggestion ? h("div", null, "→ ", p.suggestion) : null) : h("div", { class: "hint" }, "Chưa có nhận xét của AI (chưa cấu hình LLM lúc publish, hoặc lời gọi lỗi)."),
@@ -1693,7 +1703,7 @@ Nội dung mục 2.
 `;
 
   // ---------------------------------------------------------------- Trợ lý "Nạp nội dung mới"
-  const INTAKE_VERDICT = { duplicate: ["trùng", "err"], subset: ["bao hàm", "warn"], conflict: ["mâu thuẫn", "err"], distinct: ["khác nhau", "ok"] };
+  const INTAKE_VERDICT = OVERLAP_VERDICT;
   const firstQuoted = (s) => (/"([^"]+)"/.exec(s || "") || [])[1] || null;
   const lineIndexOf = (text, needle) => {
     if (!needle) return -1;
@@ -1707,11 +1717,9 @@ Nội dung mục 2.
       ? ["bot sẽ trả lời nhầm", "err"]
       : box.updateHint
         ? ["trùng gần nguyên văn", "err"]
-        : box.verdict === "conflict"
-          ? ["nội dung mâu thuẫn", "err"]
-          : box.verdict === "duplicate"
-            ? ["nội dung trùng", "warn"]
-            : ["cần xem", "warn"];
+        : box.verdict && OVERLAP_VERDICT[box.verdict]
+          ? OVERLAP_VERDICT[box.verdict]
+          : ["cần xem", "warn"];
 
   /** Nội dung bên trong popup phóng to của một khung xung đột: mô tả AI + (gỡ máy móc, hoặc sửa tự do + Kiểm tra lại + Save). */
   function intakeBoxDetail(box, resolvedDrafts, onChanged) {
@@ -2227,7 +2235,7 @@ Nội dung mục 2.
   }
 
   // ---- Chồng lấn nội dung: code cờ cặp (chính bộ tìm kiếm lúc chạy thật) -> AI phán xét từng cặp -> admin quyết ----
-  const VERDICT = { duplicate: ["trùng", "err"], subset: ["bao hàm", "warn"], conflict: ["mâu thuẫn", "err"], distinct: ["khác nhau", "ok"] };
+  const VERDICT = OVERLAP_VERDICT;
   function overlapCard(docs) {
     const min = h("input", { type: "number", min: "0.2", max: "0.99", step: "0.05", value: "0.55" });
     const holder = h("div");
