@@ -477,7 +477,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
       const intended = t ? [t.item?.title ?? t.group, t.item?.applies_when ?? t.sets_context.issue, ...t.match.examples.slice(0, 6)].filter(Boolean).join(" · ") : undefined;
       const matched = why?.startsWith("từ khoá") ? /từ khoá "([^"]+)"/.exec(why)?.[1] : undefined;
       const text = [req.text, req.vision?.error_text ? `(screenshot text: ${req.vision.error_text})` : ""].filter(Boolean).join(" ");
-      const v = await llm.verify({ text, queryEn, lang: req.lang, answer: { id: templateId, text: answerText }, intended, matched, lastAnswer: last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined, facts: req.ctx.contextPack?.facts });
+      const v = await llm.verify({ text, queryEn, lang: req.lang, answer: { id: templateId, text: answerText }, intended, matched, lastAnswer: last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined, facts: req.ctx.contextPack?.facts, context: req.ctx.contextPack });
       trace.notes.push(v.ok ? `kiểm duyệt: AI xác nhận ${templateId} trả lời đúng tin của khách` : `kiểm duyệt: AI KHÔNG xác nhận ${templateId}${v.reason ? ` (${v.reason.slice(0, 100)})` : ""}`);
       return v.ok ? "ok" : "no";
     } catch (e) {

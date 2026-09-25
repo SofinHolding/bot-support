@@ -36,7 +36,7 @@ version: 1
 | **Được phép** (tự làm) | Chọn câu trả lời đã duyệt khớp với vấn đề của khách · Trả lời câu hỏi về dự án bằng cách viết lại từ đoạn tài liệu chính thức đã chọn (chỉ dùng nội dung trong đoạn, giữ nguyên số liệu, kèm link) · Đọc ảnh chụp màn hình để nhận ra loại màn hình và thông báo lỗi · Dịch câu trả lời sang ngôn ngữ của khách · Tóm tắt vụ việc cho lượt sau và cho nhân viên · Nhận ra câu hỏi nối tiếp ("vẫn chưa được", "còn cái kia?") thuộc vụ việc đang mở |
 | **Cần điều kiện** | Trả lời từ tài liệu: chỉ khi đoạn tìm được **thật sự trả lời đúng câu hỏi** **[CODE]** · Xin thông tin bổ sung (Interlink ID, ảnh, video, mã giao dịch, thời điểm lỗi): chỉ theo đúng danh sách ghi trong câu trả lời đã duyệt, không tự nghĩ thêm **[AI]** |
 | **Không được phép** | Tự viết hướng dẫn, chính sách, mốc thời gian, con số · Dự đoán giá, lợi nhuận, ROI, ngày niêm yết · Tiết lộ hoặc gợi ý công thức HCS và logic nội bộ · Tư vấn tài chính, pháp lý, y tế · Hứa thay đội ngũ ("sẽ xử lý trong 24 giờ") · Yêu cầu khách gửi mật khẩu, seed phrase, private key |
-| **Phải chuyển nhân viên** | Lỗi hệ thống/app (ví, swap, faucet, mining, đăng nhập, game, ảnh báo lỗi) · Khách đã nhận câu trả lời mà vẫn chưa giải quyết được · Khách quay lại chủ đề đã từng chuyển nhân viên · Không có câu trả lời đã duyệt hay tài liệu phù hợp · Bất kỳ lúc nào AI phân vân giữa hai cách hiểu |
+| **Phải chuyển nhân viên** | Lỗi hệ thống/app (ví, swap, faucet, mining, đăng nhập, game, ảnh báo lỗi) · Khách đã nhận câu trả lời mà vẫn chưa giải quyết được · Khách quay lại chủ đề đã từng chuyển nhân viên · Không có câu trả lời đã duyệt hay tài liệu phù hợp · Bất kỳ lúc nào AI phân vân giữa hai cách hiểu — trừ khi các cách hiểu đó đều là trường hợp có trong kho và không mâu thuẫn nhau: khi đó bot hỏi lại khách **một lần**, câu hỏi dựng từ nội dung đã duyệt của chính các trường hợp đó **[CODE]**; khách trả lời mà vẫn không rõ thì chuyển nhân viên **[CODE]** |
 
 Mọi lần chuyển nhân viên đều tạo ticket **[CODE]**; khách được hướng tới `@interlink_technicalsupport`.
 
@@ -88,24 +88,24 @@ Theo thứ tự ưu tiên khi các mục tiêu xung đột:
 | Ảnh không đọc được | Gửi câu xin ảnh rõ hơn đã duyệt |
 | Khách gửi video / voice / tệp | Chuyển nhân viên (bot không đọc được) |
 | Không dịch được trung thành sang ngôn ngữ của khách | Nguồn tiếng Anh: gửi bản tiếng Anh đã duyệt. Nguồn tiếng Việt: chuyển nhân viên |
-| AI lỗi hoặc quá tải | Câu "hệ thống đang bận" cố định; không đoán |
+| Mất kết nối AI, AI quá tải hoặc chưa cấu hình | Câu báo mất kết nối cố định bằng tiếng Anh **[CODE]**; không gửi bất kỳ nội dung nào lấy từ kho; không đoán |
 | Xác minh danh tính khách | Bot **không** xác minh và không xin giấy tờ; việc đó thuộc nhân viên |
 
 ## 6. Quy trình
 
 1. **Tiếp nhận:** gom các tin nhắn liên tiếp của khách thành một lượt; bỏ qua tin trong nhóm chat nếu bot không được nhắc tên **[CODE]**.
-2. **An toàn trước tiên:** kiểm tra lộ seed/private key → cảnh báo cố định; kiểm tra khách có đang bị chặn vì spam **[CODE]**.
+2. **An toàn trước tiên:** kiểm tra lộ seed/private key → cảnh báo cố định; kiểm tra khách có đang bị chặn vì spam **[CODE]**. Các cảnh báo này và cảnh báo chống spam luôn gửi bằng tiếng Anh, vẫn chạy khi mất kết nối AI **[CODE]**.
 3. **Chuẩn bị đầu vào:** che dữ liệu nhạy cảm; đọc ảnh nếu có **[AI]**; nạp vụ việc đang mở — sự kiện, giá trị khách đã nêu, tóm tắt, vài tin gần nhất **[CODE]**.
 4. **Xác định ngôn ngữ và chuẩn hoá [AI]:** mọi tin có chữ đều qua bước này trước khi vào router. AI xác định ngôn ngữ của khách, ý định (câu hỏi / lời chào / tin nối tiếp / ngoài phạm vi), loại tin nối tiếp, và viết lại câu hỏi thành câu đứng độc lập bằng tiếng Anh và bằng ngôn ngữ của kho. Khách viết ngôn ngữ khác Anh/Việt thì các bước sau làm việc trên bản tiếng Anh này. Code kiểm lại: mã ngôn ngữ, chữ viết, con số, tên sản phẩm **[CODE]**.
 5. **Router [CODE]:** chia hai nhánh.
-   - **FAST PATH:** chỉ khi câu đã chuẩn hoá khớp CHẮC CHẮN bằng luật, điều kiện, hoặc từ khoá mà cụm khớp chiếm từ một nửa nội dung câu hỏi. Không thêm lời gọi AI.
+   - **FAST PATH:** chỉ khi câu đã chuẩn hoá khớp CHẮC CHẮN bằng luật, điều kiện, hoặc từ khoá mà cụm khớp chiếm từ một nửa nội dung câu hỏi. Câu trả lời vẫn phải được AI xác nhận là trả lời đúng tin của khách trước khi gửi **[AI]**; không xác nhận thì sang nhánh AI/RAG **[CODE]**.
    - **AI / RAG:** mọi trường hợp còn lại. Hệ thống tìm câu trả lời đã duyệt (từ khoá + độ gần ngữ nghĩa) và đoạn tài liệu chính thức bằng câu gốc lẫn câu đã chuẩn hoá, loại ứng viên vi phạm requires/excludes; không có ứng viên thì chuyển nhân viên.
 6. **Kiểm tra grounding và chọn nội dung [AI] (nhánh AI/RAG):** AI đọc nội dung từng ứng viên và chỉ được CHỌN một ứng viên thật sự trả lời đúng điều khách hỏi, hoặc chuyển nhân viên. AI không viết câu trả lời. Lựa chọn ngoài danh sách bị code loại **[CODE]**.
 7. **Chế độ phản hồi và dịch:** có bản dịch đã duyệt thì dùng; chưa có thì AI dịch trung thành **[AI]**, rồi TRANSLATION VALIDATOR kiểm con số, link, tên sản phẩm, ngôn ngữ đích **[CODE]**.
 8. **POLICY VALIDATOR [CODE]:** mọi câu trả lời của cả hai nhánh phải qua: URL trong danh sách cho phép, độ dài tin Telegram, đúng ngôn ngữ của khách, không tiếng Việt cho khách khác. Đạt thì gửi; không đạt thì chuyển nhân viên.
 9. **Ghi nhận:** cập nhật vụ việc, tạo/nối ticket, ghi lý do quyết định để quản trị xem lại; tóm tắt cuộn chạy nền **[CODE + AI]**.
 
-Khi AI không dùng được (chưa cấu hình, quá tải): hệ thống tự chuyển sang khớp bằng luật và từ khoá; câu không khớp chắc chắn thì chuyển nhân viên. Không bao giờ đoán.
+Khi AI không dùng được (mất kết nối, quá tải, chưa cấu hình): hệ thống **không** trả lời bằng khớp luật hay từ khoá; khách nhận câu báo mất kết nối cố định bằng tiếng Anh **[CODE]**. Không bao giờ gửi nội dung trong kho mà chưa qua AI đánh giá. Không bao giờ đoán.
 
 ## Cách cập nhật để bot "biết thêm"
 

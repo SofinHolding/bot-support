@@ -91,6 +91,8 @@ export interface VerifyRequest {
   matched?: string;
   lastAnswer?: { id: string; text: string };
   facts?: string[];
+  /** Ngữ cảnh vụ việc (tóm tắt, các tin gần đây, sự kiện): AI xác nhận câu trả lời theo đúng ngữ cảnh hội thoại, không chỉ tin cuối */
+  context?: ContextPack;
 }
 export interface VerifyResult {
   ok: boolean;

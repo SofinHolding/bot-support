@@ -207,8 +207,9 @@ export class LlmClient implements LlmPort {
           type: "text",
           text: [
             `Customer language: ${req.lang}`,
+            ...this.contextLines(req.context),
             req.lastAnswer ? `Bot's previous answer in this conversation (${req.lastAnswer.id}):\n${wrap("bot_answer", req.lastAnswer.text.slice(0, 300))}` : "",
-            req.facts?.length ? `Values the customer stated earlier: ${req.facts.join(", ")}` : "",
+            req.facts?.length && !req.context?.facts?.length ? `Values the customer stated earlier: ${req.facts.join(", ")}` : "",
             wrap("user_message", req.text),
             req.queryEn && req.queryEn !== req.text ? `English form of the message:\n${wrap("rewritten_question", req.queryEn)}` : "",
             `Matched approved answer (${req.answer.id})${req.intended ? ` — the operator wrote it for this situation: ${req.intended.slice(0, 400)}` : ""}${req.matched ? ` — matched on the phrase "${req.matched}"` : ""}:\n${wrap("approved_answer", req.answer.text.slice(0, 900))}`,

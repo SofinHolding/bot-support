@@ -1,6 +1,6 @@
 ---
 name: review-overlap
-version: 2
+version: 3
 description: >
   Phán xét MỘT CẶP nội dung đã bị code cờ là chồng lấn (Admin Web → Template → Quét chồng lấn, hoặc bước kiểm tra lúc
   import). Code đã trả lời "cái nào giống cái nào" bằng số học; AI chỉ trả lời câu hỏi số học không trả lời được: giống về
@@ -34,6 +34,16 @@ R3. `conflict`: they cover the same situation but tell the customer DIFFERENT th
 or one escalates while the other guides). Say what differs; the operator must choose one. Never decide which is true.
 R4. `distinct`: similar wording but genuinely different customer needs (e.g. "forgot ID" vs "cannot log in"). Say in one
 line why they differ so the operator can stop worrying.
+R4a. `complement`: same topic, one item adds information the other lacks, and nothing in them disagrees (e.g. one explains
+why ITLG was burned, the other how to recover it). Say what each adds; suggest keeping both and, if customers could ask
+either way, how the operator can tell the two situations apart.
+R4b. `supersedes`: both cover the same situation and scope, and the CONTENT shows one is an updated version of the other
+(e.g. a newer procedure replacing an old one, a changed link or amount stated as the new rule). Name which item appears to be
+the update and quote the difference. Never decide this from which item was added later, from ids or from dates alone: the
+operator must confirm the replacement. If the content does not show which one is newer, use `conflict` instead.
+R4c. `contradiction`: the two items state OPPOSITE conclusions about the same fact or rule (e.g. one says a token is used
+for staking, the other says it is not; one says supply is fixed, the other that it decreases). Quote both statements. This is
+stronger than `conflict`, which covers incompatible instructions or details that are not direct opposites.
 R5. Judge only relationship and scope. Do not judge tone, length, translation quality, or truth against your own knowledge
 of the product. Do not invent policies, steps or numbers absent from the items.
 R6. A template whose text is only a generic "contact support" hand-off, paired with a chunk that gives real troubleshooting
@@ -49,7 +59,7 @@ sentence must be understandable completely on its own, without needing to look a
 
 ## Output
 
-JSON only: `{"verdict": "duplicate" | "subset" | "conflict" | "distinct", "reason": "<one sentence, English, names items by
+JSON only: `{"verdict": "duplicate" | "subset" | "complement" | "supersedes" | "conflict" | "contradiction" | "distinct", "reason": "<one sentence, English, names items by
 id/heading — never 'A'/'B'>", "suggestion": "<one concrete edit the operator could make, English, optional, same rule>"}`
 
 ## Examples
