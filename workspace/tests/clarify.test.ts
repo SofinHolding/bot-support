@@ -42,12 +42,13 @@ describe("mục hỏi đáp trong luồng chọn câu trả lời", () => {
   let understand: (text: string) => Partial<UnderstandResult> = () => ({});
   let select: (r: SelectRequest) => string = () => "ESCALATE";
   let seen: SelectRequest[] = [];
+  let verifyOk = true;
 
   beforeAll(async () => {
     const llm: LlmPort = fakeLlm({
       understand: async (r) => ({ language: "en", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text, ...understand(r.text) }),
       select: async (r) => { seen.push(r); return { ref: select(r), reason: "test" }; },
-      verify: async () => ({ ok: true }),
+      verify: async () => ({ ok: verifyOk }),
     });
     w = await makeWorld({ llm, mode: "llm_first", adminIds: [9001, 9002], ownerId: 9001 });
     const { version, report } = await w.kbService.createDraft({ slug: "test-items-router", kind: "items", md: DOC, author: admin });
@@ -168,5 +169,56 @@ describe("mục hỏi đáp trong luồng chọn câu trả lời", () => {
     const s3 = await ask(7106, "still no");
     expect(s3.d.kind).toBe("ESCALATE");
     understand = () => ({});
+  });
+  describe("nội dung AI chọn đang mâu thuẫn chưa giải quyết với nội dung khác: dùng bên mới hơn, có ghi vết", () => {
+    const withConflict = async (times: Record<string, number>, fn: () => Promise<void>) => {
+      const before = { c: w.live.conflicts, t: w.live.answerTimes };
+      w.live.conflicts = new Set(["template:app-pin-reset|template:sync-stuck"]);
+      w.live.answerTimes = new Map(Object.entries(times));
+      try {
+        await fn();
+      } finally {
+        w.live.conflicts = before.c;
+        w.live.answerTimes = before.t;
+        verifyOk = true;
+      }
+    };
+    const notes = async (uid: number) => (await w.db.query<{ notes: { notes: string[] } }>("SELECT notes FROM decisions WHERE user_id = $1 ORDER BY id DESC LIMIT 1", [uid])).rows[0]!.notes.notes.join(" | ");
+
+    it("nội dung AI chọn mới hơn -> dùng nó", async () => {
+      select = () => "T:app-pin-reset";
+      await withConflict({ "item:app-pin-reset": 2000, "item:sync-stuck": 1000 }, async () => {
+        const { d } = await ask(7201, "how do I reset my app pin");
+        expect(d).toMatchObject({ kind: "TEMPLATE", template_id: "app-pin-reset" });
+        expect(await notes(7201)).toContain("dùng nội dung mới hơn");
+      });
+    });
+    it("bên kia mới hơn và AI xác nhận nó trả lời đúng tin -> dùng bên mới hơn", async () => {
+      select = () => "T:app-pin-reset";
+      await withConflict({ "item:app-pin-reset": 1000, "item:sync-stuck": 2000 }, async () => {
+        const { d, reply } = await ask(7202, "how do I reset my app pin");
+        expect(d).toMatchObject({ kind: "TEMPLATE", template_id: "sync-stuck" });
+        expect(reply).toBe("Please restart the app and try the sync again.");
+      });
+    });
+    it("bên kia mới hơn nhưng AI không xác nhận nó trả lời đúng tin -> chuyển nhân viên (không gửi nội dung cũ)", async () => {
+      select = () => "T:app-pin-reset";
+      verifyOk = false;
+      await withConflict({ "item:app-pin-reset": 1000, "item:sync-stuck": 2000 }, async () => {
+        const { d } = await ask(7203, "how do I reset my app pin");
+        expect(d.kind).toBe("ESCALATE");
+      });
+    });
+    it("cùng mốc thời gian (lúc thêm chưa thống nhất) hoặc thiếu mốc -> chuyển nhân viên", async () => {
+      select = () => "T:app-pin-reset";
+      await withConflict({ "item:app-pin-reset": 1000, "item:sync-stuck": 1000 }, async () => {
+        const { d } = await ask(7204, "how do I reset my app pin");
+        expect(d.kind).toBe("ESCALATE");
+        expect(d.reason).toContain("cùng mốc thời gian");
+      });
+      await withConflict({ "item:app-pin-reset": 1000 }, async () => {
+        expect((await ask(7205, "how do I reset my app pin")).d.kind).toBe("ESCALATE");
+      });
+    });
   });
 });

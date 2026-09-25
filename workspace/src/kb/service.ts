@@ -12,7 +12,7 @@ import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
 import { parseTemplateFile, templatesToMarkdown, validateBundle } from "../core/templates";
 import { compileItems, ITEM_TOPICS, itemsDocToYaml, parseItemsDoc, type ItemsDoc, type KnowledgeItem } from "../core/items";
-import { chunkKey, hasValidDecision, itemKey, orderPair, templateHash, textHash, type PairDecisionKind } from "./pair-decisions";
+import { blockingReviews, UNCHECKED_VERDICT, chunkKey, hasValidDecision, itemKey, orderPair, templateHash, textHash, type PairDecisionKind, type ReviewBlock } from "./pair-decisions";
 import { applyReview, type ReviewInput } from "./review-import";
 import { contentParts, diffParts } from "./content-history";
 import { GROUP_TOPIC, migrateTemplates } from "./migrate-items";
@@ -21,7 +21,7 @@ import type { ParseIssue, Template } from "../domain/types";
 import type { Db } from "../db/db";
 import { kbRepo, type ConflictInput, type KbRepo, type VersionRow } from "../db/repo-kb";
 import { opsRepo, type AdminRole, type OpsRepo } from "../db/repo-ops";
-import { usableLlm, type LlmPort, type OverlapSide } from "../core/ports";
+import { LlmUnavailableError, usableLlm, type LlmPort, type OverlapSide } from "../core/ports";
 import { evalSettings, outcomeKey, routeOffline, runEval, type EvalCase } from "./eval";
 import type { LiveContent } from "./live-content";
 import { findOverlaps, NEEDS_DECISION, narrowTemplateMatch, probesFromChunks, probesFromTemplates, replaceChunkSection, replaceTemplateAnswer, type OverlapPair, type OverlapRef, type ProbeItem } from "./overlap";
@@ -60,6 +60,8 @@ export interface ValidationReport {
   overlapPairs?: OverlapPair[];
   /** Mục hỏi đáp của bản nháp giành câu hỏi của đoạn tài liệu mà chưa có quyết định: Admin Web hiện nút "ghi nhận giữ nguyên" */
   hijacks?: ItemHijack[];
+  /** Cặp nội dung AI kết luận trùng / xung đột / mâu thuẫn / có thể thay thế mà chưa xử lý (hoặc cần AI kiểm tra lại): chặn publish */
+  reviewBlocks?: ReviewBlock[];
 }
 
 export interface ItemHijack {
@@ -166,6 +168,11 @@ export class KbService {
     const v = await this.mustVersion(versionId);
     const doc = await this.d.kb.getDocument(v.slug);
     const report = await this.validateSource(v.slug, doc!.kind, v.source_md);
+    // Giữ các cặp mà bước "Thêm nội dung" đã tính cho phần mới (so cả mục cùng chủ đề): màn hình dựng lại khung xung đột từ đây
+    const prev = (v.report as ValidationReport | null)?.overlapPairs ?? [];
+    const seen = new Set((report.overlapPairs ?? []).map((x) => `${x.a.kind}:${x.a.id}|${x.b.kind}:${x.b.id}`));
+    const kept = prev.filter((x) => !seen.has(`${x.a.kind}:${x.a.id}|${x.b.kind}:${x.b.id}`));
+    if (kept.length) report.overlapPairs = [...(report.overlapPairs ?? []), ...kept];
     await this.d.kb.updateVersion(versionId, { report });
     return report;
   }
@@ -239,7 +246,9 @@ export class KbService {
       report.overlapPairs = check.pairs;
       // Mục hỏi đáp: xung đột phải được xử lý XONG trước khi publish (không chỉ cảnh báo như template cũ).
       const gate = kind === "items" ? await this.itemGate(parsed, others, afterIdx, check.confusions) : { messages: [], hijacks: [] };
-      const blocking = gate.messages;
+      const reviewed = kind === "items" ? await this.reviewGate(slug, parsed) : [];
+      if (reviewed.length) report.reviewBlocks = reviewed;
+      const blocking = [...gate.messages, ...reviewed.map(describeReviewBlock)];
       if (gate.hijacks.length) report.hijacks = gate.hijacks;
       steps.push({ name: "3. Trùng và mâu thuẫn", status: dup.length || blocking.length ? "error" : conflictWarn.length || check.warn ? "warning" : "ok", details: [...dup, ...blocking, ...conflictWarn, ...check.details] });
     } else if (kind === "guide") {
@@ -255,7 +264,9 @@ export class KbService {
         ? await this.routingCheck(pairs, { draftIds: new Set(), afterIdx: this.d.live.index, afterEvaluator: this.d.live.evaluator, docOf: docOfLive, draftChunks: probes.map((p) => ({ ref: p.ref, heading: p.ref.title })) })
         : { pairs, details: [], warn: false, confusions: [] as Confusion[] };
       report.overlapPairs = check.pairs;
-      steps.push({ name: "3. Trùng và mâu thuẫn", status: check.warn ? "warning" : "ok", details: check.details });
+      const reviewed = await this.reviewGate(slug, parsed);
+      if (reviewed.length) report.reviewBlocks = reviewed;
+      steps.push({ name: "3. Trùng và mâu thuẫn", status: reviewed.length ? "error" : check.warn ? "warning" : "ok", details: [...reviewed.map(describeReviewBlock), ...check.details] });
     }
 
     // 4. Bản dịch
@@ -413,6 +424,103 @@ export class KbService {
    *  4. Hỏi thử bot: câu hỏi về một đoạn tài liệu bị mục hỏi đáp này giành mất, mà chưa có quyết định còn hiệu lực
    *     (kb_pair_decisions — hết hiệu lực khi một trong hai bên đổi nội dung).
    */
+  // ---------------------------------------------------------------- nhận xét của AI theo cặp (kb_pair_reviews)
+  /** Khoá, hash, tên và nội dung của các nội dung trong một bản nháp (mục hỏi đáp: bước 1 đại diện cả mục; tài liệu: từng đoạn). */
+  private unitsOf(slug: string, parsed: Parsed): Map<string, { hash: string; side: OverlapSide }> {
+    const out = new Map<string, { hash: string; side: OverlapSide }>();
+    for (const t of parsed.templates.filter((x) => !x.item || x.item.step === 0))
+      out.set(itemKey(t.id), { hash: templateHash(t), side: { kind: "template", id: t.id, doc: slug, title: t.item?.title ?? t.sets_context.issue ?? t.id, keywords: t.match.keywords, examples: t.match.examples, text: this.answerOf(t) } });
+    for (const c of parsed.chunks) out.set(chunkKey(slug, c.heading), { hash: textHash(c.text), side: { kind: "chunk", id: `${slug}#${c.heading}`, doc: slug, title: c.heading, keywords: [], examples: [], text: c.text } });
+    return out;
+  }
+
+  /** Nội dung đang chạy theo khoá (trừ tài liệu `exceptSlug`, và template cũ mà bản nháp sẽ thay chỗ). */
+  private async liveUnits(exceptSlug: string, draft: Template[]): Promise<Map<string, { hash: string; side: OverlapSide }>> {
+    const out = new Map<string, { hash: string; side: OverlapSide }>();
+    for (const r of await this.d.kb.loadPublishedTemplateRows()) {
+      if (r.docSlug === exceptSlug || this.replacedBy("items", draft, r)) continue;
+      const t = r.template;
+      if (t.item && t.item.step !== 0) continue;
+      out.set(itemKey(t.id), { hash: templateHash(t), side: { kind: "template", id: t.id, doc: r.docSlug, title: t.item?.title ?? t.sets_context.issue ?? t.id, keywords: t.match.keywords, examples: t.match.examples, text: this.answerOf(t) } });
+    }
+    for (const c of await this.d.kb.listPublishedChunks()) {
+      if (c.docSlug === exceptSlug) continue;
+      out.set(chunkKey(c.docSlug, c.heading), { hash: textHash(c.text), side: { kind: "chunk", id: c.chunkId, doc: c.docSlug, title: c.heading, keywords: [], examples: [], text: c.text } });
+    }
+    return out;
+  }
+
+  /** Luật chặn publish theo nhận xét của AI: cặp trùng / xung đột / mâu thuẫn / có thể thay thế phải được người duyệt xử lý. */
+  private async reviewGate(slug: string, parsed: Parsed): Promise<ReviewBlock[]> {
+    const units = this.unitsOf(slug, parsed);
+    const reviews = await this.d.kb.listPairReviews([...units.keys()]);
+    if (!reviews.length) return [];
+    const live = await this.liveUnits(slug, parsed.templates);
+    const current = (k: string) => units.get(k)?.hash ?? live.get(k)?.hash;
+    return blockingReviews(new Set(units.keys()), reviews, current, await this.d.kb.listPairDecisions());
+  }
+
+  /** Ghi nhận xét của AI cho một cặp (gắn với nội dung hai bên lúc kiểm tra). */
+  async recordPairReview(a: { key: string; hash: string; title: string }, b: { key: string; hash: string; title: string }, v: { verdict: string; reason?: string | null; suggestion?: string | null }) {
+    const [x, y] = a.key <= b.key ? [a, b] : [b, a];
+    await this.d.kb.savePairReview({ aKey: x.key, aHash: x.hash, aTitle: x.title, bKey: y.key, bHash: y.hash, bTitle: y.title, verdict: v.verdict, reason: v.reason ?? null, suggestion: v.suggestion ?? null });
+  }
+
+  /** Nhận xét đã có cho ĐÚNG nội dung hiện tại của hai bên (dùng lại, không gọi AI lần nữa). */
+  async cachedPairReview(a: { key: string; hash: string }, b: { key: string; hash: string }) {
+    const p = orderPair(a, b);
+    return (await this.d.kb.listPairReviews([p.aKey])).find((r) => r.aKey === p.aKey && r.bKey === p.bKey && r.aHash === p.aHash && r.bHash === p.bHash);
+  }
+
+  /**
+   * Người duyệt quyết một cặp AI đã chặn (giữ cả hai vì là hai trường hợp khác nhau / đã sửa cho thống nhất): ghi quyết định gắn
+   * với nội dung HIỆN TẠI của hai bên rồi kiểm tra lại bản nháp. Thay thế đi qua `supersede`.
+   */
+  async decidePair(input: { versionId: number; aKey: string; bKey: string; decision: "keep_both" | "fixed"; note?: string }, author: Actor): Promise<ValidationReport> {
+    const v = await this.mustVersion(input.versionId);
+    const doc = await this.d.kb.getDocument(v.slug);
+    if (!doc || doc.kind === "guide") throw new KbError("không áp dụng cho tài liệu này");
+    const parsed = this.parse(doc.kind, v.source_md, v.slug);
+    const units = this.unitsOf(v.slug, parsed);
+    const live = await this.liveUnits(v.slug, parsed.templates);
+    const hashOf = (k: string) => units.get(k)?.hash ?? live.get(k)?.hash;
+    const ha = hashOf(input.aKey);
+    const hb = hashOf(input.bKey);
+    if (!ha || !hb) throw new KbError("không tìm thấy một trong hai nội dung", 404);
+    if (!units.has(input.aKey) && !units.has(input.bKey)) throw new KbError("cặp này không thuộc bản nháp đang xem");
+    const p = orderPair({ key: input.aKey, hash: ha }, { key: input.bKey, hash: hb });
+    await this.d.kb.savePairDecision({ ...p, decision: input.decision, note: input.note ?? null, decidedBy: author.label });
+    return this.revalidate(v.id);
+  }
+
+  /**
+   * AI kiểm tra lại các cặp của bản nháp mà nội dung đã đổi sau lần kiểm tra trước (need = "recheck"), ghi nhận xét mới rồi
+   * kiểm tra lại bản nháp. Mất kết nối AI -> lỗi, bản nháp vẫn bị chặn.
+   */
+  async recheckPairs(versionId: number, llmPort: LlmPort | undefined = this.d.llm): Promise<ValidationReport> {
+    const llm = usableLlm(llmPort);
+    if (!llm) throw new KbError("chưa kết nối được AI để kiểm tra xung đột nội dung — thử lại sau", 503);
+    const v = await this.mustVersion(versionId);
+    const doc = await this.d.kb.getDocument(v.slug);
+    if (!doc || doc.kind === "guide") throw new KbError("không áp dụng cho tài liệu này");
+    const parsed = this.parse(doc.kind, v.source_md, v.slug);
+    const units = this.unitsOf(v.slug, parsed);
+    const live = await this.liveUnits(v.slug, parsed.templates);
+    const unitOf = (k: string) => units.get(k) ?? live.get(k);
+    for (const blk of await this.reviewGate(v.slug, parsed)) {
+      if (blk.need !== "recheck") continue;
+      const a = unitOf(blk.aKey);
+      const b = unitOf(blk.bKey);
+      if (!a || !b) continue;
+      const r = await llm.reviewOverlap({ a: a.side, b: b.side, signals: [] }).catch((e: Error) => {
+        if (e instanceof LlmUnavailableError && !e.badOutput) throw new KbError("mất kết nối AI khi kiểm tra xung đột nội dung — thử lại sau", 503);
+        return { verdict: UNCHECKED_VERDICT, reason: null, suggestion: null };
+      });
+      await this.recordPairReview({ key: blk.aKey, hash: a.hash, title: a.side.title }, { key: blk.bKey, hash: b.hash, title: b.side.title }, r);
+    }
+    return this.revalidate(v.id);
+  }
+
   private async itemGate(parsed: Parsed, others: Template[], afterIdx: TemplateIndex, confusions: Confusion[]): Promise<{ messages: string[]; hijacks: ItemHijack[] }> {
     const out: string[] = [];
     const hijacks: ItemHijack[] = [];
@@ -1231,4 +1339,14 @@ export class KbService {
     await this.d.ops.bumpKbVersion(author);
     await this.d.live.rebuild();
   }
+}
+
+const REVIEW_VERDICT_LABEL: Record<string, string> = { duplicate: "trùng lặp", conflict: "xung đột", contradiction: "mâu thuẫn trực tiếp", supersedes: "nội dung này có thể thay thế nội dung kia" };
+
+/** Lời thường cho một cặp đang chặn publish: nói rõ vì sao và cần làm gì. */
+export function describeReviewBlock(b: ReviewBlock): string {
+  const pair = `"${b.aTitle}" và "${b.bTitle}"`;
+  if (b.need === "recheck" && b.verdict === UNCHECKED_VERDICT) return `${pair}: AI chưa kiểm tra được hai nội dung này có mâu thuẫn không (mất kết nối AI). Cần làm: bấm "AI kiểm tra lại xung đột" khi AI kết nối lại.`;
+  if (b.need === "recheck") return `${pair}: trước đây AI thấy ${REVIEW_VERDICT_LABEL[b.verdict] ?? b.verdict}, nội dung đã đổi từ đó. Cần làm: bấm "AI kiểm tra lại xung đột" để AI đọc lại nội dung hiện tại.`;
+  return `${pair}: AI thấy ${REVIEW_VERDICT_LABEL[b.verdict] ?? b.verdict}${b.reason ? ` (${b.reason})` : ""}. Cần làm trước khi publish: sửa một trong hai cho thống nhất, hoặc xác nhận nội dung mới thay thế nội dung cũ, hoặc ghi nhận hai nội dung dùng cho hai trường hợp khác nhau.`;
 }

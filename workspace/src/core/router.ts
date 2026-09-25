@@ -102,6 +102,8 @@ export interface RouterDeps {
   knowledge?: KnowledgePort;
   /** Cặp nội dung đang xung đột CHƯA giải quyết ("template:<id>|chunk:<id>", sắp theo thứ tự) — không được hỏi lại khách giữa chúng. */
   conflicts?: ReadonlySet<string>;
+  /** Mốc thời gian (ms) phần trả lời / nội dung của một nội dung đổi lần cuối ("item:<id>" | "chunk:<tài liệu>#<tiêu đề>"; kb_content_history) */
+  answerTime?: (unitKey: string) => number | undefined;
 }
 
 export async function route(req: RouteRequest, deps: RouterDeps): Promise<RouteResult> {
@@ -692,8 +694,65 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     return done({ kind: "CLARIFY", tier: 2, question: clarifyQuestion(refs, templates, chunks, index), items: refs }, lang);
   }
 
-  const t = ref.startsWith("T:") ? templates.find((x) => `T:${x.id}` === ref) : undefined;
-  const c = ref.startsWith("K:") ? chunks.find((x) => `K:${x.chunkId}` === ref) : undefined;
+  let t = ref.startsWith("T:") ? templates.find((x) => `T:${x.id}` === ref) : undefined;
+  let c = ref.startsWith("K:") ? chunks.find((x) => `K:${x.chunkId}` === ref) : undefined;
+
+  // ---- Nội dung AI chọn đang MÂU THUẪN chưa giải quyết với nội dung khác: dùng nội dung mới hơn (mốc thời gian của phần trả lời), có ghi vết.
+  // Cùng mốc (không phân định được) -> chuyển nhân viên. Nội dung mới hơn vẫn phải được AI xác nhận trả lời đúng tin của khách.
+  if ((t || c) && deps.conflicts?.size) {
+    type Side = { ref: string; ckey: string; ukey: string; title: string; text: string; t?: Template; c?: KnowledgeHit };
+    const ofT = (x: Template): Side => ({ ref: `T:${x.id}`, ckey: `template:${x.id}`, ukey: `item:${x.item?.id ?? x.id}`, title: x.item?.title ?? x.sets_context.issue ?? x.id, text: index.resolveAnswerSource(x).answers.en ?? "", t: x });
+    const ofC = (x: KnowledgeHit): Side => ({ ref: `K:${x.chunkId}`, ckey: `chunk:${x.chunkId}`, ukey: `chunk:${x.docSlug}#${x.heading}`, title: x.heading, text: x.text, c: x });
+    const picked = t ? ofT(t) : ofC(c!);
+    const partnerKeys = [...deps.conflicts].map((p) => p.split("|")).filter((p) => p.includes(picked.ckey)).map((p) => p.find((x) => x !== picked.ckey)!).filter(Boolean);
+    if (partnerKeys.length) {
+      const partners: Side[] = [];
+      const missingChunks: string[] = [];
+      for (const k of partnerKeys) {
+        if (k.startsWith("template:")) {
+          const x = index.get(k.slice(9));
+          if (x) partners.push(ofT(x));
+        } else {
+          const x = chunks.find((h) => `chunk:${h.chunkId}` === k);
+          if (x) partners.push(ofC(x));
+          else missingChunks.push(k.slice(6));
+        }
+      }
+      if (missingChunks.length && knowledge?.byIds) for (const x of await knowledge.byIds(missingChunks)) partners.push(ofC(x));
+      if (partners.length) {
+        const time = (s: Side) => deps.answerTime?.(s.ukey);
+        const all = [picked, ...partners];
+        const times = all.map(time);
+        const fmt = (s: Side, i: number) => `"${s.title}" (${times[i] !== undefined ? new Date(times[i]!).toISOString().slice(0, 16).replace("T", " ") : "không rõ mốc"})`;
+        trace.notes.push(`nội dung AI chọn đang mâu thuẫn chưa giải quyết với: ${partners.map((s, i) => fmt(s, i + 1)).join(", ")}; nội dung AI chọn: ${fmt(picked, 0)}`);
+        const known = times.every((x) => x !== undefined);
+        const newest = known ? Math.max(...(times as number[])) : undefined;
+        const winners = newest === undefined ? [] : all.filter((_s, i) => times[i] === newest);
+        if (winners.length !== 1) {
+          trace.notes.push("không phân định được nội dung nào mới hơn (cùng mốc hoặc thiếu mốc thời gian): lúc thêm nội dung chưa thống nhất hai bên -> chuyển nhân viên");
+          return done({ kind: "ESCALATE", tier: 2, reason: "nội dung trong kho đang mâu thuẫn và cùng mốc thời gian, chưa được thống nhất", sourceTemplateId: t?.id ?? last?.id }, lang);
+        }
+        const win = winners[0]!;
+        if (win !== picked) {
+          let ok = false;
+          try {
+            const text = [req.text, req.vision?.error_text ? `(screenshot text: ${req.vision.error_text})` : ""].filter(Boolean).join(" ");
+            const v = await llm.verify({ text, queryEn, lang: req.lang, answer: { id: win.ref, text: win.text }, intended: win.title, context: pack, facts: pack?.facts });
+            ok = v.ok;
+            trace.notes.push(v.ok ? `kiểm duyệt: AI xác nhận nội dung mới hơn ${win.ref} trả lời đúng tin của khách` : `kiểm duyệt: AI KHÔNG xác nhận nội dung mới hơn ${win.ref}${v.reason ? ` (${v.reason.slice(0, 100)})` : ""}`);
+          } catch (e) {
+            if (e instanceof LlmUnavailableError && !e.badOutput) return done(llmFailure(e, 2, trace, last?.id), lang);
+            trace.notes.push(`kiểm duyệt nội dung mới hơn lỗi (${(e as Error).message.slice(0, 80)})`);
+          }
+          if (!ok) return done({ kind: "ESCALATE", tier: 2, reason: "nội dung AI chọn đã có nội dung mới hơn mâu thuẫn với nó, nhưng nội dung mới hơn không trả lời đúng câu hỏi", sourceTemplateId: t?.id ?? last?.id }, lang);
+          t = win.t;
+          c = win.c;
+        }
+        trace.notes.push(`mâu thuẫn chưa giải quyết: dùng nội dung mới hơn ${fmt(win, all.indexOf(win))} (cần thống nhất ở Chờ xử lý)`);
+      }
+    }
+  }
+
   if (t) {
     // Cổng ngữ cảnh áp dụng cho MỌI đường: khách quay lại chủ đề đã chuyển support thì không lặp lại chuỗi template.
     if (req.ctx.parentEscalatedGroup && t.group === req.ctx.parentEscalatedGroup) return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id }, lang);

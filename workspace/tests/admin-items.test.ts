@@ -26,6 +26,9 @@ let nextDraft: (r: IntakeDraftRequest) => IntakeDraftResult = () => {
   throw new Error("test chưa đặt kết quả AI");
 };
 const intakeCalls: IntakeDraftRequest[] = [];
+/** AI so hai nội dung (SKILL review-overlap) giả: mặc định "khác phạm vi" */
+let nextReview: () => Promise<{ verdict: string; reason?: string }> = async () => ({ verdict: "distinct" });
+let reviewCalls = 0;
 const answerDraft = (t: { id: string; group: string; keywords: string[]; examples: string[]; answer_en: string }, title = ""): IntakeDraftResult => ({ kind: "templates", slug: "ai-slug-ignored", title, templates: [t], knowledge: null });
 
 const H = { "x-requested-with": "admin-web", "content-type": "application/json" };
@@ -40,6 +43,10 @@ beforeAll(async () => {
     draftIntake: async (r) => {
       intakeCalls.push(r);
       return nextDraft(r);
+    },
+    reviewOverlap: async () => {
+      reviewCalls++;
+      return (await nextReview()) as never;
     },
   });
   await svc.ops.upsertAdmin(9003, "viewer", null);
@@ -284,6 +291,53 @@ describe("Admin Web: Kho tri thức — một danh sách, một cửa thêm nộ
     expect(d.statusCode, d.body).toBe(200);
     expect(d.json().report.hijacks ?? []).toEqual([]);
     expect((await send("POST", "/api/kb/decide", await login(9003), { versionId: r.version.id, itemId: "nhiet-lo", chunkId: r.report.hijacks[0].chunkId })).statusCode).toBe(403);
+  });
+
+  it("thêm nội dung mâu thuẫn với nội dung đang dùng: hiện khung, CHẶN publish tới khi xử lý; AI không kiểm tra được cũng chặn", async () => {
+    const admin = await login(9002);
+    const G1 = { id: "nhan-thuong-game", group: "Game", keywords: ["claim game reward"], examples: ["how do I claim the game reward", "claim reward in the game", "where to claim game rewards"], answer_en: "Rewards are claimed in the Game tab every Monday." };
+    nextDraft = () => answerDraft(G1, "Nhận thưởng game");
+    const first = (await send("POST", "/api/kb/intake", admin, { rawText: "Nhận thưởng game ở tab Game mỗi thứ Hai." })).json();
+    expect((await send("POST", `/api/kb/versions/${first.version.id}/publish`, admin, {})).json().status).toBe("published");
+
+    // nội dung mới nói khác về cùng việc: AI kết luận mâu thuẫn trực tiếp
+    nextReview = async () => ({ verdict: "contradiction", reason: "A nói thứ Sáu tự động, B nói thứ Hai trong tab Game" });
+    nextDraft = () => answerDraft({ id: "nhan-thuong-game-moi", group: "Game", keywords: ["claim the game reward now"], examples: ["how can I claim the game reward", "claim the reward in game", "where do I claim game rewards"], answer_en: "Rewards are paid automatically every Friday." }, "Nhận thưởng game (mới)");
+    const r = (await send("POST", "/api/kb/intake", admin, { rawText: "Thưởng game được trả tự động mỗi thứ Sáu." })).json();
+    const box = r.boxes.find((b: { verdict: string }) => b.verdict === "contradiction");
+    expect(box).toMatchObject({ aKey: "item:nhan-thuong-game-moi", bKey: "item:nhan-thuong-game" });
+    expect(r.report.ok).toBe(false);
+    const blk = r.report.reviewBlocks.find((x: { aKey: string; bKey: string }) => [x.aKey, x.bKey].includes("item:nhan-thuong-game-moi"));
+    expect(blk).toMatchObject({ need: "decide", verdict: "contradiction" });
+    expect(JSON.stringify(r.report.steps)).toContain("mâu thuẫn trực tiếp");
+    const pub = await send("POST", `/api/kb/versions/${r.version.id}/publish`, admin, {});
+    expect(pub.statusCode).not.toBe(200); // không publish được khi còn mâu thuẫn chưa xử lý
+
+    // mở lại trang: dùng lại nhận xét đã ghi, không gọi AI lần nữa
+    const calls = reviewCalls;
+    const again = (await get(`/api/kb/intake/${r.version.id}/boxes`, admin)).json();
+    expect(again.boxes.some((b: { verdict: string }) => b.verdict === "contradiction")).toBe(true);
+    expect(reviewCalls).toBe(calls);
+
+    // người duyệt xác nhận hai trường hợp khác nhau -> hết chặn vì mâu thuẫn
+    const d = await send("POST", "/api/kb/decide", admin, { docSlug: box.a.doc, aKey: box.aKey, bKey: box.bKey, decision: "keep_both", note: "khác đối tượng" });
+    expect(d.statusCode, d.body).toBe(200);
+    expect((d.json().report.reviewBlocks ?? []).filter((x: { aKey: string; bKey: string }) => [x.aKey, x.bKey].includes("item:nhan-thuong-game-moi"))).toEqual([]);
+
+    // AI không kiểm tra được (lỗi) -> cặp bị chặn, cần kiểm tra lại; kiểm tra lại được thì hết chặn
+    nextReview = async () => {
+      throw new Error("bad json");
+    };
+    nextDraft = () => answerDraft({ id: "thuong-game-3", group: "Game", keywords: ["game reward claim help"], examples: ["help me claim the game reward", "game reward claim problem", "cannot find where to claim game rewards"], answer_en: "Open the Game tab and tap Claim." }, "Nhận thưởng game 3");
+    const r3 = (await send("POST", "/api/kb/intake", admin, { rawText: "Mở tab Game và bấm Claim để nhận thưởng." })).json();
+    const b3 = (r3.report.reviewBlocks ?? []).filter((x: { aKey: string; bKey: string }) => [x.aKey, x.bKey].includes("item:thuong-game-3"));
+    expect(b3.length).toBeGreaterThan(0);
+    expect(b3[0]).toMatchObject({ need: "recheck", verdict: "unchecked" });
+    nextReview = async () => ({ verdict: "complement" });
+    const rc = await send("POST", "/api/kb/recheck-conflicts", admin, { versionId: r3.version.id });
+    expect(rc.statusCode, rc.body).toBe(200);
+    expect((rc.json().report.reviewBlocks ?? []).filter((x: { aKey: string; bKey: string }) => [x.aKey, x.bKey].includes("item:thuong-game-3"))).toEqual([]);
+    nextReview = async () => ({ verdict: "distinct" });
   });
 
   it("nhập file rà soát khách trả về: thêm cách hỏi + giữ cả hai (ghi ngữ cảnh) thành bản nháp, câu hỏi lại để người quản lý viết", async () => {

@@ -216,7 +216,7 @@ export class BotPipeline {
         try {
           result = await router(
           { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
-          { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge, conflicts: this.d.live.conflicts },
+          { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge, conflicts: this.d.live.conflicts, answerTime: (k: string) => this.d.live.answerTimes.get(k) },
           );
         } finally {
           typing?.();

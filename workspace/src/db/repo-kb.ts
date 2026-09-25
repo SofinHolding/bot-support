@@ -1,7 +1,7 @@
 /** Truy cập kho tri thức: tài liệu + phiên bản, template đã publish, chunk vector, bản dịch, cache embedding, eval, settings. */
 import type { Template } from "../domain/types";
 import { iso, num, numOrNull, type Db } from "./db";
-import type { PairDecision, PairDecisionKind } from "../kb/pair-decisions";
+import type { PairDecision, PairDecisionKind, PairReview } from "../kb/pair-decisions";
 
 export type VersionStatus = "draft" | "pending_approval" | "published" | "archived" | "rejected";
 
@@ -414,6 +414,27 @@ export function kbRepo(db: Db) {
          ON CONFLICT (a_key, b_key) DO UPDATE SET a_hash = EXCLUDED.a_hash, b_hash = EXCLUDED.b_hash, decision = EXCLUDED.decision, note = EXCLUDED.note, decided_by = EXCLUDED.decided_by, winner_key = EXCLUDED.winner_key, decided_at = now()`,
         [d.aKey, d.bKey, d.aHash, d.bHash, d.decision, d.note ?? null, d.decidedBy, d.winnerKey ?? null],
       );
+    },
+
+    // ---- Nhận xét của AI theo cặp nội dung (009_pair_reviews.sql) ----
+    /** Ghi nhận xét cho một cặp — `a`/`b` phải đã được sắp theo `orderPair`. Cùng nội dung hai bên thì ghi đè. */
+    async savePairReview(r: PairReview) {
+      await db.query(
+        `INSERT INTO kb_pair_reviews (a_key, a_hash, a_title, b_key, b_hash, b_title, verdict, reason, suggestion) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (a_key, a_hash, b_key, b_hash) DO UPDATE SET a_title = EXCLUDED.a_title, b_title = EXCLUDED.b_title, verdict = EXCLUDED.verdict, reason = EXCLUDED.reason, suggestion = EXCLUDED.suggestion, reviewed_at = now()`,
+        [r.aKey, r.aHash, r.aTitle, r.bKey, r.bHash, r.bTitle, r.verdict, r.reason ?? null, r.suggestion ?? null],
+      );
+    },
+    /** Mọi nhận xét có một bên thuộc `keys`, mới nhất trước. */
+    async listPairReviews(keys: string[]): Promise<(PairReview & { reviewedAt: Date })[]> {
+      if (!keys.length) return [];
+      const r = await db.query("SELECT * FROM kb_pair_reviews WHERE a_key = ANY($1) OR b_key = ANY($1) ORDER BY reviewed_at DESC, id DESC", [keys]);
+      return r.rows.map((x) => ({ aKey: String(x.a_key), aHash: String(x.a_hash), aTitle: String(x.a_title), bKey: String(x.b_key), bHash: String(x.b_hash), bTitle: String(x.b_title), verdict: String(x.verdict), reason: (x.reason as string | null) ?? null, suggestion: (x.suggestion as string | null) ?? null, reviewedAt: new Date(String(x.reviewed_at)) }));
+    },
+    /** Mốc thời gian mới nhất phần TRẢ LỜI / NỘI DUNG của từng nội dung đổi (kb_content_history): dùng khi hai nội dung mâu thuẫn cùng được tìm thấy lúc chạy. */
+    async latestAnswerTimes(): Promise<Map<string, number>> {
+      const r = await db.query<{ unit_key: string; at: string }>("SELECT unit_key, max(changed_at) AS at FROM kb_content_history WHERE change <> 'removed' AND (part LIKE 'Trả lời%' OR part = 'Nội dung') GROUP BY unit_key");
+      return new Map(r.rows.map((x) => [String(x.unit_key), new Date(String(x.at)).getTime()]));
     },
 
     // ---- Eval ----

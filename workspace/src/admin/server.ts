@@ -29,6 +29,7 @@ import { DEFAULT_OVERLAP_MIN, scanCorpus } from "../kb/overlap";
 import { CONFUSION_FIX_HINT, confusionsOf, describeConfusion, findConfusions } from "../kb/routing-check";
 import { intakeToItems, renderIntakeMarkdown } from "../kb/intake";
 import { NEEDS_DECISION } from "../kb/overlap";
+import { chunkKey, itemKey, templateHash, textHash, UNCHECKED_VERDICT } from "../kb/pair-decisions";
 import { extractText, MAX_UPLOAD_BYTES } from "../kb/doc-extract";
 import { GUIDE_SLUG } from "../core/guide";
 import { GatewayConfigError, listGatewayModels, runningInDocker, testGateway } from "../llm/gateway-config";
@@ -328,9 +329,31 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
 
   /** Ghi nhận "giữ nguyên có chủ ý" cho cặp mục hỏi đáp ↔ đoạn tài liệu mà bước kiểm tra chặn, rồi kiểm tra lại bản nháp. */
   app.post("/api/kb/decide", { preHandler: need("admin") }, async (req) => {
-    const b = z.object({ versionId: z.number().int().positive(), itemId: z.string().max(120), chunkId: z.string().max(40), note: z.string().max(1000).optional() }).parse(req.body);
+    const b = z
+      .union([
+        z.object({ versionId: z.number().int().positive(), itemId: z.string().max(120), chunkId: z.string().max(40), note: z.string().max(1000).optional() }),
+        // cặp AI đã chặn (trùng / xung đột / mâu thuẫn): giữ cả hai vì là hai trường hợp khác nhau, hoặc đã sửa cho thống nhất
+        z.object({ versionId: z.number().int().positive().optional(), docSlug: z.string().max(200).optional(), aKey: z.string().min(3).max(400), bKey: z.string().min(3).max(400), decision: z.enum(["keep_both", "fixed"]), note: z.string().max(1000).optional() }),
+      ])
+      .parse(req.body);
+    if ("aKey" in b) {
+      // khung xung đột chỉ biết tài liệu của nội dung mới: dùng bản mới nhất (bản nháp) của tài liệu đó
+      const versionId = b.versionId ?? (b.docSlug ? (await kb.listVersions(b.docSlug))[0]?.id : undefined);
+      if (!versionId) throw new KbError("thiếu bản nháp cần quyết", 400);
+      const report = await kbService.decidePair({ ...b, versionId }, actor(req));
+      await audit(req, "kb.pair_decision", `${b.aKey}|${b.bKey}`, null, { decision: b.decision, note: b.note ?? null });
+      return { report };
+    }
     const report = await kbService.decideItemChunk({ ...b, decision: "keep_both" }, actor(req));
     await audit(req, "kb.pair_decision", `${b.itemId}|chunk:${b.chunkId}`, null, { decision: "keep_both", note: b.note ?? null });
+    return { report };
+  });
+
+  /** AI kiểm tra lại các cặp của bản nháp mà nội dung đã đổi (hoặc lần trước AI không kiểm tra được), rồi kiểm tra lại bản nháp. */
+  app.post("/api/kb/recheck-conflicts", { preHandler: need("admin") }, async (req) => {
+    const b = z.object({ versionId: z.number().int().positive() }).parse(req.body);
+    const report = await kbService.recheckPairs(b.versionId, svc.llm);
+    await audit(req, "kb.recheck_conflicts", String(b.versionId), null, { ok: report.ok });
     return { report };
   });
 
@@ -529,9 +552,22 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const confirmed = (p: (typeof overlapPairs)[number]) => !!p.confusions?.length || !!p.updateHint;
     const pairs = [...overlapPairs.filter(confirmed), ...overlapPairs.filter((p) => !confirmed(p))]
       .map((p) => (isDraft(p.a) || !isDraft(p.b) ? p : { ...p, a: p.b, b: p.a })) // bên nội dung mới luôn là `a`, bên đang dùng là `b` (để sửa)
-      .slice(0, 5);
+      .slice(0, 8);
     const titleOf = (id: string) => live.index.get(id)?.sets_context.issue ?? parsedDraft.templates.find((t) => t.id === id)?.sets_context.issue ?? id;
-    const boxes: { a: OverlapSide | { kind: string; id: string; doc: string; title: string }; b: OverlapSide | { kind: string; id: string; doc: string; title: string }; score: number; signals: string[]; explain: string[]; narrow: { templateId: string; phrase: string } | null; updateHint?: string; verdict: string | null; reason: string | null; suggestion: string | null }[] = [];
+    // Khoá + nội dung lúc kiểm tra của mỗi bên: nhận xét của AI được ghi lại (kb_pair_reviews) và là căn cứ chặn publish
+    const unitOf = (r: { kind: string; id: string }, draft: boolean): { key: string; hash: string; title: string } | undefined => {
+      if (r.kind === "template") {
+        const t = draft ? parsedDraft.templates.find((x) => x.id === r.id) : live.index.get(r.id);
+        return t ? { key: itemKey(t.id), hash: templateHash(t), title: t.item?.title ?? t.sets_context.issue ?? t.id } : undefined;
+      }
+      if (draft) {
+        const c = parsedDraft.chunks.find((_c, idx) => `${slug}#${idx}` === r.id);
+        return c ? { key: chunkKey(slug, c.heading), hash: textHash(c.text), title: c.heading } : undefined;
+      }
+      const c = liveChunks.find((x) => x.chunkId === r.id);
+      return c ? { key: chunkKey(c.docSlug, c.heading), hash: textHash(c.text), title: c.heading } : undefined;
+    };
+    const boxes: { a: OverlapSide | { kind: string; id: string; doc: string; title: string }; b: OverlapSide | { kind: string; id: string; doc: string; title: string }; score: number; signals: string[]; explain: string[]; narrow: { templateId: string; phrase: string } | null; updateHint?: string; verdict: string | null; reason: string | null; suggestion: string | null; aKey: string | null; bKey: string | null }[] = [];
     for (const p of pairs) {
       const a = draftSide(p.a.id) ?? p.a;
       const bSide = liveSide(p.b.kind, p.b.id) ?? p.b;
@@ -540,17 +576,28 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
       let verdict: string | null = null;
       let reason: string | null = null;
       let suggestion: string | null = null;
-      try {
-        const v = await llm.reviewOverlap({ a: a as OverlapSide, b: bSide as OverlapSide, signals: p.signals.slice(0, 5) });
-        verdict = v.verdict;
-        reason = v.reason ?? null;
-        suggestion = v.suggestion ?? null;
-      } catch {
-        /* AI chỉ mô tả thêm: khung vẫn hiện với tín hiệu code, không chặn */
+      const ua = unitOf(p.a, isDraft(p.a));
+      const ub = unitOf(p.b, isDraft(p.b));
+      // Cùng nội dung hai bên đã được AI kiểm tra: dùng lại nhận xét, không gọi AI lần nữa
+      const cached = ua && ub ? await kbService.cachedPairReview(ua, ub) : undefined;
+      if (cached && cached.verdict !== UNCHECKED_VERDICT) {
+        verdict = cached.verdict;
+        reason = cached.reason;
+        suggestion = cached.suggestion;
+      } else {
+        try {
+          const v = await llm.reviewOverlap({ a: a as OverlapSide, b: bSide as OverlapSide, signals: p.signals.slice(0, 5) });
+          verdict = v.verdict;
+          reason = v.reason ?? null;
+          suggestion = v.suggestion ?? null;
+        } catch {
+          verdict = UNCHECKED_VERDICT; // AI không kiểm tra được: cặp bị chặn publish tới khi kiểm tra lại được
+        }
+        if (ua && ub) await kbService.recordPairReview(ua, ub, { verdict, reason, suggestion });
       }
       // giống chữ, bot vẫn trả lời đúng, AI cũng không thấy mâu thuẫn/trùng => không phải việc của người dùng
-      if (!confirmed(p) && !NEEDS_DECISION.has(verdict ?? "")) continue;
-      boxes.push({ a, b: bSide, score: p.score, signals: p.signals, explain, narrow, updateHint: p.updateHint, verdict, reason, suggestion });
+      if (!confirmed(p) && !NEEDS_DECISION.has(verdict ?? "") && verdict !== UNCHECKED_VERDICT) continue;
+      boxes.push({ a, b: bSide, aKey: ua?.key ?? null, bKey: ub?.key ?? null, score: p.score, signals: p.signals, explain, narrow, updateHint: p.updateHint, verdict, reason, suggestion });
     }
     return boxes;
   }
@@ -582,8 +629,9 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     if (chunkTarget) {
       const { version, report } = await kbService.applyBoxEdit({ targetDoc: chunkTarget[1]!, kind: "chunk", chunkHeading: chunkTarget[2]!, newText: b.rawText }, actor(req));
       const boxes = await buildIntakeBoxes(llm, "knowledge", version.slug, version.source_md, report.overlapPairs ?? []);
+      const checked = await kbService.revalidate(version.id); // nhận xét AI vừa ghi là căn cứ chặn publish
       await audit(req, "kb.intake_edit", b.target!, null, { version: version.version });
-      return { version: { ...version, source_md: undefined }, report, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: report.ok }] };
+      return { version: { ...version, source_md: undefined }, report: checked, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: checked.ok }] };
     }
     const itemTarget = b.target?.startsWith("item:") ? b.target.slice(5) : undefined;
     const existingGroups = [...new Set(live.index.templates.map((t) => t.group).filter(Boolean))].sort();
@@ -593,8 +641,9 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
       const md = renderIntakeMarkdown(draft);
       const { version, report } = await kbService.createDraft({ slug: draft.slug, kind: "knowledge", title: draft.title, md, author: actor(req) });
       const boxes = await buildIntakeBoxes(llm, "knowledge", draft.slug, md, report.overlapPairs ?? []);
+      const checked = await kbService.revalidate(version.id); // nhận xét AI vừa ghi là căn cứ chặn publish
       await audit(req, "kb.intake_draft", draft.slug, null, { version: version.version, kind: "knowledge", boxes: boxes.length });
-      return { version: { ...version, source_md: undefined }, report, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: report.ok }] };
+      return { version: { ...version, source_md: undefined }, report: checked, boxes, drafts: [{ versionId: version.id, slug: version.slug, ok: checked.ok }] };
     }
     // Câu trả lời: thành mục hỏi đáp trong bản nháp của đúng chủ đề (AI xếp chủ đề, người dùng không chọn)
     const res = await kbService.addIntakeItems(intakeToItems(draft), actor(req), itemTarget);
@@ -608,11 +657,12 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
       const pairs = await kbService.relationsForNew(fresh, v.slug, all);
       await kb.updateVersion(v.id, { report: { ...d.report, overlapPairs: pairs } }); // mở lại trang vẫn thấy đúng các khung của phần mới
       boxes.push(...(await buildIntakeBoxes(llm, "items", v.slug, v.source_md, pairs)));
-      drafts.push({ versionId: v.id, slug: v.slug, ok: d.report.ok });
+      const checked = await kbService.revalidate(v.id); // nhận xét AI vừa ghi là căn cứ chặn publish
+      drafts.push({ versionId: v.id, slug: v.slug, ok: checked.ok, report: checked });
     }
     const first = (await kb.getVersion(res.drafts[0]!.versionId))!;
     await audit(req, "kb.intake_draft", first.slug, null, { versions: drafts.map((x) => x.versionId), kind: "items", target: b.target ?? null, boxes: boxes.length });
-    return { version: { ...first, source_md: undefined }, report: res.drafts[0]!.report, boxes, drafts };
+    return { version: { ...first, source_md: undefined }, report: drafts[0]!.report, boxes, drafts: drafts.map(({ report: _r, ...x }) => x) };
   });
 
   /** Dựng lại các khung xung đột của một bản nháp intake đã có — dùng khi mở lại trang (không tạo mới, không gọi LLM để phân loại lại). */
@@ -632,9 +682,26 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
   /** Sạch cặp này chưa, sau khi admin sửa nội dung trong một khung xung đột — nhẹ, chỉ so cặp này, không quét lại toàn kho. */
   app.post("/api/kb/intake/conflicts/recheck", { preHandler: need("admin") }, async (req) => {
     const b = z
-      .object({ narrow: z.object({ templateId: z.string().max(200), phrase: z.string().max(300) }).nullable().optional(), editedText: z.string().max(20_000), otherText: z.string().max(20_000).optional() })
+      .object({
+        narrow: z.object({ templateId: z.string().max(200), phrase: z.string().max(300) }).nullable().optional(),
+        editedText: z.string().max(20_000),
+        otherText: z.string().max(20_000).optional(),
+        // khung do AI kết luận trùng / xung đột / mâu thuẫn: AI đọc lại cặp (nội dung mới ↔ nội dung đang dùng đã sửa)
+        review: z.object({ aTitle: z.string().max(300), bTitle: z.string().max(300), bKind: z.enum(["template", "chunk"]) }).optional(),
+      })
       .parse(req.body);
     if (b.narrow) return { stillConflicting: containsPhrase(normalize(b.editedText), b.narrow.phrase) };
+    if (b.review) {
+      const llm = usableLlm(svc.llm);
+      if (!llm) throw new KbError("chưa kết nối được AI để kiểm tra lại", 503);
+      const side = (kind: "template" | "chunk", title: string, text: string): OverlapSide => ({ kind, id: title, doc: "", title, keywords: [], examples: [], text });
+      try {
+        const v = await llm.reviewOverlap({ a: side("template", b.review.aTitle, b.otherText ?? ""), b: side(b.review.bKind, b.review.bTitle, b.editedText), signals: [] });
+        return { stillConflicting: NEEDS_DECISION.has(v.verdict), verdict: v.verdict, reason: v.reason ?? null };
+      } catch (e) {
+        return { stillConflicting: true, error: `AI không kiểm tra được: ${(e as Error).message.slice(0, 200)}` };
+      }
+    }
     if (!b.otherText) throw new KbError("thiếu otherText khi không có narrow");
     try {
       const [qa, qb] = await svc.embedder.embed([b.editedText, b.otherText]);

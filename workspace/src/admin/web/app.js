@@ -1462,6 +1462,7 @@
     conflict: ["xung đột", "err"],
     contradiction: ["mâu thuẫn trực tiếp", "err"],
     distinct: ["khác phạm vi", "ok"],
+    unchecked: ["AI chưa kiểm tra được", "warn"],
   };
   const CONFLICT_VERDICT = OVERLAP_VERDICT;
   /**
@@ -1739,7 +1740,9 @@ Nội dung mục 2.
       ? h("div", { class: "hint" }, legend, h("div", null, h("b", null, "Gợi ý AI: "), box.reason, box.suggestion ? h("div", null, "→ ", box.suggestion) : null))
       : h("p", { class: "muted" }, "Chưa có nhận xét của AI cho cặp này.");
     let body;
-    if (already) {
+    if (already && already.kept) {
+      body = notice("ok", "Đã ghi nhận hai nội dung dùng cho hai trường hợp khác nhau.");
+    } else if (already) {
       body = notice("ok", `Đã lưu bản nháp mới cho ${already.slug} (v${already.versionId}) — sẽ được publish cùng khi bấm "Publish tất cả".`);
     } else if (box.narrow) {
       const applyBtn = btn(`Áp dụng: gỡ "${box.narrow.phrase}" khỏi ${box.narrow.templateId}`, {
@@ -1771,9 +1774,10 @@ Nội dung mục 2.
         on: {
           click: (ev) =>
             run(ev.currentTarget, async () => {
-              const r = await post("/api/kb/intake/conflicts/recheck", { editedText: ta.value, otherText: box.a.text || "" });
+              const byAi = !!(box.aKey && box.bKey && ["duplicate", "conflict", "contradiction", "supersedes", "unchecked"].includes(box.verdict));
+              const r = await post("/api/kb/intake/conflicts/recheck", { editedText: ta.value, otherText: box.a.text || "", ...(byAi ? { review: { aTitle: box.a.title, bTitle: box.b.title, bKind: box.b.kind === "template" ? "template" : "chunk" } } : {}) });
               saveBtn.disabled = !!r.stillConflicting;
-              toast(r.stillConflicting ? "Vẫn còn trùng — sửa thêm rồi kiểm tra lại." : "Sạch — có thể Save.", r.stillConflicting ? "info" : "ok");
+              toast(r.stillConflicting ? (r.error || `Vẫn còn ${byAi ? "mâu thuẫn" : "trùng"}${r.reason ? `: ${r.reason}` : ""} — sửa thêm rồi kiểm tra lại.`) : "AI không còn thấy mâu thuẫn — có thể Save.", r.stillConflicting ? "info" : "ok");
             }),
         },
       });
@@ -1787,6 +1791,8 @@ Nội dung mục 2.
                 box.b.kind === "template" ? { targetDoc: box.b.doc, kind: "template", templateId: box.b.id, lang: "en", newText: ta.value } : { targetDoc: box.b.doc, kind: "chunk", chunkHeading: box.b.title, newText: ta.value };
               const r = await post("/api/kb/intake/conflicts/apply", editBody);
               resolvedDrafts.set(intakePairKey(box), { versionId: r.versionId, slug: r.slug });
+              // đã sửa nội dung đang dùng cho thống nhất (AI đã kiểm tra lại): ghi nhận để bản nháp của nội dung mới không còn bị chặn
+              if (box.aKey && box.bKey) await post("/api/kb/decide", { docSlug: box.a.doc, aKey: box.aKey, bKey: box.bKey, decision: "fixed", note: "đã sửa nội dung đang dùng cho thống nhất; AI kiểm tra lại không còn mâu thuẫn" }).catch(() => null);
               toast("Đã lưu bản nháp mới.", "ok");
               onChanged();
             }),
@@ -1823,7 +1829,24 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
           },
         })
       : null;
-    return h("div", null, head, aiNote, supersede ? h("div", { class: "actions" }, supersede) : null, h("hr"), body);
+    const keepBoth = can("admin") && !already && box.aKey && box.bKey && box.verdict && ["duplicate", "conflict", "contradiction", "supersedes"].includes(box.verdict)
+      ? btn("Hai trường hợp khác nhau — giữ cả hai", {
+          title: "Ghi nhận hai nội dung dùng cho hai trường hợp khác nhau, không mâu thuẫn (hết hiệu lực khi một trong hai đổi nội dung)",
+          on: {
+            click: (ev) => {
+              const note = prompt("Hai nội dung khác nhau ở điểm nào? (ghi lại để người sau hiểu)");
+              if (note === null) return;
+              run(ev.currentTarget, async () => {
+                await post("/api/kb/decide", { docSlug: box.a.doc, aKey: box.aKey, bKey: box.bKey, decision: "keep_both", note: note || undefined });
+                resolvedDrafts.set(intakePairKey(box), { versionId: 0, slug: box.a.doc, kept: true });
+                toast("Đã ghi nhận giữ cả hai.", "ok");
+                onChanged();
+              });
+            },
+          },
+        })
+      : null;
+    return h("div", null, head, aiNote, supersede || keepBoth ? h("div", { class: "actions" }, supersede, keepBoth) : null, h("hr"), body);
   }
 
   function openIntakeModal(box, resolvedDrafts, onChanged) {
@@ -1996,9 +2019,10 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
         kind: "primary",
         on: {
           click: () => {
-            const ids = [v.id, ...[...resolvedDrafts.values()].map((x) => x.versionId)];
+            const ids = [v.id, ...[...resolvedDrafts.values()].filter((x) => x.versionId).map((x) => x.versionId)];
             const unresolved = boxesState.filter((b) => !resolvedDrafts.has(intakePairKey(b)));
-            let msg = `Publish ${v.slug}${resolvedDrafts.size ? ` cùng ${resolvedDrafts.size} tài liệu vừa sửa` : ""}? Toàn bộ vector liên quan sẽ được cập nhật lại ngay.`;
+            const edited = [...resolvedDrafts.values()].filter((x) => x.versionId).length;
+            let msg = `Publish ${v.slug}${edited ? ` cùng ${edited} tài liệu vừa sửa` : ""}? Toàn bộ vector liên quan sẽ được cập nhật lại ngay.`;
             if (unresolved.length) msg += `\n\nCÒN ${unresolved.length} khung xung đột CHƯA xử lý:\n` + unresolved.map((b) => `- ${b.b.doc}: ${b.b.title}`).join("\n");
             if (dirty()) return toast("Có thay đổi chưa lưu: bấm Lưu Draft trước khi Publish.");
             if (!confirm(msg)) return;
@@ -2191,6 +2215,46 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
         ),
       ),
     );
+    if (Array.isArray(r.reviewBlocks) && r.reviewBlocks.length && ctx.versionId) {
+      const recheck = r.reviewBlocks.some((x) => x.need === "recheck") && can("admin")
+        ? btn("AI kiểm tra lại xung đột", {
+            on: {
+              click: (ev) =>
+                run(ev.currentTarget, async () => {
+                  const res = await post("/api/kb/recheck-conflicts", { versionId: ctx.versionId });
+                  toast("AI đã kiểm tra lại.", "ok");
+                  if (ctx.onReport) ctx.onReport(res.report);
+                }),
+            },
+          })
+        : null;
+      wrap.append(
+        h("hr", { class: "sep" }),
+        h("h3", null, "Nội dung trùng hoặc mâu thuẫn — phải xử lý trước khi publish"),
+        h("p", { class: "hint" }, 'Mở khung xung đột tương ứng bên dưới để sửa cho thống nhất hoặc xác nhận nội dung mới thay thế nội dung cũ. Nếu hai nội dung thật ra dùng cho hai trường hợp khác nhau, bấm "Giữ cả hai". Ghi nhận hết hiệu lực khi một trong hai đổi nội dung.'),
+        recheck ? h("div", { class: "actions" }, recheck) : null,
+        r.reviewBlocks.map((x) => {
+          const keep = x.need === "decide" && can("admin")
+            ? btn("Giữ cả hai", {
+                small: true,
+                on: {
+                  click: (ev) => {
+                    const note = prompt("Hai nội dung khác nhau ở điểm nào? (ghi lại để người sau hiểu)");
+                    if (note === null) return;
+                    run(ev.currentTarget, async () => {
+                      const res = await post("/api/kb/decide", { versionId: ctx.versionId, aKey: x.aKey, bKey: x.bKey, decision: "keep_both", note: note || undefined });
+                      toast("Đã ghi nhận, kiểm tra lại bản nháp.", "ok");
+                      if (ctx.onReport) ctx.onReport(res.report);
+                    });
+                  },
+                },
+              })
+            : null;
+          const label = x.need === "recheck" ? ["cần AI kiểm tra lại", "warn"] : OVERLAP_VERDICT[x.verdict] || [x.verdict, "err"];
+          return h("div", { class: "row-card" }, h("div", { class: "row-top" }, badge(label[0], label[1]), h("span", null, `"${x.aTitle}" ↔ "${x.bTitle}"`), keep), x.reason ? h("div", { class: "hint" }, x.reason) : null);
+        }),
+      );
+    }
     if (Array.isArray(r.hijacks) && r.hijacks.length && ctx.versionId && can("admin")) {
       wrap.append(
         h("hr", { class: "sep" }),
