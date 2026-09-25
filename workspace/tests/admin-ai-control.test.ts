@@ -11,7 +11,7 @@ import { numbersNotIn } from "../src/core/translate";
 import type { KnowledgeHit, LlmPort, SelectRequest, UnderstandResult } from "../src/core/ports";
 import type { Actor } from "../src/kb/service";
 import { SkillStore } from "../src/llm/skills";
-import { fakeLlm, makeWorld, type World } from "./helpers";
+import { fakeKorean, fakeLlm, makeWorld, type World } from "./helpers";
 
 const U = (over: Partial<UnderstandResult>): UnderstandResult => ({ language: "en", intent: "question", follow_up: "none", query_en: "", query_kb: "", ...over });
 const URL_OK = "https://whitepaper.interlinklabs.ai";
@@ -57,7 +57,7 @@ describe("AI/RAG chế độ sinh: AI viết câu trả lời có kiểm chứng
       understand: async (r) => U({ language: "en", query_en: r.text }),
       select: async (r: SelectRequest) => ({ ref: r.candidates.find((c) => c.ref.startsWith("K:"))?.ref ?? "ESCALATE", reason: "" }),
       grounded: async (r) => { seenGrounded.push(r); return grounded(r); },
-      translate: async (r) => `[${r.lang}] ${r.text}`,
+      translate: async (r) => (r.lang === "ko" ? fakeKorean(r.text) : `[${r.lang}] ${r.text}`),
     });
     w = await makeWorld({ llm, mode: "llm_first" });
     (w.pipeline["d"] as { knowledge?: unknown }).knowledge = { search: async () => [CHUNK] };
@@ -110,10 +110,8 @@ describe("AI/RAG chế độ sinh: AI viết câu trả lời có kiểm chứng
     grounded = async (r) => ({ answerable: true, answer: `Locked tokens unlock over 180 months, 5% monthly. ${URL_OK}`, cited: [r.chunks[0]!.id] });
     const wrong = await ask(7221, "잠긴 토큰의 베스팅 기간은 얼마나 되나요? vesting");
     expect(wrong.d.via).toBe("grounded:extractive");
-    // bản dịch máy giả ("[ko] ...") không phải chữ Hàn nên cũng bị chặn -> nguồn tiếng Anh: gửi nguyên văn tiếng Anh đã duyệt
-    expect(wrong.reply).toBe(`${CHUNK.text}
-
-${URL_OK}`);
+    // câu AI viết sai chữ bị chặn -> đoạn đã chọn được dịch sang tiếng Hàn như mọi nội dung khác
+    expect(wrong.reply).toBe(fakeKorean(`${CHUNK.text}\n\n${URL_OK}`));
   });
 });
 

@@ -9,7 +9,7 @@ import { looksVietnamese } from "../src/core/language";
 import { LlmUnavailableError, type LlmPort, type SelectRequest, type UnderstandRequest, type UnderstandResult, type VerifyRequest, type VerifyResult } from "../src/core/ports";
 import type { Actor } from "../src/kb/service";
 import { NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
-import { fakeLlm, makeWorld, type World } from "./helpers";
+import { fakeKorean, fakeLlm, makeWorld, type World } from "./helpers";
 
 const U = (over: Partial<UnderstandResult>): UnderstandResult => ({ language: "en", intent: "question", follow_up: "none", query_en: "", query_kb: "", ...over });
 const WITHDRAW_EN = "you can not withdraw now, it will be withdrawn in the future when ITLG token is listed on exchanges and it will be a big surprise";
@@ -29,7 +29,7 @@ describe("luồng AI hiểu trước", () => {
       understand: async (r) => { seenUnderstand.push(r); return understand(r); },
       select: async (r) => { seenSelect.push(r); return select(r); },
       classify: async () => { classifyCalls++; return { action: "escalate" }; },
-      translate: async (r) => (r.lang === "de" && r.text === WITHDRAW_EN ? WITHDRAW_DE : `[${r.lang}] ${r.text}`),
+      translate: async (r) => (r.lang === "de" && r.text === WITHDRAW_EN ? WITHDRAW_DE : r.lang === "ko" ? fakeKorean(r.text) : `[${r.lang}] ${r.text}`), // tiếng Hàn: bản dịch giả phải viết bằng chữ Hàn mới qua kiểm tra
     });
     w = await makeWorld({ llm, mode: "llm_first", adminIds: [9001, 9002], ownerId: 9001 });
   });
@@ -207,7 +207,7 @@ describe("workflow hai nhánh (router.mode = hybrid): AI xác định ngôn ng�
     const llm: LlmPort = fakeLlm({
       understand: async (r) => { understandCalls++; return understand(r); },
       select: async (r) => { selectCalls.push(r); return { ref: r.candidates.find((c) => c.ref === "T:fp-2-withdraw")?.ref ?? "ESCALATE", reason: "" }; },
-      translate: async (r) => (r.lang === "de" && r.text === WITHDRAW_EN ? WITHDRAW_DE : `[${r.lang}] ${r.text}`),
+      translate: async (r) => (r.lang === "de" && r.text === WITHDRAW_EN ? WITHDRAW_DE : r.lang === "ko" ? fakeKorean(r.text) : `[${r.lang}] ${r.text}`), // tiếng Hàn: bản dịch giả phải viết bằng chữ Hàn mới qua kiểm tra
     });
     w = await makeWorld({ llm, mode: "hybrid" });
   });

@@ -73,7 +73,7 @@ async function main() {
   await live.rebuild();
   const settings = new SettingsService(ops, 0);
   const channel = new Capture();
-  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);
+  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
   const pipeline = new BotPipeline({ db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge: new PgKnowledge(kb, embedder), ownerId: 9001, adminWebUrl: "http://admin.local" });
   console.log(`eval thật · ${picked.length} câu từ ${file} · mode=${mode} · embedding=${embedder.version} · model nhanh=${models.fast} mạnh=${models.strong}\n`);
 

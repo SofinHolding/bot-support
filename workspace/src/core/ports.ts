@@ -208,8 +208,11 @@ export interface LlmPort {
   /** verifyOnly: chỉ cần biết đoạn nào trả lời được (answerable/cited), không cần câu trả lời — model khỏi sinh văn bản sẽ bị bỏ đi */
   grounded(req: { question: string; standalone?: string; verifyOnly?: boolean; lang: string; chunks: GroundedChunk[] }): Promise<GroundedResult>;
   vision(req: { mime: string; base64: string; caption?: string }): Promise<VisionResult>;
-  /** SKILL translate-answer: dịch nguyên văn sang `lang`; `from` là ngôn ngữ nguồn (nếu biết). Bên gọi kiểm bản dịch (core/translate.ts). */
-  translate(req: { text: string; lang: string; from?: string }): Promise<string>;
+  /**
+   * SKILL translate-answer: dịch nguyên văn sang `lang`; `from` là ngôn ngữ nguồn (nếu biết). Bên gọi kiểm bản dịch (core/translate.ts).
+   * `problems` (tiếng Anh): lỗi code tìm thấy ở bản dịch lần trước của CÙNG nguồn; có thì AI dịch lại và sửa đúng các lỗi đó.
+   */
+  translate(req: { text: string; lang: string; from?: string; problems?: string[] }): Promise<string>;
   /** SKILL translate-query: câu hỏi của khách (ngôn ngữ `from`) -> câu truy vấn đứng độc lập bằng ngôn ngữ tìm kiếm `to`. Chỉ để TÌM; bên gọi kiểm đầu ra. */
   translateQuery(req: TranslateQueryRequest): Promise<{ query: string }>;
   summarize(req: SummaryInput): Promise<SummaryResult>;

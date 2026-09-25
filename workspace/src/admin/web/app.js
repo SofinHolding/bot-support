@@ -787,7 +787,7 @@
     "Người dùng": "Những khách đã nhắn cho bot, kèm ngôn ngữ và số lần nhắn.",
     "Ticket": "Các ca bot đã chuyển cho người hỗ trợ: phân người phụ trách, ghi chú và cập nhật trạng thái.",
     "Kho tri thức": "Nơi duy nhất quản lý nội dung của bot. Đưa nội dung mới vào, hệ thống tự phân tích, tự so với dữ liệu đang có và chỉ hỏi bạn những chỗ cần quyết; publish sau khi kiểm tra đạt.",
-    "Bản dịch": "Duyệt bản dịch template do LLM tạo trước khi khách nhận được.",
+    "Bản dịch": "Xem lại các bản dịch AI đã tạo và đã gửi khách (không cần duyệt: bản dịch được kiểm tra tự động trước khi gửi).",
     "Chờ duyệt": "Thay đổi nhạy cảm cần một người khác duyệt trước khi có hiệu lực.",
     "Cấu hình": "Mô hình LLM, ngưỡng và giới hạn của bot. Thay đổi có hiệu lực không cần khởi động lại.",
     "Chi phí LLM": "Token và chi phí theo ngày, theo mục đích và theo khách.",
@@ -1671,7 +1671,7 @@ required_info: [Interlink ID, screenshot]   # (tuỳ chọn) thông tin cần xi
 <!-- answer:en -->
 Câu trả lời tiếng Anh (bắt buộc). Gửi nguyên văn cho khách. Giữ nguyên URL, @handle, tên sản phẩm.
 <!-- answer:vi -->
-Bản tiếng Việt do bạn soạn (tuỳ chọn). Ngôn ngữ khác chưa có sẽ được AI dịch một lần và chờ duyệt ở mục Bản dịch.
+Bản tiếng Việt do bạn soạn (tuỳ chọn). Ngôn ngữ khác do AI dịch và được kiểm tra tự động trước khi gửi.
 <!-- next -->
 ---
 id: vi-du-thu-hai
@@ -2587,7 +2587,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
       "div",
       null,
       pageHead("Bản dịch"),
-      notice("info", "Mọi nội dung AI đã dịch hoặc viết rồi gửi cho khách đều nằm ở đây để bạn xem lại: bản dịch template (theo mã), bản dịch đoạn tài liệu, và câu AI viết từ tài liệu. Tạo một lần, dùng lại cho các khách sau. Bạn có thể sửa nội dung rồi bấm Duyệt; bản đã duyệt là bản chính thức."),
+      notice("info", "Mọi nội dung AI đã dịch hoặc viết rồi gửi cho khách đều nằm ở đây để bạn xem lại: bản dịch template (theo mã), bản dịch đoạn tài liệu, và câu AI viết từ tài liệu. Tạo một lần, dùng lại cho các khách sau. Không cần duyệt: mọi bản dịch được kiểm tra tự động (số liệu, link, tên sản phẩm, đúng ngôn ngữ, không có tiếng Việt cho khách nói ngôn ngữ khác), không đạt thì AI dịch lại. Bản bạn sửa cũng phải qua đúng các kiểm tra này mới được dùng."),
       h("div", { class: "form-row" }, h("div", { class: "field narrow" }, h("span", { class: "lbl" }, "Trạng thái"), sel)),
       lazy(async (reload) => {
         const [r, tpl] = await Promise.all([get("/api/translations", { status: realStatus }), get("/api/templates").catch(() => null)]);
@@ -2702,7 +2702,6 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "alerts.escalation_daily_threshold": "Cảnh báo owner khi số lần chuyển support trong ngày vượt ngưỡng.",
     "alerts.new_questions_threshold": "Cảnh báo khi số câu hỏi mới vượt ngưỡng (cần bổ sung template).",
     "alerts.whitepaper_stale_days": "Cảnh báo khi đồng bộ whitepaper quá số ngày.",
-    "translation.send_unapproved": "Bật (mặc định): bot trả lời bằng ngôn ngữ của khách; bản dịch máy phải giữ nguyên URL, @handle, tên sản phẩm mới được gửi, và nằm ở mục Bản dịch để admin duyệt hoặc sửa. Tắt (chế độ chặt): chỉ gửi bản dịch đã duyệt, chưa duyệt thì gửi nguyên văn tiếng Anh. Lưu ý: câu trả lời tri thức được dịch tại chỗ và không có bước duyệt, nên ở chế độ chặt khách không dùng tiếng Việt hỏi tri thức (kho chủ yếu tiếng Việt) sẽ được chuyển cho người thật.",
     "approval.second_person": "Bật: thay đổi nhạy cảm (luật bảo mật, Hướng dẫn AI làm việc, SKILL, quản trị viên, cấu hình bảo vệ) phải được một quản trị viên KHÁC duyệt ở mục Chờ duyệt. Tắt: người đề xuất có đủ quyền thì áp dụng ngay (tiện hơn, nhưng một tài khoản bị lộ có thể đổi luật bảo mật một mình).",
     "limits.tokens_per_user_day": "Ngân sách token mỗi khách mỗi ngày; vượt thì không gọi LLM cho khách đó.",
     "batching.window_ms": "Cửa sổ gom các tin nhắn liên tiếp (ms).",
@@ -2727,7 +2726,6 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "alerts.escalation_daily_threshold": "Ngưỡng cảnh báo chuyển support mỗi ngày",
     "alerts.new_questions_threshold": "Ngưỡng cảnh báo câu hỏi mới",
     "alerts.whitepaper_stale_days": "Số ngày trễ đồng bộ whitepaper",
-    "translation.send_unapproved": "Gửi bản dịch máy chưa duyệt",
     "approval.second_person": "Cần người thứ hai duyệt thay đổi nhạy cảm",
     "limits.tokens_per_user_day": "Ngân sách token mỗi khách mỗi ngày",
     "batching.window_ms": "Cửa sổ gom tin nhắn (ms)",

@@ -25,7 +25,8 @@ describe("nạp SKILL từ content/skills", () => {
   });
   it("các ràng buộc cốt lõi nằm trong chỉ dẫn gửi cho model", () => {
     const s = loadSkills("content");
-    expect(s["translate-answer"].body).toContain("NEVER output Vietnamese unless the target language is Vietnamese");
+    expect(s["translate-answer"].body).toMatch(/No Vietnamese when the target is not Vietnamese: not a single Vietnamese word/);
+    expect(s["translate-answer"].body).toMatch(/previous_attempt_problems/);
     expect(s["translate-answer"].body).toMatch(/Add nothing, remove nothing/);
     expect(s["translate-answer"].body).toMatch(/every number, date, time, amount/i);
     expect(s["translate-query"].body).toMatch(/Never guess/);

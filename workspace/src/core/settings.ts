@@ -24,8 +24,7 @@ export interface Settings {
   "alerts.new_questions_threshold": number; // HEARTBEAT.md: "nhiều câu hỏi mới" thì báo owner cập nhật skill
   "alerts.whitepaper_stale_days": number; // HEARTBEAT.md: sync quá 2 ngày thì báo
 
-  "translation.send_unapproved": boolean;
-  "approval.second_person": boolean; // true: publish luật bảo mật / Hướng dẫn AI / SKILL, đổi quản trị viên, cấu hình bảo vệ cần người thứ hai duyệt. false: người đề xuất (đủ quyền) áp dụng ngay // true (yêu cầu gốc: trả lời bằng ngôn ngữ của khách): gửi bản dịch máy đã qua kiểm tra URL/handle/tên sản phẩm, admin duyệt/sửa sau. false: chỉ gửi bản ĐÃ DUYỆT, chưa duyệt thì gửi tiếng Anh
+  "approval.second_person": boolean; // true: publish luật bảo mật / Hướng dẫn AI / SKILL, đổi quản trị viên, cấu hình bảo vệ cần người thứ hai duyệt. false: người đề xuất (đủ quyền) áp dụng ngay
 
   "limits.tokens_per_user_day": number; // chống đốt token: vượt thì không gọi LLM cho khách đó trong ngày
   "batching.window_ms": number; // gom tin nhắn liên tiếp (gateway cũ: debounce 2000ms)
@@ -55,7 +54,6 @@ export const DEFAULT_SETTINGS: Settings = {
   "alerts.new_questions_threshold": 5,
   "alerts.whitepaper_stale_days": 2,
 
-  "translation.send_unapproved": true,
   "approval.second_person": true,
 
   "limits.tokens_per_user_day": 200_000,

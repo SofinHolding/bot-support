@@ -396,14 +396,19 @@ ${wrap("summary", c.summary)}` : "",
   }
 
   /** SKILL translate-answer: dịch đoạn tri thức / template sang ngôn ngữ của khách. Bản dịch chưa đáng tin: bên gọi phải qua `translationProblems`. */
-  async translate(req: { text: string; lang: string; from?: string }): Promise<string> {
+  async translate(req: { text: string; lang: string; from?: string; problems?: string[] }): Promise<string> {
     const p = protectTerms(req.text);
     const skill = (await this.skills())["translate-answer"];
     const res = await this.chain.generateJson({
       tier: "strong",
       purpose: "translate",
       system: await this.system(`${skill.body}\n\n${UNTRUSTED}`, "translate"),
-      user: [{ type: "text", text: `Source language: ${req.from ?? "unknown"}\nTarget language (ISO 639-1): ${req.lang}\n\n${wrap("user_message", p.text)}` }],
+      user: [{ type: "text", text: [
+        `Source language: ${req.from ?? "unknown"}\nTarget language (ISO 639-1): ${req.lang}`,
+        req.lang !== "vi" ? "The target is not Vietnamese: the output must not contain any Vietnamese word or Vietnamese diacritic letter (R1a)." : "",
+        req.problems?.length ? wrap("previous_attempt_problems", req.problems.map((x) => `- ${x}`).join("\n")) : "",
+        wrap("user_message", p.text),
+      ].filter(Boolean).join("\n\n") }],
       schema: TranslateSchema,
       maxTokens: 1800,
     });

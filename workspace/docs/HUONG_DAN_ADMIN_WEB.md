@@ -87,13 +87,14 @@ Lưu ý: SKILL thay đổi cách AI làm việc, nhưng các kiểm tra bằng c
 
 Mục này là **bộ nhớ các bản dịch của template**, dành cho ngôn ngữ chưa có bản admin soạn sẵn.
 
-Cách hoạt động: khách nhắn tiếng Đức, template chỉ có tiếng Anh → AI dịch **một lần** theo SKILL `translate-answer` (giữ nguyên số liệu, link, tên sản phẩm; không thêm bớt) → code kiểm lại (số liệu khớp, đúng ngôn ngữ đích, link trong danh sách cho phép) → bản dịch được **lưu ở đây với trạng thái chờ duyệt** và được gửi cho khách. Những khách Đức sau đó nhận đúng bản đã lưu, không dịch lại.
+Cách hoạt động: khách nhắn tiếng Đức, nội dung chỉ có tiếng Anh → AI dịch theo SKILL `translate-answer` (giữ nguyên số liệu, link, tên sản phẩm; không thêm bớt; không có chữ tiếng Việt khi khách không dùng tiếng Việt) → code kiểm lại (số liệu khớp, đúng ngôn ngữ đích, không sót tiếng Việt, link trong danh sách cho phép).
 
-Việc của quản trị viên: đọc bản dịch, sửa cho tự nhiên nếu cần, bấm **Duyệt**. Bản đã duyệt là bản chính thức cho ngôn ngữ đó. Khi câu tiếng Anh gốc thay đổi, hệ thống tự tạo bản dịch mới chờ duyệt lại.
+- Đạt: gửi cho khách và **lưu ở đây**. Những khách Đức sau đó nhận đúng bản đã lưu, không dịch lại.
+- Không đạt: code gửi lại cho AI **danh sách lỗi** của bản vừa dịch để dịch lại, tối đa 3 lần.
+- Vẫn không đạt: không gửi gì từ bản dịch đó, bot chuyển nhân viên. **Không có bản tiếng Anh dự phòng.**
+- Mất kết nối AI: khách nhận câu báo mất kết nối cố định bằng tiếng Anh.
 
-Trả lời câu hỏi "đã có SKILL dịch rồi thì mục này để làm gì": SKILL là **quy tắc** để AI dịch đúng ở mỗi lần dịch; mục Bản dịch là **kết quả** của lần dịch đó, được lưu lại để dùng chung và để người thật kiểm tra thêm một lớp. Hai thứ bổ sung cho nhau: SKILL bảo đảm bản dịch đầu tiên đã an toàn để gửi, mục Bản dịch bảo đảm bản dùng lâu dài là bản người thật đã đọc.
-
-Cài đặt liên quan (Cấu hình → `translation.send_unapproved`): bật (mặc định) thì gửi bản dịch máy ngay khi qua kiểm tra; tắt (chế độ chặt) thì chỉ gửi bản đã duyệt, chưa duyệt gửi tiếng Anh.
+**Không cần duyệt bản dịch.** Quản trị viên có thể mở mục này để xem lại hoặc sửa cho tự nhiên hơn; bản sửa tay cũng phải qua đúng các kiểm tra trên mới được dùng. Khi nội dung gốc thay đổi, hệ thống tự dịch lại.
 
 Mục này cũng chứa **bản dịch đoạn tri thức** (nhãn "đoạn tri thức (dịch)") và **câu AI viết từ tài liệu** (nhãn "câu AI viết từ tài liệu"): mọi nội dung AI đã dịch hoặc viết rồi gửi cho khách đều xem lại được ở đây.
 

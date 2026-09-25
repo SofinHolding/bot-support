@@ -121,7 +121,8 @@ export class BotPipeline {
 
     // ================= Admin: lệnh console đã chuyển sang web =================
     if (isAdmin && ADMIN_COMMAND.test(rawText)) {
-      const r = await resolver.forTemplate("admin-console-moved", "vi", { });
+      const vi = await resolver.forTemplate("admin-console-moved", "vi", { });
+      const r = vi.blocked ? await resolver.forTemplate("admin-console-moved", "en", { }) : vi; // tin cho admin: dịch không đạt thì dùng bản gốc
       const text = r.text.replace("{URL}", this.d.adminWebUrl);
       await this.send(batch.chatId, text, `admin:${items[0]!.updateId}`);
       return { status: "ok", replies: [text], decisionKind: "ADMIN_POINTER" };
@@ -168,7 +169,9 @@ export class BotPipeline {
       let llmDown = false;
       if (vision?.has_secret) {
         try {
-          extraReplies.push((await resolver.forTemplate(IMAGE_COVER_SECRET_ID, lang)).text);
+          // cảnh báo ảnh chứa key cùng loại với cảnh báo bảo mật: dịch nhiều lần vẫn không đạt thì gửi bản gốc tiếng Anh, không bỏ cảnh báo
+          const warn = await resolver.forTemplate(IMAGE_COVER_SECRET_ID, lang);
+          extraReplies.push(warn.blocked ? (await resolver.forTemplate(IMAGE_COVER_SECRET_ID, "en")).text : warn.text);
         } catch (e) {
           if (!(e instanceof LlmUnavailableError) || e.badOutput) throw e;
           llmDown = true;
@@ -252,14 +255,19 @@ export class BotPipeline {
         result.trace.notes.push(`ràng buộc ngôn ngữ: ${langProblem}`);
         outcome = { kind: "ESCALATE", tier: outcome.tier, reason: `không gửi được câu trả lời đúng ngôn ngữ của khách: ${langProblem}`.slice(0, 200) }; // không gắn sourceTemplateId: câu tri thức bị chặn không được vào ticket của chủ đề trước đó
         built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
-        if (lang !== "vi" && built.texts.some(looksVietnamese)) built = await this.buildReply(outcome, "en", loaded.pendingIssue, supportSummary); // template chuyển người thật cũng không được có tiếng Việt
+        // Câu chuyển người thật cũng dịch nhiều lần không đạt (hiếm): khách vẫn phải được báo là đã chuyển người thật. Lối cuối cùng là bản gốc
+        // tiếng Anh của câu đó (không bao giờ tiếng Việt cho khách không dùng tiếng Việt), có ghi vết.
+        if (built.blocked || !built.texts.length || (lang !== "vi" && built.texts.some(looksVietnamese))) {
+          result.trace.notes.push(`câu chuyển người thật không dịch được sang ${lang}: gửi bản gốc tiếng Anh (${(built.blocked ?? "").slice(0, 120)})`);
+          built = await this.buildReply(outcome, "en", loaded.pendingIssue, supportSummary);
+        }
       }
       // Dấu vết các khối của workflow cho quản trị viên xem lại ở mục "Vì sao bot trả lời thế này"
       const stages = [
         "precheck: đạt (bảo mật, chống spam, che dữ liệu)",
         `ngôn ngữ: ${lang} (${result.lang ? "AI xác định, code kiểm lại" : langRes.update || detectLanguage(masked) ? "code nhận diện" : "ngôn ngữ đã ghi nhớ / mặc định"})`,
         `chế độ phản hồi: ${firstMode ?? "-"}`,
-        `translation validator: ${firstMode === "blocked" ? "KHÔNG đạt" : firstMode === "fallback_en" ? "không có bản dịch đạt -> dùng bản tiếng Anh đã duyệt" : firstMode === "machine_translation" ? "đạt (số liệu, link, tên sản phẩm, ngôn ngữ đích)" : "không cần dịch máy"}`,
+        `translation validator: ${firstMode === "blocked" ? "KHÔNG đạt sau nhiều lần dịch lại -> chuyển nhân viên" : firstMode === "machine_translation" || firstMode === "stored_translation" ? "đạt (số liệu, link, tên sản phẩm, ngôn ngữ đích)" : "không cần dịch"}`,
         `policy validator: ${langProblem ? `KHÔNG đạt -> chuyển nhân viên (${langProblem.slice(0, 120)})` : "đạt"}`,
       ];
       result.trace.notes.push(...stages.map((x) => `workflow · ${x}`));
@@ -429,12 +437,14 @@ export class BotPipeline {
         // Một số template escalate cụ thể (esc-wallet-create...) trỏ answer_from về fp-12-escalate: cùng khối {SUPPORT_SUMMARY}.
         if (supportSummary && isEscalationTemplate(this.d.live.index.get(outcome.templateId))) vars.SUPPORT_SUMMARY = await supportSummary();
         const r = await resolver.forTemplate(outcome.templateId, lang, vars);
+        if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
         return { texts: [r.text], lang: r.lang, note: r.note, mode: r.mode };
       }
       case "ESCALATE": {
         const vars: Record<string, string> = {};
         if (supportSummary) vars.SUPPORT_SUMMARY = await supportSummary();
         const r = await resolver.forTemplate(ESCALATE_TEMPLATE_ID, lang, vars);
+        if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
         return { texts: [r.text], lang: r.lang, note: r.note, mode: r.mode };
       }
       case "GROUNDED": {
@@ -469,7 +479,8 @@ export class BotPipeline {
    *  2. SKILL verify-handoff (LLM): xác nhận nội dung đúng nguồn, không vi phạm giới hạn nghiệp vụ (R1-R3).
    * Không đạt ở bước nào -> bỏ khối này (KHÔNG gửi câu trả lời rỗng: vẫn còn câu FP-12 + ticket, chỉ thiếu phần tóm tắt).
    * Đạt cả hai -> dịch sang đúng NGÔN NGỮ KHÁCH ĐANG DÙNG qua `resolver.translateFreeform` (cùng SKILL dịch, cùng
-   * kiểm chứng `translationProblems` như mọi nội dung khác); dịch lỗi/không đạt -> gửi nguyên văn tiếng Anh.
+   * kiểm chứng `translationProblems` như mọi nội dung khác, dịch lại kèm lỗi khi không đạt); vẫn không đạt -> bỏ khối này
+   * (không gửi bản tiếng Anh cho khách dùng ngôn ngữ khác).
    */
   private async buildSupportSummaryVar(active: EpisodeRow | null, lang: string): Promise<string> {
     if (!active) return "";
@@ -497,8 +508,12 @@ export class BotPipeline {
       }
     }
     const en = `📋 Summary to send to support (tap to copy):\n\`\`\`\n${body}\n\`\`\``;
-    const { text: block } = await this.d.resolver.translateFreeform(en, lang);
-    return `\n\n${block}`;
+    const tr = await this.d.resolver.translateFreeform(en, lang);
+    if (!tr.ok) {
+      this.log("warn", "khối tóm tắt chuyển hỗ trợ: dịch nhiều lần vẫn không đạt, bỏ khối này", { episodeId: active.id, lang, note: tr.note.slice(0, 200) });
+      return "";
+    }
+    return `\n\n${tr.text}`;
   }
 
   /** Tạo hoặc nối tiếp ticket khi chuyển cho người thật. */

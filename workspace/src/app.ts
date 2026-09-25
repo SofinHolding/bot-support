@@ -131,7 +131,7 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   }
   await live.rebuild();
 
-  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);
+  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
   const knowledge = new PgKnowledge(kb, embedder);
   const media = new MediaStore(cfg.MEDIA_DIR);
   const pipeline = new BotPipeline({ db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge, media, ownerId: cfg.ownerId, adminWebUrl: cfg.PUBLIC_ADMIN_URL, log });

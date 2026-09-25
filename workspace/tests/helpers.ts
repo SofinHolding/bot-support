@@ -35,6 +35,9 @@ export class FakeChannel implements Channel {
   }
 }
 
+/** Bản dịch giả sang tiếng Hàn viết bằng chữ Hàn (qua được kiểm tra chữ viết đích); giữ nguyên URL và con số */
+export const fakeKorean = (text: string): string => `번역 ${text.replace(/https?:\/\/\S+|[A-Za-z]+/g, (m) => (m.startsWith("http") ? m : "번역"))}`;
+
 export function fakeLlm(over: Partial<LlmPort> = {}): LlmPort {
   return {
     understand: async (r) => ({ language: "unknown", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }),
@@ -103,7 +106,7 @@ export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[
   await ops.setSetting("router.mode", opts.mode ?? "hybrid", "test");
   await ops.setSetting("router.tier3_mode", "extractive", "test"); // test kiểm luồng trích nguyên văn; chế độ sinh có test riêng
   settings.invalidate();
-  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);
+  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
   const pipeline = new BotPipeline({
     db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge: new PgKnowledge(kb, embedder),
     ownerId, adminWebUrl: "https://admin.example.test", now: () => clock.now,

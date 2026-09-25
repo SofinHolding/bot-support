@@ -4,7 +4,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ResponseResolver } from "../src/bot/resolver";
-import { parseKnowledgeDoc } from "../src/core/knowledge";
+import { parseKnowledgeDoc, sha1 } from "../src/core/knowledge";
 import { detectLanguage, looksVietnamese, sourceLangOf } from "../src/core/language";
 import { NETWORK_DISCONNECTED_EN } from "../src/core/fixed-messages";
 import { LlmUnavailableError, type GroundedChunk, type KnowledgeHit, type LlmPort } from "../src/core/ports";
@@ -226,10 +226,11 @@ describe("bot: trả lời đúng ngôn ngữ của khách, không bao giờ ti�
     hits = [viChunk];
     translateImpl = before;
   });
-  it("đoạn tiếng Anh mà dịch sang ngôn ngữ khác lỗi -> vẫn gửi nguyên văn tiếng Anh đã duyệt (như mọi đường khác)", async () => {
+  it("đoạn tiếng Anh mà dịch sang ngôn ngữ khác lỗi (cả 3 lần) -> chuyển người thật, KHÔNG gửi nguyên văn tiếng Anh", async () => {
     hits = [enChunk];
     const reply = await ask(7109, "tokenomics 베스팅 일정 설명해 주세요");
-    expect(reply).toBe(`${enChunk.text}\n\n${URL_OK}`);
+    expect(isEscalation(reply)).toBe(true);
+    expect(reply).not.toContain(enChunk.text);
   });
 
   it("lớp chặn cuối: template answer:en do admin nạp nhầm bằng tiếng Việt cũng không tới khách không dùng tiếng Việt", async () => {
@@ -239,40 +240,73 @@ describe("bot: trả lời đúng ngôn ngữ của khách, không bao giờ ti�
     const en = await ask(7110, "zebra unicorn phrase");
     expect(isEscalation(en)).toBe(true);
     expect(looksVietnamese(en)).toBe(false);
+    translateImpl = (r) => r.text; // bộ dịch hoạt động bình thường
     const vi = await ask(7111, "zebra unicorn phrase, cho tôi hỏi giúp với ạ");
     expect(looksVietnamese(vi)).toBe(true); // khách dùng tiếng Việt thì nhận tiếng Việt bình thường
   });
 });
 
-describe("resolver.dynamic: chế độ chặt và cùng ngôn ngữ", () => {
+describe("resolver.dynamic: luôn dịch, dịch lại kèm lỗi khi không đạt, không có bản dự phòng", () => {
   let w: World;
   let calls = 0;
+  let seen: (string[] | undefined)[] = [];
   beforeAll(async () => {
-    w = await makeWorld({ llm: fakeLlm({ translate: async (r) => { calls++; return r.text; } }) });
+    w = await makeWorld();
   });
   afterAll(() => w.close());
   const KO = "잠긴 토큰은 최대 180개월에 걸쳐 해제됩니다.";
-  const make = (approvedOnly: boolean, out: (lang: string) => string = (l) => (l === "ko" ? KO : `Locked tokens unlock over 180 months. ${l}`)) =>
-    new ResponseResolver(w.kb, fakeLlm({ translate: async (r) => { calls++; return out(r.lang); } }), () => w.live.index, () => w.live.urlHosts, async () => !approvedOnly);
+  const make = (out: (lang: string, attempt: number) => string = (l) => (l === "ko" ? KO : `Locked tokens unlock over 180 months. ${l}`)) =>
+    new ResponseResolver(w.kb, fakeLlm({ translate: async (r) => { calls++; seen.push(r.problems); return out(r.lang, calls); } }), () => w.live.index, () => w.live.urlHosts);
+  const reset = async () => { calls = 0; seen = []; await w.db.query("DELETE FROM template_translations WHERE template_id LIKE 'chunk:%'"); };
 
   it("cùng ngôn ngữ -> nguyên văn, không gọi LLM", async () => {
-    calls = 0;
-    expect(await make(false).dynamic(VI_TEXT, "vi", "vi")).toMatchObject({ text: VI_TEXT, lang: "vi", translated: false });
+    await reset();
+    expect(await make().dynamic(VI_TEXT, "vi", "vi")).toMatchObject({ text: VI_TEXT, lang: "vi", translated: false });
     expect(calls).toBe(0);
   });
-  it("chế độ chặt (không gửi bản dịch máy chưa duyệt): nguồn tiếng Việt bị chặn, nguồn tiếng Anh giữ nguyên văn tiếng Anh", async () => {
-    const strict = make(true);
-    expect(await strict.dynamic(VI_TEXT, "en", "vi")).toMatchObject({ blocked: true, text: "" });
-    expect(await strict.dynamic("Locked tokens unlock over 180 months.", "ko", "en")).toMatchObject({ text: "Locked tokens unlock over 180 months.", lang: "en", translated: false });
+  it("mặc định sourceLang = en; dịch đạt -> gửi bản dịch và lưu lại, lượt sau không gọi LLM", async () => {
+    await reset();
+    expect(await make().dynamic("Locked tokens unlock over 180 months.", "ko")).toMatchObject({ text: KO, lang: "ko", translated: true, mode: "machine_translation" });
+    expect(await make().dynamic("Locked tokens unlock over 180 months.", "ko")).toMatchObject({ text: KO, mode: "stored_translation" });
+    expect(calls).toBe(1);
   });
-  it("mặc định sourceLang = en (giữ hành vi cũ cho nơi gọi chưa biết ngôn ngữ nguồn)", async () => {
-    expect(await make(false).dynamic("Locked tokens unlock over 180 months.", "ko")).toMatchObject({ text: KO, lang: "ko", translated: true });
+  it("lần đầu còn sót tiếng Việt -> gọi lại SKILL kèm lỗi bằng tiếng Anh, lần sau đạt thì gửi", async () => {
+    await reset();
+    const src = "Token bị khóa được mở dần trong tối đa 180 tháng.";
+    const r = await make((_l, n) => (n === 1 ? "Locked tokens được mở dần over 180 tháng." : "Locked tokens are unlocked gradually over a maximum of 180 months.")).dynamic(src, "en", "vi");
+    expect(r).toMatchObject({ lang: "en", translated: true, mode: "machine_translation" });
+    expect(calls).toBe(2);
+    expect(seen[0]).toBeUndefined();
+    expect(seen[1]!.join(" ")).toMatch(/Vietnamese/);
+    expect(looksVietnamese(seen[1]!.join(" "))).toBe(false);
   });
-  it("model 'dịch' sang tiếng Hàn mà trả tiếng Anh (sai ngôn ngữ đích): không gửi bản dịch đó; nguồn en -> nguyên văn en, nguồn vi -> chặn", async () => {
-    await w.db.query("DELETE FROM template_translations WHERE template_id LIKE 'chunk:%'");
-    const wrongLang = make(false, () => "Locked tokens unlock over 180 months.");
-    expect(await wrongLang.dynamic("Locked tokens unlock over 180 months.", "ko", "en")).toMatchObject({ lang: "en", translated: false });
+  it("dịch sang tiếng Hàn mà cứ trả tiếng Anh -> dịch lại đủ 3 lần rồi chặn; nguồn tiếng Anh cũng KHÔNG rơi về nguyên văn tiếng Anh", async () => {
+    await reset();
+    const wrongLang = make(() => "Locked tokens unlock over 180 months.");
+    expect(await wrongLang.dynamic("Locked tokens unlock over 180 months.", "ko", "en")).toMatchObject({ blocked: true, text: "", mode: "blocked" });
+    expect(calls).toBe(3);
     expect(await wrongLang.dynamic(VI_TEXT, "ko", "vi")).toMatchObject({ blocked: true });
+  });
+  it("bản dịch đã lưu nhưng không đạt kiểm tra -> không dùng, dịch lại", async () => {
+    await reset();
+    const src = "Locked tokens unlock over 180 months.";
+    await w.kb.saveTranslation(`chunk:${sha1(src)}`, "ko", "Mở khoá trong 180 tháng", sha1(src), "human", "approved");
+    expect(await make().dynamic(src, "ko", "en")).toMatchObject({ text: KO, mode: "machine_translation" });
+    expect(calls).toBe(1);
+  });
+});
+
+describe("resolver.forTemplate: câu trả lời mẫu cũng luôn qua AI dịch, không có bản tiếng Anh dự phòng", () => {
+  let w: World;
+  beforeAll(async () => { w = await makeWorld(); });
+  afterAll(() => w.close());
+
+  it("dịch không đạt sau 3 lần -> blocked (bên gọi chuyển người thật), không trả bản tiếng Anh", async () => {
+    let calls = 0;
+    const r = new ResponseResolver(w.kb, fakeLlm({ translate: async (req) => { calls++; return req.text; } }), () => w.live.index, () => w.live.urlHosts);
+    const id = w.live.index.templates.find((t) => t.answers.en && !t.answers.ko && !t.answer_from)!.id;
+    expect(await r.forTemplate(id, "ko")).toMatchObject({ blocked: true, text: "", mode: "blocked" });
+    expect(calls).toBe(3);
   });
 });
 
@@ -284,36 +318,39 @@ describe("resolver.translateFreeform: dịch văn bản tự do (khối tóm t�
 
   it("cùng ngôn ngữ nguồn -> nguyên văn, không gọi LLM", async () => {
     const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new Error("không được gọi"); } }), () => w.live.index, () => w.live.urlHosts);
-    expect(await r.translateFreeform(EN, "en")).toEqual({ text: EN, translated: false });
+    expect(await r.translateFreeform(EN, "en")).toEqual({ ok: true, text: EN, translated: false });
   });
   it("dịch đạt kiểm tra (đúng chữ viết đích, không đổi số liệu) -> dùng bản dịch, KHÔNG lưu vào template_translations", async () => {
     const r = new ResponseResolver(w.kb, fakeLlm({ translate: async (req) => `[${req.lang}] ${req.text}` }), () => w.live.index, () => w.live.urlHosts);
     // "fr" không có chữ viết riêng (SCRIPT_RE): bản dịch giả vẫn qua được kiểm tra chữ Latin, đúng như dịch máy tiếng Pháp thật
-    expect(await r.translateFreeform(EN, "fr")).toEqual({ text: `[fr] ${EN}`, translated: true });
+    expect(await r.translateFreeform(EN, "fr")).toEqual({ ok: true, text: `[fr] ${EN}`, translated: true });
     const saved = await w.db.query("SELECT * FROM template_translations WHERE text LIKE '%cannot log in%'");
     expect(saved.rows).toHaveLength(0);
   });
-  it("model không thực sự đổi sang chữ viết đích (vd giả 'dịch' tiếng Hàn mà vẫn để tiếng Anh) -> không đạt kiểm tra, rơi về nguyên văn nguồn", async () => {
+  it("model không thực sự đổi sang chữ viết đích -> không đạt sau 3 lần, KHÔNG rơi về nguyên văn nguồn", async () => {
     const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => EN }), () => w.live.index, () => w.live.urlHosts); // "dịch" sang ko nhưng vẫn trả tiếng Anh
-    expect(await r.translateFreeform(EN, "ko")).toEqual({ text: EN, translated: false });
+    expect(await r.translateFreeform(EN, "ko")).toMatchObject({ ok: false });
   });
-  it("bản dịch làm đổi số liệu -> không đạt, rơi về nguyên văn nguồn", async () => {
-    const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => "[fr] Issue: cannot log in. Customer reported: login fails with error 999." }), () => w.live.index, () => w.live.urlHosts);
-    expect(await r.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
+  it("bản dịch đổi số liệu lần đầu -> gọi lại kèm lỗi về con số; lần sau đúng thì dùng", async () => {
+    const seen: (string[] | undefined)[] = [];
+    const r = new ResponseResolver(w.kb, fakeLlm({ translate: async (req) => { seen.push(req.problems); return seen.length === 1 ? "[fr] Issue: cannot log in. Customer reported: login fails with error 999." : `[fr] ${EN}`; } }), () => w.live.index, () => w.live.urlHosts);
+    expect(await r.translateFreeform(EN, "fr")).toEqual({ ok: true, text: `[fr] ${EN}`, translated: true });
+    expect(seen[1]!.join(" ")).toMatch(/numbers changed.*504.*999/i);
   });
-  it("dịch lỗi (LLM ném exception) -> rơi về nguyên văn nguồn, không ném lỗi tiếp", async () => {
-    const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new Error("503"); } }), () => w.live.index, () => w.live.urlHosts);
-    expect(await r.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
+  it("đầu ra hỏng (LLM ném lỗi không phải mất kết nối) -> dịch lại; hỏng cả 3 lần -> không đạt", async () => {
+    let calls = 0;
+    const r = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { calls++; throw new Error("503"); } }), () => w.live.index, () => w.live.urlHosts);
+    expect(await r.translateFreeform(EN, "fr")).toMatchObject({ ok: false });
+    expect(calls).toBe(3);
   });
   it("chưa cấu hình LLM hoặc mất kết nối -> ném LlmUnavailableError (bên gọi gửi câu báo mất kết nối), không gửi nguyên văn chưa dịch", async () => {
     const none = new ResponseResolver(w.kb, undefined, () => w.live.index, () => w.live.urlHosts);
     await expect(none.translateFreeform(EN, "fr")).rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(await none.translateFreeform(EN, "en")).toEqual({ text: EN, translated: false }); // cùng ngôn ngữ: không cần LLM
+    expect(await none.translateFreeform(EN, "en")).toEqual({ ok: true, text: EN, translated: false }); // cùng ngôn ngữ: không cần LLM
     const down = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new LlmUnavailableError("503"); } }), () => w.live.index, () => w.live.urlHosts);
     await expect(down.translateFreeform(EN, "fr")).rejects.toBeInstanceOf(LlmUnavailableError);
-    // đầu ra hỏng (không phải mất kết nối) -> vẫn rơi về nguyên văn nguồn như cũ
     const bad = new ResponseResolver(w.kb, fakeLlm({ translate: async () => { throw new LlmUnavailableError("bad json", true); } }), () => w.live.index, () => w.live.urlHosts);
-    expect(await bad.translateFreeform(EN, "fr")).toEqual({ text: EN, translated: false });
+    expect(await bad.translateFreeform(EN, "fr")).toMatchObject({ ok: false });
   });
 });
 
@@ -400,7 +437,9 @@ describe("rà soát: các đường gửi khác nhau đều không để lọt t
     await w.say(8101, "koala walrus phrase 부탁드립니다");
     const reply = w.channel.textsTo(8101).at(-1)!;
     expect(looksVietnamese(reply)).toBe(false);
-    expect(reply).toContain("approved English answer");
+    // bộ dịch giả trả "[ko] ..." (không phải chữ Hàn): dịch lại 3 lần vẫn không đạt -> chuyển người thật, không gửi bản tiếng Anh
+    expect(reply).not.toContain("approved English answer");
+    expect(reply).toContain("@interlink_technicalsupport");
   });
   it("lưới an toàn cuối: cảnh báo ảnh chứa key đi đường riêng (không qua lớp chặn thứ nhất) vẫn không được có tiếng Việt cho khách khác", async () => {
     const resolver = w.pipeline["d"].resolver as unknown as { forTemplate: (id: string, lang: string, vars?: Record<string, string>) => Promise<unknown> };

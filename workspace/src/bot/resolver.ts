@@ -1,28 +1,36 @@
 /**
- * ResponseResolver: từ template id -> văn bản gửi khách.
- * - Bản dịch admin đã cung cấp (answer:xx) > bản dịch đã lưu (khớp source_hash; bản admin đã duyệt/sửa thay thế bản máy) > dịch MỘT LẦN > tiếng Anh.
- * - Bản dịch máy chỉ được gửi khi qua kiểm tra: URL trong whitelist, giữ nguyên URL / @handle / tên sản phẩm, không vượt giới hạn Telegram.
- *   Nó được lưu 'pending' để admin duyệt hoặc sửa ở mục Bản dịch. Chế độ chặt (translation.send_unapproved = false): chỉ gửi bản đã duyệt.
- * - Giữ nguyên URL, tên sản phẩm, handle (kiểm tra sau khi dịch).
+ * ResponseResolver: nội dung đã duyệt (template / đoạn tri thức / câu hỏi lại / khối tóm tắt) -> văn bản gửi khách bằng ĐÚNG ngôn ngữ của khách.
+ * - Khách dùng đúng ngôn ngữ gốc của nội dung -> gửi nguyên văn. Khác ngôn ngữ -> LUÔN dịch bằng SKILL translate-answer.
+ *   Không có bước admin duyệt bản dịch, không có bản dự phòng bằng tiếng Anh.
+ * - Mọi bản dịch qua kiểm tra bằng code (`translateChecked`): giữ nguyên URL / @handle / tên sản phẩm / con số, URL trong whitelist,
+ *   đúng chữ viết đích, KHÔNG có tiếng Việt khi khách không dùng tiếng Việt. Không đạt -> gọi lại SKILL kèm danh sách lỗi
+ *   (`translationFeedback`), tối đa `TRANSLATE_ATTEMPTS` lần. Vẫn không đạt -> `blocked`: bên gọi chuyển người thật.
+ * - Mất kết nối LLM (hoặc chưa cấu hình) -> ném `LlmUnavailableError`: bên gọi gửi câu báo mất kết nối cố định bằng tiếng Anh.
+ * - Bản dịch đạt được lưu lại (template_translations) để lượt sau không phải dịch lại; bản đã lưu cũng phải qua đúng các kiểm tra trên.
  */
 import { checkOutput, TELEGRAM_MAX_CHARS } from "../core/gate";
 import { sha1 } from "../core/knowledge";
 import { looksVietnamese, scriptProblem } from "../core/language";
 import { LlmUnavailableError, usableLlm, type LlmPort } from "../core/ports";
-import { translationProblems } from "../core/translate";
+import { translationFeedback, translationProblems } from "../core/translate";
 import type { TemplateIndex } from "../core/template-index";
 import type { KbRepo } from "../db/repo-kb";
+
+/** Số lần gọi SKILL dịch cho một nội dung (lần đầu + các lần dịch lại kèm lỗi) */
+export const TRANSLATE_ATTEMPTS = 3;
 
 export interface Resolved {
   text: string;
   lang: string; // ngôn ngữ thực sự dùng để gửi
   translated: boolean;
   /** Chế độ phản hồi đã dùng (khối "Xác định chế độ phản hồi" của workflow) */
-  mode?: "verbatim" | "approved_translation" | "stored_translation" | "machine_translation" | "fallback_en" | "blocked";
+  mode?: "verbatim" | "approved_translation" | "stored_translation" | "machine_translation" | "blocked";
   note?: string;
-  /** true = KHÔNG có văn bản an toàn để gửi (vd đoạn tiếng Việt không dịch được cho khách không dùng tiếng Việt): bên gọi phải chuyển người thật */
+  /** true = KHÔNG có văn bản an toàn để gửi (dịch nhiều lần vẫn không đạt kiểm tra): bên gọi phải chuyển người thật */
   blocked?: boolean;
 }
+
+type Checked = { ok: true; text: string; attempts: number } | { ok: false; note: string };
 
 export class ResponseResolver {
   constructor(
@@ -30,9 +38,34 @@ export class ResponseResolver {
     private readonly llm: LlmPort | undefined,
     private readonly getIndex: () => TemplateIndex,
     private readonly getHosts: () => Set<string>,
-    /** true (mặc định) = gửi bản dịch máy đã qua kiểm tra dù admin chưa duyệt; false = chỉ gửi bản đã duyệt. */
-    private readonly sendUnapproved: () => Promise<boolean> = async () => true,
   ) {}
+
+  /** Lỗi của một bản dịch (rỗng = đạt): kiểm tra đầu ra chung + trung thành với nguồn */
+  private problems(source: string, out: string, lang: string, maxChars?: number): string[] {
+    const chk = checkOutput(out, { urlHostWhitelist: this.getHosts(), maxChars });
+    return [...chk.problems, ...translationProblems(source, out, lang)];
+  }
+
+  /**
+   * Dịch có kiểm tra: gọi SKILL dịch, kiểm bằng code, sai thì dịch lại kèm danh sách lỗi (tiếng Anh) tới khi đạt hoặc hết lượt.
+   * Mất kết nối -> ném LlmUnavailableError (không nuốt). Đầu ra hỏng (JSON sai, đổi URL/handle...) tính là một lần không đạt.
+   */
+  private async translateChecked(text: string, lang: string, from: string, maxChars?: number): Promise<Checked> {
+    const llm = usableLlm(this.llm);
+    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
+    let problems: string[] = [];
+    for (let attempt = 1; attempt <= TRANSLATE_ATTEMPTS; attempt++) {
+      try {
+        const out = await llm.translate({ text, lang, from, problems: problems.length ? translationFeedback(problems) : undefined });
+        problems = this.problems(text, out, lang, maxChars);
+        if (!problems.length) return { ok: true, text: out, attempts: attempt };
+      } catch (e) {
+        if (e instanceof LlmUnavailableError && !e.badOutput) throw e; // mất kết nối: bên gọi gửi câu báo mất kết nối
+        problems = [(e as Error).message.slice(0, 160)];
+      }
+    }
+    return { ok: false, note: `dịch ${TRANSLATE_ATTEMPTS} lần vẫn không đạt kiểm tra: ${problems.join("; ")}` };
+  }
 
   async forTemplate(templateId: string, lang: string, vars: Record<string, string> = {}): Promise<Resolved> {
     const index = this.getIndex();
@@ -47,98 +80,54 @@ export class ResponseResolver {
         .replace(/\{ISSUE\}/g, () => vars.ISSUE ?? "")
         .replace(/\{SUPPORT_SUMMARY\}/g, () => vars.SUPPORT_SUMMARY ?? "")
         .trimEnd();
-    // Bản dịch admin nhập / bản dịch đã lưu bằng tiếng Việt cho khách không dùng tiếng Việt là lỗi nhập liệu: bỏ qua, đi tiếp đường dịch/tiếng Anh
+    // Bản dịch admin nhập sẵn trong nội dung bằng tiếng Việt cho khách không dùng tiếng Việt là lỗi nhập liệu: bỏ qua, đi đường dịch
     const wrongLang = (s: string) => lang !== "vi" && (looksVietnamese(s) || !!scriptProblem(s, lang));
 
     if (lang === "en") return { text: fill(en), lang: "en", translated: false, mode: "verbatim" };
     const own = src.answers[lang];
-    if (own && !wrongLang(own)) return { text: fill(own), lang, translated: false, mode: "approved_translation" }; // bản dịch admin soạn sẵn trong template
+    if (own && !wrongLang(own)) return { text: fill(own), lang, translated: false, mode: "approved_translation" }; // nội dung đã duyệt viết sẵn bằng ngôn ngữ này
 
     const hash = sha1(en);
     const stored = await this.kb.getTranslation(src.id, lang);
-    const loose = await this.sendUnapproved();
-    if (stored && stored.source_hash === hash && !wrongLang(stored.text)) {
-      if (stored.status === "approved" || loose) return { text: fill(stored.text), lang, translated: true, mode: stored.status === "approved" ? "approved_translation" : "stored_translation" };
-      return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `bản dịch ${lang} đang chờ duyệt: gửi nguyên văn tiếng Anh` };
+    if (stored && stored.source_hash === hash && !this.problems(en, stored.text, lang, TELEGRAM_MAX_CHARS).length) {
+      return { text: fill(stored.text), lang, translated: true, mode: "stored_translation" };
     }
-
-    const llm = usableLlm(this.llm);
-    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
-    try {
-      const out = await llm.translate({ text: en, lang, from: "en" });
-      const chk = checkOutput(out, { urlHostWhitelist: this.getHosts(), maxChars: TELEGRAM_MAX_CHARS });
-      const faithful = translationProblems(en, out, lang);
-      if (!chk.ok || faithful.length) return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `bản dịch bị chặn: ${[...chk.problems, ...faithful].join("; ")}` };
-      await this.kb.saveTranslation(src.id, lang, out, hash, "llm", "pending");
-      if (loose) return { text: fill(out), lang, translated: true, mode: "machine_translation" };
-      return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `đã tạo bản dịch ${lang} chờ duyệt: gửi nguyên văn tiếng Anh` };
-    } catch (e) {
-      if (e instanceof LlmUnavailableError && !e.badOutput) throw e; // mất kết nối: bên gọi gửi câu báo mất kết nối
-      return { text: fill(en), lang: "en", translated: false, mode: "fallback_en", note: `dịch lỗi: ${(e as Error).message.slice(0, 120)}` };
-    }
+    const r = await this.translateChecked(en, lang, "en", TELEGRAM_MAX_CHARS);
+    if (!r.ok) return { text: "", lang, translated: false, blocked: true, mode: "blocked", note: r.note };
+    await this.kb.saveTranslation(src.id, lang, r.text, hash, "llm", "pending").catch(() => undefined);
+    return { text: fill(r.text), lang, translated: true, mode: "machine_translation", note: r.attempts > 1 ? `dịch lại ${r.attempts - 1} lần mới đạt` : undefined };
   }
 
   /**
-   * Dịch một đoạn văn bản TỰ DO (không gắn với template/tri thức nào, vd khối tóm tắt chuyển hỗ trợ core/handoff.ts)
-   * sang `lang`, qua ĐÚNG SKILL dịch (`llm.translate`) và kiểm chứng như mọi nội dung khác (translationProblems:
-   * không đổi/bịa số liệu, không sót tiếng Việt, đúng chữ viết đích). KHÔNG lưu vào template_translations (nội dung
-   * là riêng theo từng lượt, không phải thứ admin cần duyệt một lần rồi dùng lại như bản dịch template/tri thức).
-   * Dịch lỗi hoặc không đạt kiểm tra -> trả về nguyên văn `from` (mặc định coi là an toàn để gửi thẳng, như `en`).
+   * Dịch một đoạn văn bản TỰ DO (không gắn với nội dung nào trong kho, vd khối tóm tắt chuyển hỗ trợ core/handoff.ts)
+   * sang `lang`, qua ĐÚNG SKILL dịch và đúng các kiểm tra như mọi nội dung khác. KHÔNG lưu (nội dung riêng theo từng lượt).
+   * Dịch nhiều lần vẫn không đạt -> `{ ok: false }`: bên gọi quyết định (không có bản dự phòng bằng ngôn ngữ nguồn).
    */
-  async translateFreeform(text: string, lang: string, from = "en"): Promise<{ text: string; translated: boolean }> {
-    if (lang === from) return { text, translated: false };
-    const llm = usableLlm(this.llm);
-    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
-    try {
-      const out = await llm.translate({ text, lang, from });
-      const chk = checkOutput(out, { urlHostWhitelist: this.getHosts() });
-      const faithful = translationProblems(text, out, lang);
-      if (chk.ok && !faithful.length) return { text: out, translated: true };
-    } catch (e) {
-      if (e instanceof LlmUnavailableError && !e.badOutput) throw e;
-      /* bản dịch hỏng: rơi về nguyên văn bên dưới */
-    }
-    return { text, translated: false };
+  async translateFreeform(text: string, lang: string, from = "en"): Promise<{ ok: true; text: string; translated: boolean } | { ok: false; note: string }> {
+    if (lang === from) return { ok: true, text, translated: false };
+    const r = await this.translateChecked(text, lang, from);
+    return r.ok ? { ok: true, text: r.text, translated: true } : r;
   }
 
   /**
-   * Đưa một đoạn tri thức tới khách bằng ĐÚNG ngôn ngữ của khách (không lưu bản dịch).
-   * `sourceLang` là ngôn ngữ thật của đoạn (kho thường bằng tiếng Việt, đôi khi tiếng Anh).
+   * Đưa một đoạn nội dung đã duyệt (đoạn tri thức, câu hỏi lại khách) tới khách bằng ĐÚNG ngôn ngữ của khách.
+   * `sourceLang` là ngôn ngữ thật của đoạn.
    *  - cùng ngôn ngữ -> gửi nguyên văn, không tốn token;
-   *  - khác ngôn ngữ -> dịch; bản dịch phải qua kiểm tra bằng code (URL, handle, con số, độ dài, không sót tiếng Việt);
-   *  - không dịch được: nguồn là tiếng Anh (nội dung gốc đã duyệt của hệ thống) -> gửi nguyên văn tiếng Anh như các đường khác;
-   *    MỌI nguồn khác (đặc biệt tiếng Việt) -> `blocked`, KHÔNG gửi. Bên gọi chuyển người thật.
+   *  - khác ngôn ngữ -> dịch có kiểm tra (dịch lại kèm lỗi khi không đạt); bản dịch đạt được lưu theo hash nội dung đoạn;
+   *  - vẫn không đạt -> `blocked`, KHÔNG gửi. Bên gọi chuyển người thật.
    */
   async dynamic(text: string, lang: string, sourceLang: string = "en"): Promise<Resolved> {
     if (sourceLang === lang) return { text, lang, translated: false, mode: "verbatim" };
-    // Đệm theo nội dung đoạn: cùng đoạn, cùng ngôn ngữ thì không dịch lại (bớt một lời gọi model mạnh; admin duyệt/sửa được ở mục Bản dịch)
+    // Đệm theo nội dung đoạn: cùng đoạn, cùng ngôn ngữ thì không dịch lại (bớt một lời gọi model mạnh)
     const hash = sha1(text);
     const key = `chunk:${hash}`;
-    const loose = await this.sendUnapproved();
     const stored = await this.kb.getTranslation(key, lang);
-    if (stored && stored.source_hash === hash && (stored.status === "approved" || loose) && !translationProblems(text, stored.text, lang).length && checkOutput(stored.text, { urlHostWhitelist: this.getHosts() }).ok) {
-      return { text: stored.text, lang, translated: true, mode: stored.status === "approved" ? "approved_translation" : "stored_translation" };
+    if (stored && stored.source_hash === hash && !this.problems(text, stored.text, lang).length) {
+      return { text: stored.text, lang, translated: true, mode: "stored_translation" };
     }
-    const llm = usableLlm(this.llm);
-    let note: string | undefined;
-    if (!llm) throw new LlmUnavailableError("chưa cấu hình LLM để dịch");
-    if (!loose) note = "chế độ chặt: không gửi bản dịch máy chưa duyệt";
-    else {
-      try {
-        const out = await llm.translate({ text, lang, from: sourceLang });
-        const chk = checkOutput(out, { urlHostWhitelist: this.getHosts() });
-        const faithful = translationProblems(text, out, lang);
-        if (chk.ok && !faithful.length) {
-          await this.kb.saveTranslation(key, lang, out, hash, "llm", "pending").catch(() => undefined);
-          return { text: out, lang, translated: true, mode: "machine_translation" };
-        }
-        note = [...chk.problems, ...faithful].join("; ");
-      } catch (e) {
-        if (e instanceof LlmUnavailableError && !e.badOutput) throw e;
-        note = `dịch lỗi: ${(e as Error).message.slice(0, 120)}`;
-      }
-    }
-    if (sourceLang === "en") return { text, lang: "en", translated: false, mode: "fallback_en", note };
-    return { text: "", lang, translated: false, blocked: true, mode: "blocked", note: `không dịch được đoạn ${sourceLang} sang ${lang}: ${note}` };
+    const r = await this.translateChecked(text, lang, sourceLang);
+    if (!r.ok) return { text: "", lang, translated: false, blocked: true, mode: "blocked", note: `không dịch được đoạn ${sourceLang} sang ${lang}: ${r.note}` };
+    await this.kb.saveTranslation(key, lang, r.text, hash, "llm", "pending").catch(() => undefined);
+    return { text: r.text, lang, translated: true, mode: "machine_translation", note: r.attempts > 1 ? `dịch lại ${r.attempts - 1} lần mới đạt` : undefined };
   }
 }

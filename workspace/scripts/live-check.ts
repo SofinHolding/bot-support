@@ -86,7 +86,7 @@ async function main() {
 
   const settings = new SettingsService(ops, 0);
   const channel = new Capture();
-  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts, async () => (await settings.get())["translation.send_unapproved"]);
+  const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
   const pipeline = new BotPipeline({ db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge: new PgKnowledge(kb, embedder), ownerId: 9001, adminWebUrl: "http://admin.local", log: (lvl, msg, extra) => lvl !== "info" && console.log(`   [${lvl}] ${msg} ${extra ? JSON.stringify(extra).slice(0, 200) : ""}`) });
 
   let update = 1;

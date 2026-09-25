@@ -110,6 +110,25 @@ export function translationProblems(source: string, translated: string, targetLa
   return problems;
 }
 
+/**
+ * Đổi các lỗi kiểm tra bản dịch (`translationProblems`, `checkOutput`, lỗi URL/handle của LlmClient — viết tiếng Việt cho admin)
+ * thành lời nhắc tiếng Anh gửi lại SKILL translate-answer (`<previous_attempt_problems>`, R11). Không đưa chữ tiếng Việt vào
+ * lời nhắc để không kéo bản dịch lần sau về tiếng Việt.
+ */
+export function translationFeedback(problems: string[]): string[] {
+  return problems.map((p) => {
+    const nums = /con số \(gốc: ([^;]*); dịch: ([^)]*)\)/.exec(p);
+    if (nums) return `The numbers changed. Source numbers: ${nums[1]}. Numbers in your translation: ${nums[2]}. Keep exactly the source numbers and add no other number (R3).`;
+    if (/rỗng/.test(p)) return "The translation was empty. Translate the whole source (R1).";
+    if (/độ dài/.test(p)) return "The translation length does not match the source. Translate every sentence, add nothing, leave nothing out (R2).";
+    if (/tiếng Việt/.test(p)) return "The translation still contains Vietnamese. Rewrite every Vietnamese word in the target language; no Vietnamese diacritic letter may remain (R1a).";
+    if (/Kana/.test(p) || /chữ của ngôn ngữ đích|không phải Latin/.test(p)) return "The translation is not written in the script of the target language. Write it entirely in the target language's script (R1, R10).";
+    if (/URL|handle/.test(p)) return "A URL or @handle was changed, added or lost. Keep every protected token ⟦n⟧ exactly once and write no URL or handle yourself (R5).";
+    if (/vượt \d+ ký tự/.test(p)) return "The translation is too long for one message. Translate faithfully and concisely without adding anything (R2).";
+    return "The translation failed an automatic faithfulness check. Translate the source again, literally and completely (R2, R10).";
+  });
+}
+
 /** Tên/URL/handle cần còn nguyên; bỏ dấu "$" trước mã token ("$ITL" và "ITL" là cùng một thứ khi so khớp) */
 const protectedIn = (s: string): string[] => [...s.matchAll(PATTERNS[0]!), ...s.matchAll(PATTERNS[1]!), ...s.matchAll(PATTERNS[2]!), ...s.matchAll(PATTERNS[3]!)].map((m) => m[0].toLowerCase().replace(/^\$/, "").replace(/\s+network$/, "")); // "Interlink Network" ~ "Interlink"
 

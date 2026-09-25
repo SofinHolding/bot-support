@@ -324,28 +324,28 @@ describe("đa ngôn ngữ", () => {
     }
   });
 
-  it("chế độ chặt (translation.send_unapproved = false): chỉ gửi bản đã duyệt, chưa duyệt thì gửi nguyên văn tiếng Anh", async () => {
+  it("không cần duyệt bản dịch: bản dịch AI đạt kiểm tra được gửi ngay và lưu lại để dùng lượt sau", async () => {
     const w2 = await makeWorld({ llm: fakeLlm() });
     try {
-      await w2.ops.setSetting("translation.send_unapproved", false, "test");
       const en = w2.live.index.get("fp-2-withdraw")!.answers.en;
       await w2.say(702, "tôi muốn rút tiền");
-      expect(w2.channel.textsTo(702).at(-1)).toBe(en);
-      expect((await w2.kb.getTranslation("fp-2-withdraw", "vi"))?.status).toBe("pending");
-      await w2.kb.approveTranslation("fp-2-withdraw", "vi", "admin#9002");
-      await w2.say(702, "rút tiền thế nào");
       expect(w2.channel.textsTo(702).at(-1)).toBe(`[vi] ${en}`);
+      expect((await w2.kb.getTranslation("fp-2-withdraw", "vi"))?.text).toBe(`[vi] ${en}`);
     } finally {
       await w2.close();
     }
   });
 
-  it("dịch lỗi -> gửi bản gốc tiếng Anh", async () => {
-    const llm = fakeLlm({ translate: async () => { throw new Error("bad"); } });
+  it("dịch lỗi cả 3 lần (không phải mất kết nối) -> chuyển người thật, KHÔNG gửi câu trả lời bằng tiếng Anh", async () => {
+    let calls = 0;
+    const llm = fakeLlm({ translate: async () => { calls++; throw new Error("bad"); } });
     const w2 = await makeWorld({ llm });
     try {
       await w2.say(701, "tôi muốn rút tiền");
-      expect(w2.channel.textsTo(701).at(-1)).toBe(w2.live.index.get("fp-2-withdraw")!.answers.en);
+      const last = w2.channel.textsTo(701).at(-1)!;
+      expect(last).not.toBe(w2.live.index.get("fp-2-withdraw")!.answers.en);
+      expect(last).toContain("@interlink_technicalsupport");
+      expect(calls).toBeGreaterThanOrEqual(3);
     } finally {
       await w2.close();
     }
