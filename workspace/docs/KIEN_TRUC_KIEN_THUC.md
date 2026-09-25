@@ -64,6 +64,14 @@ Mọi xung đột dữ liệu phải được xử lý **xong** trước khi pub
 3. **Hỏi thử bot** (`src/kb/routing-check.ts`) bằng mọi câu của mục: câu bị trả lời bằng mục khác, hoặc khớp ngang hàng với mục khác, mà hai mục chưa khai báo `distinct_from`.
 4. Mục giành câu hỏi của một đoạn tài liệu mà chưa có **quyết định còn hiệu lực** trong `kb_pair_decisions`. Quyết định gắn với hash nội dung của cả hai bên; một bên đổi nội dung là quyết định hết hiệu lực (`src/kb/pair-decisions.ts`). Admin Web có nút "Ghi nhận giữ nguyên".
 5. Kiểm tra hồi quy trên bộ câu kiểm tra (bước 5): câu đang đúng thành sai thì chặn.
+6. **Nhận xét của AI theo cặp** (`reviewGate`, `blockingReviews` trong `src/kb/pair-decisions.ts`, bảng `kb_pair_reviews`): lúc
+   "Thêm nội dung", mỗi cặp giống nhau được SKILL `review-overlap` đọc; nhận xét gắn với hash nội dung hai bên. Chặn khi:
+   - AI kết luận trùng lặp / xung đột / mâu thuẫn trực tiếp / có thể thay thế mà chưa có quyết định còn hiệu lực
+     (giữ cả hai, đã sửa, thay thế);
+   - một bên đổi nội dung sau lần AI đọc, hoặc AI không đọc được (mất kết nối): cần "AI kiểm tra lại xung đột"
+     (`POST /api/kb/recheck-conflicts`).
+
+   Cùng nội dung hai bên thì dùng lại nhận xét đã ghi, không gọi AI lại.
 
 ## 5. Chọn câu trả lời lúc chạy
 
@@ -77,6 +85,16 @@ tin nhắn ─ AI hiểu (ngôn ngữ, ý định) ─┬─ ĐƯỜNG NHANH: kh
 
 - **Mọi câu trả lời lấy từ kho đều qua AI.** Đường nhanh vẫn phải qua SKILL `verify-answer`, kể cả tin nối tiếp và luật theo ảnh có kèm chữ. Sticker/emoji cũng qua SKILL `understand`. Không có chế độ trả lời bằng từ khoá khi AI lỗi.
 - **Mất kết nối LLM** (hoặc chưa cấu hình, hết ngân sách token của khách) ở bất kỳ bước nào, kể cả lúc dịch: khách nhận một câu cố định bằng tiếng Anh ghi trong mã nguồn (`src/core/fixed-messages.ts`). Ngoại lệ do code xử lý, chạy cả khi mất kết nối, luôn tiếng Anh: cảnh báo lộ seed phrase / private key và cảnh báo chống spam.
+- **Dịch** (`src/bot/resolver.ts`): nội dung khác ngôn ngữ của khách luôn được SKILL `translate-answer` dịch; code kiểm
+  (`translationProblems`, `checkOutput`); không đạt thì dịch lại kèm lỗi bằng tiếng Anh (`translationFeedback`), tối đa
+  `TRANSLATE_ATTEMPTS` lần; vẫn không đạt thì `blocked` → chuyển nhân viên. Không có bản dự phòng tiếng Anh, không có bước duyệt
+  bản dịch. Ngoại lệ duy nhất: chính câu chuyển nhân viên dịch không đạt thì gửi bản gốc tiếng Anh.
+- **"Vẫn chưa được"** (`negative` / `not_receive`) mà nội dung vừa gửi không khai báo bước tiếp theo: không chuyển nhân viên
+  ngay. Router tìm lại theo vấn đề của vụ việc, bỏ mọi nội dung đã gửi (`episodes.answersSent`: sự kiện `template_sent`,
+  `knowledge_sent`), đưa AI chọn kèm danh sách đã thử (`SelectRequest.alreadyTried`); không còn gì thì chuyển nhân viên.
+- **Nội dung mâu thuẫn chưa giải quyết** (`LiveContent.conflicts`) mà AI chọn một bên: dùng bên có phần trả lời đổi gần
+  nhất (`LiveContent.answerTimes` từ `kb_content_history`), có ghi vết; bên đó không phải bên AI chọn thì AI phải xác nhận
+  (`verify`). Cùng mốc / thiếu mốc → chuyển nhân viên.
 - Hai mục đã khai báo khác nhau cùng khớp thì cổng (`src/core/gate.ts`) trả "mơ hồ", không chọn theo thứ hạng.
 - **Hỏi lại khách** (`CLARIFY`, yêu cầu §2): khi 2–4 ứng viên (câu trả lời và/hoặc đoạn tài liệu) đều có thể đúng mà tin nhắn
   chưa đủ rõ, AI không chọn cái giống nhất mà trả `CLARIFY:<ref>,<ref>`. Code chỉ nhận khi:
