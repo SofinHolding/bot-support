@@ -50,6 +50,8 @@ export interface RouteContext {
   contextPack?: ContextPack;
   /** Lượt trước bot đã hỏi lại khách để phân biệt các mục này: lượt này chỉ chọn trong đây, không rõ nữa thì chuyển nhân viên */
   pendingClarify?: { items: string[] };
+  /** Nội dung đã gửi khách trong vụ việc đang mở ("T:<id>", "K:<chunkId>"): khách báo chưa giải quyết được thì không gửi lại */
+  answersSent?: string[];
 }
 
 export interface RouteRequest {
@@ -437,6 +439,10 @@ export async function routeHybrid(req: LlmFirstRequest, deps: RouterDeps): Promi
 }
 
 const MAX_TEMPLATE_CANDIDATES = 8;
+/** Loại phản hồi "vẫn chưa giải quyết được" */
+const NOT_SOLVED = new Set<string>(["negative", "not_receive"]);
+/** Mã gốc của mục hỏi đáp: bước n mang mã "<id>--bN" */
+const itemRoot = (id: string) => id.replace(/--b\d+$/, "");
 const MAX_CHUNK_CANDIDATES = 4;
 const NON_LATIN_LANGS = new Set(["ko", "ja", "zh", "ru", "uk", "ar", "fa", "th", "hi"]);
 
@@ -540,7 +546,10 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks") && !clarifying) {
     const target = resolveFollowUp(u.follow_up, last);
     trace.followUp = u.follow_up;
-    if (target === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: `follow-up (${u.follow_up}) sau template ${last?.id ?? "-"}`, sourceTemplateId: last?.id }, lang);
+    // "Vẫn chưa được" mà nội dung vừa gửi KHÔNG khai báo bước tiếp theo: chưa chuyển nhân viên ngay, tìm cách khác trong kho trước (bên dưới).
+    // Người duyệt đã khai báo rõ "chưa được thì chuyển nhân viên" -> làm đúng như vậy.
+    if (target === "ESCALATE" && (!NOT_SOLVED.has(u.follow_up) || last?.follow_up[u.follow_up]))
+      return done({ kind: "ESCALATE", tier: 2, reason: `follow-up (${u.follow_up}) sau template ${last?.id ?? "-"}`, sourceTemplateId: last?.id }, lang);
     if (target && index.get(target)) {
       const v = target === THANKS_TEMPLATE_ID ? "ok" : await verifyTemplate(target, undefined, u.query_en);
       if (v === "ok") return done({ kind: "TEMPLATE", templateId: target, tier: 2, via: `llm_follow_up:${u.follow_up}` }, lang);
@@ -548,6 +557,8 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     }
     trace.followUp = undefined; // template không có luật cho loại phản hồi này, hoặc AI không xác nhận -> coi như câu hỏi, tìm tiếp
   }
+  // Khách báo chưa giải quyết được và không còn bước nào đã khai báo: dùng hết cách trong kho theo ngữ cảnh trước khi chuyển nhân viên
+  let exhaust = !clarifying && u.intent === "follow_up" && NOT_SOLVED.has(u.follow_up);
 
   // Câu truy vấn của AI chỉ dùng để TÌM; vẫn phải qua kiểm tra bằng code (con số, tên sản phẩm, chữ viết). Không đạt -> dùng câu gốc.
   const pack = req.ctx.contextPack;
@@ -573,12 +584,18 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   // ---- ROUTER (chỉ ở luồng hai nhánh): FAST PATH nếu khớp CHẮC CHẮN bằng luật/điều kiện/từ khoá trên câu đã chuẩn hoá ----
   // Khách viết tiếng Anh/Việt: dùng nguyên câu. Ngôn ngữ khác: dùng bản tiếng Anh do AI dịch (đã qua kiểm tra con số, tên sản phẩm).
   // Không có bản chuẩn hoá đạt kiểm tra thì không được đi FAST PATH.
-  if (opts.fastPath && !clarifying) {
+  if (opts.fastPath && !clarifying && !exhaust) {
     const fastText = KEYWORD_LANGS.has(lang) ? req.text : queryEn;
     if (fastText) {
       const fastReq: RouteRequest = { ...req, text: fastText, norm: normalize(fastText), lang: KEYWORD_LANGS.has(lang) ? lang : "en" };
       const fast = await route(fastReq, { ...deps, llm: undefined, knowledge: undefined }); // chỉ luật + từ khoá: không AI, không tìm tri thức
       let why = fastPathReason(fastReq, fast, index);
+      // Luật nối tiếp bằng code nhận ra "vẫn chưa được" mà nội dung trước không khai báo bước tiếp theo: không chuyển nhân viên ngay
+      const fu = fast.trace.followUp;
+      if (why && fast.outcome.kind === "ESCALATE" && fu && NOT_SOLVED.has(fu) && !last?.follow_up[fu]) {
+        why = undefined;
+        exhaust = true;
+      }
       // KIỂM DUYỆT (SKILL verify-answer) — BẮT BUỘC với mọi câu trả lời lấy từ kho ở FAST PATH (từ khoá, luật, exact, tin nối tiếp):
       // khớp chỉ nói "có từ trùng", chưa nói "trả lời đúng ý". "no" -> sang nhánh AI/RAG; mất kết nối -> báo mất kết nối.
       if (why && fast.outcome.kind === "TEMPLATE") {
@@ -596,7 +613,14 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   }
 
   // ---- 2. TÌM TRONG KHO (code) — khi đang hỏi lại: ứng viên là đúng các trường hợp đã hỏi ----
-  const texts = [...new Set([req.text, queryEn].filter((x): x is string => !!x))];
+  // Khách báo chưa giải quyết được: tìm thêm theo vấn đề của vụ việc (câu "vẫn không được" không nói vấn đề là gì),
+  // và loại mọi nội dung đã gửi trong vụ việc.
+  const sent = new Set([...(req.ctx.answersSent ?? []), ...(last ? [`T:${last.id}`] : [])]);
+  const sentRoots = new Set([...sent].filter((r) => r.startsWith("T:")).map((r) => itemRoot(r.slice(2))));
+  const tried = (ref: string) => sent.has(ref) || (ref.startsWith("T:") && sentRoots.has(itemRoot(ref.slice(2))));
+  if (exhaust) trace.notes.push(`khách báo vẫn chưa giải quyết được: tìm cách khác trong kho theo ngữ cảnh, bỏ ${sent.size} nội dung đã gửi`);
+  const issueTexts = exhaust ? [req.ctx.pendingIssue, last ? last.item?.title ?? last.sets_context.issue : undefined].filter((x): x is string => !!x && x.trim().length > 2) : [];
+  const texts = [...new Set([req.text, queryEn, ...issueTexts].filter((x): x is string => !!x))];
   const scores = new Map<string, number>();
   for (const t of texts) {
     for (const h of index.hitsFor({ text: t, norm: normalize(t), imageType: req.vision?.screen_type, lastTemplateId: last?.id })) scores.set(h.templateId, Math.max(scores.get(h.templateId) ?? 0, 1));
@@ -610,6 +634,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     .sort((a, b) => b[1] - a[1])
     .map(([id]) => index.get(id))
     .filter((t): t is Template => !!t && t.response_mode === "EXACT_TEMPLATE" && !isExcluded(index, evaluator, t.id, gateInp) && !missingRequires(index, evaluator, t.id, gateInp))
+    .filter((t) => !exhaust || !tried(`T:${t.id}`))
     .slice(0, MAX_TEMPLATE_CANDIDATES);
 
   const chunkById = new Map<string, KnowledgeHit>();
@@ -619,23 +644,25 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     const searches: [string, string][] = [[req.text, lang]];
     if (queryKb) searches.push([queryKb, settings.knowledgeLang]);
     if (queryEn && queryEn !== queryKb) searches.push([queryEn, "en"]);
+    for (const t of issueTexts) searches.push([t, "en"]);
     for (const list of await Promise.all(searches.map(([q, l]) => knowledge.search(q, MAX_CHUNK_CANDIDATES, l)))) {
-      for (const h of list) if (h.score >= settings.tier3MinScore && (chunkById.get(h.chunkId)?.score ?? -1) < h.score) chunkById.set(h.chunkId, h);
+      for (const h of list) if (h.score >= settings.tier3MinScore && !(exhaust && tried(`K:${h.chunkId}`)) && (chunkById.get(h.chunkId)?.score ?? -1) < h.score) chunkById.set(h.chunkId, h);
     }
   }
   const chunks = [...chunkById.values()].sort((a, b) => b.score - a.score).slice(0, MAX_CHUNK_CANDIDATES);
 
   trace.candidates = [...templates.map((t) => t.id), ...chunks.map((c) => `K:${c.chunkId}`)];
   if (!templates.length && !chunks.length) {
-    trace.notes.push("không tìm thấy ứng viên nào trong kho");
-    return done({ kind: "ESCALATE", tier: 2, reason: "không tìm được nội dung phù hợp trong kho", sourceTemplateId: last?.id }, lang);
+    trace.notes.push(exhaust ? "không còn nội dung nào khác trong kho cho vấn đề này" : "không tìm thấy ứng viên nào trong kho");
+    return done({ kind: "ESCALATE", tier: 2, reason: exhaust ? "khách báo vẫn chưa giải quyết được; kho không còn cách nào khác cho vấn đề này" : "không tìm được nội dung phù hợp trong kho", sourceTemplateId: last?.id }, lang);
   }
 
   // ---- 3. AI CHỌN KẾT QUẢ ĐÚNG ----
   const candidates = selectCandidates(templates, chunks, index);
   let pick;
   try {
-    pick = await llm.select({ text: req.text, queryEn: queryEn ?? "", lang, candidates, context: pack });
+    const alreadyTried = exhaust ? [...sent].map((r) => (r.startsWith("T:") ? index.get(r.slice(2))?.item?.title ?? index.get(r.slice(2))?.sets_context.issue ?? r.slice(2) : `document section ${r.slice(2)}`)).slice(0, 10) : undefined;
+    pick = await llm.select({ text: req.text, queryEn: queryEn ?? "", lang, candidates, context: pack, alreadyTried });
   } catch (e) {
     return done(llmFailure(e, 2, trace, last?.id), lang);
   }
@@ -646,7 +673,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     return done({ kind: "ESCALATE", tier: 2, reason: "đã hỏi lại khách nhưng vẫn chưa phân biệt được khách cần mục nào", sourceTemplateId: pending[0]?.id ?? last?.id }, lang);
   }
   if (ref === "OFFTOPIC") return done({ kind: "OFFTOPIC", tier: 2, reason: "AI xác định tin ngoài phạm vi InterLink" }, lang);
-  if (ref === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: "AI: không tìm được ứng viên nào trả lời đúng câu hỏi", sourceTemplateId: last?.id }, lang);
+  if (ref === "ESCALATE") return done({ kind: "ESCALATE", tier: 2, reason: exhaust ? "khách báo vẫn chưa giải quyết được; AI không thấy cách nào khác trong kho" : "AI: không tìm được ứng viên nào trả lời đúng câu hỏi", sourceTemplateId: last?.id }, lang);
   if (/^CLARIFY:/i.test(ref)) {
     const refs = [...new Set(ref.slice(8).split(",").map((x) => x.trim()).filter(Boolean).map((x) => (/^[TK]:/.test(x) ? x : `T:${x}`)))];
     const refused = (why: string) => {

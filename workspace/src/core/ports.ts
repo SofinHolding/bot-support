@@ -72,6 +72,11 @@ export interface SelectRequest {
   lang: string;
   candidates: AnswerCandidate[];
   context?: ContextPack;
+  /**
+   * Khách vừa báo các câu trả lời đã gửi trong vụ việc CHƯA giải quyết được vấn đề: tên các nội dung đó (đã bị loại khỏi
+   * danh sách ứng viên). AI chỉ chọn ứng viên đưa ra cách KHÁC cho đúng vấn đề đó; không có thì ESCALATE.
+   */
+  alreadyTried?: string[];
 }
 
 export interface SelectResult {

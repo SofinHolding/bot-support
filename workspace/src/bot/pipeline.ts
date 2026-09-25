@@ -215,7 +215,7 @@ export class BotPipeline {
         const router = mode === "llm_first" ? routeLlmFirst : routeHybrid;
         try {
           result = await router(
-          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined } },
+          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
           { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge, conflicts: this.d.live.conflicts },
           );
         } finally {
@@ -339,6 +339,7 @@ export class BotPipeline {
       }
       const tid = outcomeTemplateId(outcome);
       if (tid) await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "template_sent", payload: { template_id: tid, tier: outcome.tier } }, now);
+      if (outcome.kind === "GROUNDED") await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "knowledge_sent", payload: { chunk_ids: outcome.sources.map((s) => s.chunkId) } }, now);
 
       let ticketId: number | null = null;
       if (isEsc) ticketId = await this.escalate(batch, ep?.id ?? null, outcome, tmpl, related ? lastTemplate : undefined, related ? loaded.active?.topic_group ?? null : null, masked);

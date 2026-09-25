@@ -187,7 +187,13 @@ export class LlmClient implements LlmPort {
       user: [
         {
           type: "text",
-          text: [`Customer language: ${req.lang}`, ...this.contextLines(req.context), wrap("candidates", list), wrap("user_message", req.text), req.queryEn ? `Standalone English form of the message (may be imperfect):\n${wrap("rewritten_question", req.queryEn)}` : ""].filter(Boolean).join("\n\n"),
+          text: [
+            `Customer language: ${req.lang}`,
+            ...this.contextLines(req.context),
+            req.alreadyTried?.length
+              ? `The customer says the answers already sent in this case did not solve the problem. Already sent (removed from the candidate list):\n${req.alreadyTried.map((x) => `- ${x}`).join("\n")}\nChoose a candidate only if it gives a different way to solve the SAME problem; otherwise answer ESCALATE.`
+              : "",
+            wrap("candidates", list), wrap("user_message", req.text), req.queryEn ? `Standalone English form of the message (may be imperfect):\n${wrap("rewritten_question", req.queryEn)}` : ""].filter(Boolean).join("\n\n"),
         },
       ],
       schema: SelectSchema,

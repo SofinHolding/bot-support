@@ -114,6 +114,33 @@ describe("luồng AI hiểu trước", () => {
     expect(seenSelect).toHaveLength(0);
   });
 
+  it("khách báo vẫn chưa được, còn cách khác trong kho theo ngữ cảnh -> AI chọn cách đó thay vì chuyển nhân viên ngay", async () => {
+    understand = () => U({ query_en: "how do I withdraw my tokens?" });
+    select = () => ({ ref: "T:fp-2-withdraw", reason: "" });
+    await ask(5120, "how do I withdraw my tokens?");
+    understand = () => U({ intent: "follow_up", follow_up: "negative", query_en: "I still cannot withdraw my tokens, what else can I do?" });
+    select = (r) => ({ ref: r.candidates.find((c) => c.ref.startsWith("T:"))?.ref ?? "ESCALATE", reason: "different way" });
+    const alt = await ask(5120, "it still does not work");
+    expect(seenSelect).toHaveLength(1);
+    expect(seenSelect[0]!.candidates.some((c) => c.ref === "T:fp-2-withdraw")).toBe(false);
+    expect(seenSelect[0]!.alreadyTried).toEqual(expect.arrayContaining([expect.any(String)]));
+    const picked = seenSelect[0]!.candidates.find((c) => c.ref.startsWith("T:"));
+    expect(picked).toBeDefined();
+    expect(alt.d).toMatchObject({ kind: "TEMPLATE", template_id: picked!.ref.slice(2), via: "llm_select" });
+  });
+
+  it("người duyệt đã khai báo \"chưa được thì chuyển nhân viên\" -> chuyển ngay, không tìm thêm", async () => {
+    understand = () => U({ query_en: "when is the weekly reward paid?" });
+    select = (r) => ({ ref: r.candidates.find((c) => c.ref === "T:weekly-reward-schedule")?.ref ?? "ESCALATE", reason: "" });
+    const first = await ask(5121, "when is the weekly reward paid?");
+    expect(first.d.template_id).toBe("weekly-reward-schedule");
+    understand = () => U({ intent: "follow_up", follow_up: "negative" });
+    const neg = await ask(5121, "I still did not get it");
+    expect(seenSelect).toHaveLength(0);
+    expect(neg.d.kind).toBe("ESCALATE");
+    expect(neg.d.reason).toContain("follow-up (negative)");
+  });
+
   it("tin nối tiếp ở MỌI ngôn ngữ: AI nhận ra loại phản hồi, luật của template quyết định (không hài lòng -> chuyển nhân viên; cảm ơn -> câu đã duyệt)", async () => {
     understand = () => U({ query_en: "how do I withdraw my tokens?" });
     select = () => ({ ref: "T:fp-2-withdraw", reason: "" });
@@ -122,9 +149,17 @@ describe("luồng AI hiểu trước", () => {
       expect(r.lastAnswer?.id).toBe("fp-2-withdraw"); // AI được cho biết bot vừa trả lời gì
       return U({ language: "de", intent: "follow_up", follow_up: "negative" });
     };
+    select = () => ({ ref: "ESCALATE", reason: "nothing else fits" });
     const neg = await ask(5110, "Das hilft mir nicht, es funktioniert immer noch nicht");
+    // câu trả lời trước không khai báo bước tiếp theo: bot tìm cách khác trong kho (bỏ câu đã gửi) rồi mới chuyển nhân viên
+    expect(neg.notes).toContain("khách báo vẫn chưa giải quyết được");
+    for (const r of seenSelect) {
+      expect(r.candidates.some((c) => c.ref === "T:fp-2-withdraw")).toBe(false);
+      expect(r.alreadyTried!.length).toBeGreaterThan(0);
+    }
     expect(neg.d.kind).toBe("ESCALATE");
-    expect(neg.d.reason).toContain("follow-up (negative)");
+    expect(neg.d.reason).toContain("vẫn chưa giải quyết");
+    select = () => ({ ref: "T:fp-2-withdraw", reason: "" });
 
     understand = () => U({ query_en: "how do I withdraw my tokens?" });
     await ask(5111, "how do I withdraw my tokens?");

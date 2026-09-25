@@ -121,6 +121,18 @@ export class EpisodeManager {
     return events.filter((e) => e.type === "template_sent").map((e) => String((e.payload as { template_id?: unknown }).template_id ?? "")).filter(Boolean);
   }
 
+  /** Các nội dung đã gửi khách trong vụ việc: "T:<template id>" và "K:<chunk id>" (để khi khách báo chưa giải quyết được thì không gửi lại). */
+  async answersSent(episodeId: number): Promise<string[]> {
+    const events = await this.conv.episodeEvents(episodeId);
+    const out: string[] = [];
+    for (const e of events) {
+      const p = e.payload as { template_id?: unknown; chunk_ids?: unknown };
+      if (e.type === "template_sent" && p.template_id) out.push(`T:${String(p.template_id)}`);
+      if (e.type === "knowledge_sent" && Array.isArray(p.chunk_ids)) out.push(...p.chunk_ids.map((id) => `K:${String(id)}`));
+    }
+    return [...new Set(out)];
+  }
+
   /** Sau khi định tuyến: chọn / tạo / cập nhật episode cho lượt này. */
   async finalize(inp: FinalizeInput): Promise<FinalizeResult> {
     const t = inp.template;
