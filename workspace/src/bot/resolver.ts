@@ -182,12 +182,8 @@ export class ResponseResolver {
     const src = index.resolveAnswerSource(t);
     const en = src.answers.en;
     if (!en) throw new Error(`template ${src.id} không có bản tiếng Anh`);
-    // hàm thay thế (không dùng chuỗi thay thế trực tiếp): "$&"/"$1" có thể xuất hiện trong lời khách và bị hiểu nhầm thành mẫu thay thế
-    const fill = (s: string) =>
-      s
-        .replace(/\{ISSUE\}/g, () => vars.ISSUE ?? "")
-        .replace(/\{SUPPORT_SUMMARY\}/g, () => vars.SUPPORT_SUMMARY ?? "")
-        .trimEnd();
+    // mọi biến {NAME} ({ISSUE}, {REF}, {SUPPORT_SUMMARY} của bản cũ...) điền sau khi dịch; thiếu giá trị -> rỗng
+    const fill = (s: string) => fillVars(s, vars);
     // Bản dịch admin nhập sẵn trong nội dung bằng tiếng Việt cho khách không dùng tiếng Việt là lỗi nhập liệu: bỏ qua, đi đường dịch
     const wrongLang = (s: string) => lang !== "vi" && (looksVietnamese(s) || !!scriptProblem(s, lang));
 

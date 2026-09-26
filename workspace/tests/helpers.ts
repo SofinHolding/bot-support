@@ -5,7 +5,7 @@ import { SettingsService } from "../src/core/settings";
 import type { VisionResult } from "../src/domain/types";
 import { BotPipeline } from "../src/bot/pipeline";
 import { ResponseResolver } from "../src/bot/resolver";
-import type { Channel, InboundBatch, InboundItem } from "../src/bot/types";
+import type { Channel, InboundBatch, InboundItem, MessageEntity } from "../src/bot/types";
 import { migrate, openDb, type Db } from "../src/db/db";
 import { convRepo } from "../src/db/repo-conv";
 import { kbRepo } from "../src/db/repo-kb";
@@ -16,14 +16,14 @@ import { seedContent } from "../src/kb/seed";
 import { KbService } from "../src/kb/service";
 
 export class FakeChannel implements Channel {
-  sent: { chatId: number; text: string }[] = [];
+  sent: { chatId: number; text: string; entities?: MessageEntity[] }[] = [];
   images = new Map<string, Partial<VisionResult>>();
   failSend = false;
   private nextId = 1000;
 
-  async send(chatId: number, text: string) {
+  async send(chatId: number, text: string, opts?: { entities?: MessageEntity[] }) {
     if (this.failSend) throw new Error("telegram down");
-    this.sent.push({ chatId, text });
+    this.sent.push({ chatId, text, ...(opts?.entities ? { entities: opts.entities } : {}) });
     return { messageId: this.nextId++ };
   }
   async downloadImage(fileId: string) {

@@ -15,6 +15,7 @@ import type { Template } from "../domain/types";
 import { mergeFacts, type CustomerFact } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
 import { topicKeyOf, topicKeyOfGroup } from "../core/items";
+import { buildTimeline, outcomeText, stepLabel, type StepOutcome } from "../core/handoff";
 import { cleanSummary, degradedSummary, readSummary, summaryForContext, type EpisodeSummary } from "../core/summary";
 import type { ConvRepo, EpisodeRow, EventRow, UserRow } from "../db/repo-conv";
 
@@ -74,7 +75,8 @@ export interface CommitInput {
 }
 
 export class EpisodeManager {
-  constructor(private readonly conv: ConvRepo) {}
+  /** `templateOf`: tra template đang chạy theo id (nhãn đã duyệt của bước bot đã gửi trong ngữ cảnh AI và khối tóm tắt) */
+  constructor(private readonly conv: ConvRepo, private readonly templateOf: (id: string) => Template | undefined = () => undefined) {}
 
   async load(userId: number, now: Date, s: Settings): Promise<LoadedEpisode> {
     let active = await this.conv.getActiveEpisode(userId);
@@ -107,7 +109,19 @@ export class EpisodeManager {
     if (!a) return { profile, events: [], recent: [] };
     const all = await this.conv.episodeEvents(a.id);
     // customer_fact đi riêng: không chiếm chỗ của 8 sự kiện gần nhất và không mất khi tin gốc đã được tóm tắt
-    const events = all.filter((e) => !CONTEXT_HIDDEN_EVENTS.has(e.type)).slice(-8).map((e) => fmtEvent(e, now));
+    // Kết quả của mỗi lần gửi (step_outcome) gộp vào đúng dòng "bot đã gửi", không chiếm một dòng riêng trong 8 sự kiện gần nhất
+    const outcomes = new Map<number, StepOutcome>();
+    for (const [i, e] of all.entries()) {
+      if (e.type !== "step_outcome") continue;
+      const ref = String((e.payload as { ref?: unknown }).ref ?? "");
+      const sent = all.slice(0, i).map((x, j) => ({ x, j })).filter(({ x }) => sentRefs(x).includes(ref)).pop();
+      if (sent && !outcomes.has(sent.j)) outcomes.set(sent.j, (e.payload as { outcome: StepOutcome }).outcome);
+    }
+    const events = all
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => !CONTEXT_HIDDEN_EVENTS.has(e.type))
+      .slice(-8)
+      .map(({ e, i }) => fmtEvent(e, now, this.templateOf, outcomes.get(i)));
     const facts = mergeFacts(all.filter((e) => e.type === "customer_fact").map((e) => ((e.payload as { facts?: CustomerFact[] }).facts ?? [])));
     const s = readSummary(a.summary);
     const msgs = await this.conv.messagesAfter(a.id, a.summary_upto_message_id, 6);
@@ -144,9 +158,8 @@ export class EpisodeManager {
   }
 
   /** Các bước bot đã hướng dẫn trong episode này, theo thời gian (code ghi, không LLM) — dùng cho handoff.ts. */
-  async stepsSent(episodeId: number): Promise<string[]> {
-    const events = await this.conv.episodeEvents(episodeId);
-    return events.filter((e) => e.type === "template_sent").map((e) => String((e.payload as { template_id?: unknown }).template_id ?? "")).filter(Boolean);
+  async stepsSent(episodeId: number, max = 6): Promise<ReturnType<typeof buildTimeline>> {
+    return buildTimeline(await this.conv.episodeEvents(episodeId), this.templateOf, max);
   }
 
   /** Các nội dung đã gửi khách trong vụ việc: "T:<template id>" và "K:<chunk id>" (để khi khách báo chưa giải quyết được thì không gửi lại). */
@@ -259,12 +272,27 @@ export class EpisodeManager {
   }
 }
 
-function fmtEvent(e: EventRow, now: Date): string {
+/** Nội dung một event gửi cho khách: "T:<template id>" / "K:<chunk id>". */
+function sentRefs(e: EventRow): string[] {
+  const p = e.payload as Record<string, unknown>;
+  if (e.type === "template_sent" && p.template_id) return [`T:${String(p.template_id)}`];
+  if (e.type === "knowledge_sent" && Array.isArray(p.chunk_ids)) return p.chunk_ids.map((id) => `K:${String(id)}`);
+  return [];
+}
+
+function fmtEvent(e: EventRow, now: Date, templateOf: (id: string) => Template | undefined, outcome?: StepOutcome): string {
   const ago = Math.max(0, Math.round((now.getTime() - e.at.getTime()) / 60_000));
   const p = e.payload as Record<string, unknown>;
+  const result = outcome ? ` -> customer: ${outcomeText(outcome)}` : "";
   switch (e.type) {
-    case "template_sent":
-      return `bot sent template ${String(p.template_id)} (${ago} min ago)`;
+    case "template_sent": {
+      const id = String(p.template_id);
+      return `bot sent "${stepLabel(`T:${id}`, templateOf(id))}" (${id})${result} (${ago} min ago)`;
+    }
+    case "knowledge_sent": {
+      const ref = `K:${String((p.chunk_ids as unknown[] | undefined)?.[0] ?? "")}`;
+      return `bot sent the document section "${stepLabel(ref, undefined, (p.headings as string[] | undefined)?.[0])}"${result} (${ago} min ago)`;
+    }
     case "image_received":
       return `customer sent an image of type ${String(p.image_type)}${p.error_text ? ` showing the text "${String(p.error_text)}"` : ""} (${ago} min ago)`;
     case "ticket_created":

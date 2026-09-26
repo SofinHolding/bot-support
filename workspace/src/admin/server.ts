@@ -202,8 +202,8 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
 
   // ---------------------------------------------------------------- ticket
   app.get("/api/tickets", async (req) => {
-    const q = z.object({ status: z.string().optional(), limit: z.coerce.number().min(1).max(100).default(30), offset: z.coerce.number().min(0).default(0) }).parse(req.query);
-    const rows = await conv.listTickets({ status: q.status || undefined, limit: q.limit, offset: q.offset });
+    const q = z.object({ status: z.string().optional(), ref: z.string().max(20).optional(), limit: z.coerce.number().min(1).max(100).default(30), offset: z.coerce.number().min(0).default(0) }).parse(req.query);
+    const rows = await conv.listTickets({ status: q.status || undefined, ref: q.ref || undefined, limit: q.limit, offset: q.offset });
     const viewer = req.admin!.role === "viewer";
     return { items: rows.map((t) => ({ ...t, user_id: viewerMask(req, t.user_id), user_name: viewer ? null : t.user_name, user_username: viewer ? null : t.user_username })) };
   });

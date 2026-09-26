@@ -1,5 +1,5 @@
 /** Adapter Telegram Bot API (fetch thuần, không phụ thuộc thư viện). */
-import type { Channel, InboundBatch, InboundItem } from "./types";
+import type { Channel, InboundBatch, InboundItem, MessageEntity } from "./types";
 
 export class TelegramError extends Error {
   constructor(message: string, readonly code: number, readonly retryAfter?: number) {
@@ -57,8 +57,15 @@ export class TelegramClient implements Channel {
     return json.result as T;
   }
 
-  /** Văn bản thuần (không parse_mode) nên không bao giờ bị lỗi định dạng; tách khi quá 4096 ký tự. */
-  async send(chatId: number, text: string): Promise<{ messageId?: number }> {
+  /**
+   * Văn bản thuần (không parse_mode) nên không bao giờ bị lỗi định dạng; tách khi quá 4096 ký tự. Tin có `entities` (khối tóm tắt
+   * dạng "pre") gửi nguyên một tin — tách sẽ làm lệch offset; bên gọi bảo đảm độ dài.
+   */
+  async send(chatId: number, text: string, opts?: { entities?: MessageEntity[] }): Promise<{ messageId?: number }> {
+    if (opts?.entities?.length) {
+      const r = await this.api<{ message_id: number }>("sendMessage", { chat_id: chatId, text: text.slice(0, MAX), entities: opts.entities });
+      return { messageId: r.message_id };
+    }
     let first: number | undefined;
     for (let i = 0; i < text.length || i === 0; i += MAX) {
       const r = await this.api<{ message_id: number }>("sendMessage", { chat_id: chatId, text: text.slice(i, i + MAX) });

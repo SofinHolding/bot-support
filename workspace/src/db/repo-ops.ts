@@ -198,13 +198,13 @@ export function opsRepo(db: Db) {
     },
 
     // ---- Hộp thư đi ----
-    async enqueueOutbox(chatId: number, text: string, dedupeKey: string | null): Promise<number | null> {
-      const r = await db.query<{ id: string }>("INSERT INTO outbox (chat_id, text, dedupe_key) VALUES ($1,$2,$3) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id", [chatId, text, dedupeKey]);
+    async enqueueOutbox(chatId: number, text: string, dedupeKey: string | null, entities?: { type: "pre"; offset: number; length: number }[]): Promise<number | null> {
+      const r = await db.query<{ id: string }>("INSERT INTO outbox (chat_id, text, dedupe_key, entities) VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id", [chatId, text, dedupeKey, entities?.length ? JSON.stringify(entities) : null]);
       return r.rows[0] ? num(r.rows[0].id) : null;
     },
     async dueOutbox(limit = 50) {
       const r = await db.query("SELECT * FROM outbox WHERE status = 'queued' AND next_at <= now() ORDER BY id LIMIT $1", [limit]);
-      return r.rows.map((x) => ({ id: num(x.id), chat_id: num(x.chat_id), text: String(x.text), attempts: num(x.attempts) }));
+      return r.rows.map((x) => ({ id: num(x.id), chat_id: num(x.chat_id), text: String(x.text), attempts: num(x.attempts), entities: (x.entities as { type: "pre"; offset: number; length: number }[] | null) ?? undefined }));
     },
     async outboxSent(id: number) {
       await db.query("UPDATE outbox SET status = 'sent', sent_at = now() WHERE id = $1", [id]);
@@ -334,7 +334,7 @@ export function opsRepo(db: Db) {
          FROM episodes e JOIN users u ON u.telegram_id = e.user_id
          WHERE ($1::text IS NULL OR e.status = $1)
            AND ($2::bigint IS NULL OR e.user_id = $2)
-           AND ($3::text IS NULL OR e.issue ILIKE $3 OR u.username ILIKE $3 OR u.name ILIKE $3 OR e.user_id::text LIKE $3
+           AND ($3::text IS NULL OR e.issue ILIKE $3 OR e.ref_code ILIKE $3 OR u.username ILIKE $3 OR u.name ILIKE $3 OR e.user_id::text LIKE $3
                 OR EXISTS (SELECT 1 FROM messages m WHERE m.episode_id = e.id AND m.text ILIKE $3))
          ORDER BY e.last_activity_at DESC LIMIT $4 OFFSET $5`,
         [opts.status ?? null, opts.userId ?? null, q, opts.limit, opts.offset],

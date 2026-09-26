@@ -91,7 +91,7 @@ export const HANDLERS: Record<string, JobHandler> = {
     let failed = 0;
     for (const o of await ctx.ops.dueOutbox(50)) {
       try {
-        await ctx.channel.send(o.chat_id, o.text);
+        await ctx.channel.send(o.chat_id, o.text, o.entities ? { entities: o.entities } : undefined);
         await ctx.ops.outboxSent(o.id);
         sent++;
       } catch (e) {

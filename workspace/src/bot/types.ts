@@ -21,8 +21,15 @@ export interface InboundBatch {
   at: Date;
 }
 
+/** Định dạng một đoạn tin (Telegram MessageEntity), dùng thay parse_mode để không phải escape ký tự. offset/length tính theo UTF-16. */
+export interface MessageEntity {
+  type: "pre";
+  offset: number;
+  length: number;
+}
+
 export interface Channel {
-  send(chatId: number, text: string): Promise<{ messageId?: number }>;
+  send(chatId: number, text: string, opts?: { entities?: MessageEntity[] }): Promise<{ messageId?: number }>;
   downloadImage(fileId: string): Promise<{ mime: string; base64: string }>;
   /** Báo "đang soạn" (tuỳ chọn). Telegram hiển thị ~5 giây mỗi lần gọi. */
   typing?(chatId: number): Promise<void>;

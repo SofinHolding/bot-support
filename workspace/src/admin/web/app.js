@@ -1014,8 +1014,10 @@
           card(
             "Thông tin",
             dl([
+              ["Mã tham chiếu", ep.ref_code ? h("code", null, ep.ref_code) : null],
               ["Chủ đề", ep.issue],
               ["Nhóm chủ đề", ep.topic_group],
+              ["Câu khách nêu vấn đề (tiếng Anh)", ep.anchor_query_en],
               ["Template gần nhất", ep.last_template_id ? h("code", null, ep.last_template_id) : null],
               ["Hành động bot gần nhất", ep.last_bot_action],
               ["Mở lúc", fmtDate(ep.opened_at)],
@@ -1063,7 +1065,7 @@
     return h(
       "div",
       { class: "row-card" },
-      h("div", { class: "row-top" }, h("strong", null, `Ticket #${t.id}`), statusBadge(t.status), t.category ? badge(t.category) : null, t.error_code ? chip(t.error_code) : null),
+      h("div", { class: "row-top" }, h("strong", null, `Ticket #${t.id}`), statusBadge(t.status), t.category ? badge(t.category) : null, t.error_code ? chip(t.error_code) : null, t.episode_ref_code ? chip(t.episode_ref_code) : null),
       h("div", { class: "row-meta" }, h("span", null, `PIC: ${t.pic || "-"}`), h("span", null, fmtDate(t.created_at))),
       t.reason ? h("div", null, t.reason) : null,
       Array.isArray(t.required_info) && t.required_info.length ? h("ul", null, t.required_info.map((x) => h("li", null, String(x)))) : null,
@@ -1318,7 +1320,7 @@
   /** Thẻ ticket: admin+ đổi trạng thái ngay khi chọn, lưu PIC/ghi chú bằng nút Lưu. */
   function ticketCard(t) {
     const edit = can("admin");
-    const head = h("div", { class: "row-top" }, h("strong", null, `#${t.id}`), h("span", { class: "status-slot" }, statusBadge(t.status)), t.category ? badge(t.category) : null, t.error_code ? chip(t.error_code) : null);
+    const head = h("div", { class: "row-top" }, h("strong", null, `#${t.id}`), h("span", { class: "status-slot" }, statusBadge(t.status)), t.category ? badge(t.category) : null, t.error_code ? chip(t.error_code) : null, t.episode_ref_code ? chip(t.episode_ref_code) : null);
     const slot = head.querySelector(".status-slot");
     const meta = h(
       "div",
@@ -2773,6 +2775,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "episode.reopen_window_hours": "Khách quay lại đúng chủ đề của một vụ việc đang tạm lắng trong số giờ này thì bot mở lại vụ việc đó (giữ lịch sử, tóm tắt) thay vì tạo vụ việc mới.",
     "translation.prewarm_languages": "Các ngôn ngữ được dịch sẵn nhóm câu khẩn (cảnh báo bảo mật, chống spam, báo mất kết nối, câu chuyển nhân viên), ngăn bằng dấu phẩy. Ngôn ngữ khách đã dùng tự được thêm. Nhờ dịch sẵn, các câu này gửi được bằng ngôn ngữ của khách cả khi AI mất kết nối.",
     "translation.urgent_timeout_ms": "Thời gian chờ tối đa (ms) khi phải dịch câu khẩn tại chỗ vì chưa có bản dịch sẵn. Quá thời gian thì dùng phương án dự phòng.",
+    "handoff.max_timeline_steps": "Số bước bot đã hướng dẫn (kèm kết quả) tối đa trong khối tóm tắt khách gửi cho support; các bước cũ hơn được gộp thành một dòng.",
   };
   const SETTING_TITLE = {
     "router.semantic_confident": "Ngưỡng tin tưởng ngữ nghĩa",
@@ -2800,6 +2803,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "episode.reopen_window_hours": "Mở lại vụ việc cùng chủ đề trong (giờ)",
     "translation.prewarm_languages": "Ngôn ngữ dịch sẵn câu khẩn",
     "translation.urgent_timeout_ms": "Thời gian chờ dịch câu khẩn tại chỗ (ms)",
+    "handoff.max_timeline_steps": "Số bước tối đa trong khối tóm tắt gửi support",
   };
   const SETTING_ENUM = { "router.mode": ["hybrid", "llm_first"], "router.tier3_mode": ["extractive", "generative"], "router.knowledge_lang": ["vi", "en"] };
 
@@ -3049,7 +3053,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
         if (!groups.has(g)) groups.set(g, []);
         groups.get(g).push(it);
       }
-      const GROUP_LABEL = { router: "Định tuyến", episode: "Hội thoại", antispam: "Chống spam", alerts: "Cảnh báo", limits: "Giới hạn", translation: "Bản dịch", approval: "Duyệt", batching: "Gom tin nhắn", retention: "Lưu trữ" };
+      const GROUP_LABEL = { router: "Định tuyến", episode: "Hội thoại", antispam: "Chống spam", alerts: "Cảnh báo", limits: "Giới hạn", translation: "Bản dịch", handoff: "Chuyển nhân viên", approval: "Duyệt", batching: "Gom tin nhắn", retention: "Lưu trữ" };
 
       const settingRow = (it) => {
         let control;

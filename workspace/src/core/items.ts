@@ -83,6 +83,8 @@ export type StepTarget = "next" | "handoff" | string;
 export interface ItemStep {
   /** lang -> lời bot gửi. `en` là bản gốc (bắt buộc). */
   say: Record<string, string>;
+  /** Nhãn ngắn tiếng Anh cho nhân viên hỗ trợ (khối tóm tắt khi chuyển nhân viên): bước này đã hướng dẫn khách điều gì. Tuỳ chọn. */
+  staff_label?: string;
   /** Khách phản hồi thế nào (loại tin nối tiếp đã có trong followup.ts) -> đi đâu. Không khai báo = xử lý như câu hỏi mới. */
   next?: Partial<Record<FollowUpKind, StepTarget>>;
 }
@@ -189,7 +191,7 @@ export function parseItemsDoc(src: string): { doc?: ItemsDoc; issues: ParseIssue
       steps: (Array.isArray(o.steps) ? o.steps : []).map((s) => {
         const ss = (s ?? {}) as Record<string, unknown>;
         const next = ss.next && typeof ss.next === "object" ? (Object.fromEntries(Object.entries(ss.next as Record<string, unknown>).map(([k, v]) => [k, str(v)])) as ItemStep["next"]) : undefined;
-        return { say: say(ss.say), ...(next && Object.keys(next).length ? { next } : {}) };
+        return { say: say(ss.say), ...(next && Object.keys(next).length ? { next } : {}), ...(str(ss.staff_label) ? { staff_label: str(ss.staff_label) } : {}) };
       }),
       handoff: h ? { category: str(h.category) || undefined, error_code: str(h.error_code) || undefined, pic: str(h.pic) || undefined, ask_customer: strList(h.ask_customer) } : undefined,
       source: str(o.source) || undefined,
@@ -304,6 +306,7 @@ export function compileItems(doc: ItemsDoc): Template[] {
         overrides_context: !!adv.overrides_context,
       },
       answers: it.kind === "handoff" ? {} : { ...(steps[0]?.say ?? {}) },
+      ...(it.kind !== "handoff" && steps[0]?.staff_label ? { staff_label: steps[0].staff_label } : {}),
       ...(it.kind === "handoff" ? { answer_from: ESCALATE_TEMPLATE_ID } : {}),
       follow_up: followUp(0),
       sets_context: context,
@@ -321,6 +324,7 @@ export function compileItems(doc: ItemsDoc): Template[] {
         priority: ITEM_PRIORITY,
         match: { keywords: [], exact: [], examples: [], image_types: [], rules: [], requires: [], excludes: [], overrides_context: false },
         answers: { ...steps[i]!.say },
+        ...(steps[i]!.staff_label ? { staff_label: steps[i]!.staff_label } : {}),
         follow_up: followUp(i),
         sets_context: context,
         ...(ticket ? { ticket } : {}),
@@ -341,7 +345,7 @@ export function itemsDocToYaml(doc: ItemsDoc): string {
     if (it.phrases.length) o.phrases = it.phrases;
     if (it.applies_when) o.applies_when = it.applies_when;
     if (it.distinct_from.length) o.distinct_from = it.distinct_from;
-    if (it.steps.length) o.steps = it.steps.map((s) => ({ say: Object.keys(s.say).length === 1 && s.say.en ? s.say.en : s.say, ...(s.next && Object.keys(s.next).length ? { next: s.next } : {}) }));
+    if (it.steps.length) o.steps = it.steps.map((s) => ({ say: Object.keys(s.say).length === 1 && s.say.en ? s.say.en : s.say, ...(s.staff_label ? { staff_label: s.staff_label } : {}), ...(s.next && Object.keys(s.next).length ? { next: s.next } : {}) }));
     if (it.handoff) o.handoff = Object.fromEntries(Object.entries(it.handoff).filter(([, v]) => (Array.isArray(v) ? v.length : v)));
     if (it.source) o.source = it.source;
     if (it.valid_from) o.valid_from = it.valid_from;

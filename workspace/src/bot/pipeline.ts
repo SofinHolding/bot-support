@@ -5,10 +5,10 @@
  */
 import { checkOutput, TELEGRAM_MAX_CHARS } from "../core/gate";
 import { applyOfftopic, blockJustExpired, isBlocked, newAntispamState } from "../core/antispam";
-import { extractFacts } from "../core/facts";
+import { extractFacts, mergeFacts, type CustomerFact } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
 import { topicKeyOf, topicKeyOfGroup } from "../core/items";
-import { buildHandoffText, hasHandoffContent } from "../core/handoff";
+import { buildHandoffText, handoffReasonOf, hasDiacritics, hasHandoffContent, timelineLine, type HandoffInput, type HandoffReason } from "../core/handoff";
 import { detectLanguage, looksVietnamese, resolveLanguage } from "../core/language";
 import type { KnowledgePort, LlmPort } from "../core/ports";
 import { LlmUnavailableError, usableLlm } from "../core/ports";
@@ -32,7 +32,7 @@ import type { LiveContent } from "../kb/live-content";
 import { EpisodeManager } from "./episodes";
 import type { MediaStore } from "./media";
 import type { ResponseResolver, UrgentOptions, UrgentText } from "./resolver";
-import type { Channel, InboundBatch, PipelineResult } from "./types";
+import type { Channel, InboundBatch, MessageEntity, PipelineResult } from "./types";
 
 export interface PipelineDeps {
   db: Db;
@@ -61,7 +61,7 @@ export class BotPipeline {
   private readonly now: () => Date;
 
   constructor(private readonly d: PipelineDeps) {
-    this.episodes = new EpisodeManager(d.conv);
+    this.episodes = new EpisodeManager(d.conv, (id) => d.live.index.get(id));
     this.now = d.now ?? (() => new Date());
   }
 
@@ -124,9 +124,9 @@ export class BotPipeline {
 
     // ================= Admin: lệnh console đã chuyển sang web =================
     if (isAdmin && ADMIN_COMMAND.test(rawText)) {
-      const vi = await resolver.forTemplate("admin-console-moved", "vi", { });
-      const r = vi.blocked ? await resolver.forTemplate("admin-console-moved", "en", { }) : vi; // tin cho admin: dịch không đạt thì dùng bản gốc
-      const text = r.text.replace("{URL}", this.d.adminWebUrl);
+      const vi = await resolver.forTemplate("admin-console-moved", "vi", { URL: this.d.adminWebUrl });
+      const r = vi.blocked ? await resolver.forTemplate("admin-console-moved", "en", { URL: this.d.adminWebUrl }) : vi; // tin cho admin: dịch không đạt thì dùng bản gốc
+      const text = r.text;
       await this.send(batch.chatId, text, `admin:${items[0]!.updateId}`);
       return { status: "ok", replies: [text], decisionKind: "ADMIN_POINTER" };
     }
@@ -241,7 +241,7 @@ export class BotPipeline {
 
       // ---- Kết quả của bước bot gửi trước đó (khách phản hồi thế nào): code ghi từ kết quả SKILL understand ----
       const routedTmpl = this.d.live.index.get(outcomeTemplateId(outcome) ?? "");
-      if (!isAdmin && loaded.active && result.understand) await this.recordStepOutcome(loaded.active, result.understand, routedTmpl, now);
+      if (!isAdmin && loaded.active && (result.understand || result.trace.followUp)) await this.recordStepOutcome(loaded.active, result.understand, result.trace.followUp, routedTmpl, now);
 
       // ---- Vụ việc của lượt này: xác định TRƯỚC khi dựng câu trả lời (khối tóm tắt chuyển nhân viên, mã tham chiếu, ticket dùng đúng vụ việc) ----
       const resolveFor = (o: Outcome, t: Template | undefined) => {
@@ -265,21 +265,20 @@ export class BotPipeline {
       let ep = resolved?.episode ?? null;
 
       // ---- Xây câu trả lời ----
-      // Conversation Escalation & Support Summary (core/handoff.ts): khối "sao chép gửi hỗ trợ" chỉ dựng khi thật sự
-      // cần (nhánh escalate), tính một lần cho cả lượt dù buildReply có thể được gọi lại (rơi vào escalate do vi
-      // phạm ngôn ngữ bên dưới) — tránh gọi lại LLM tóm tắt hai lần cho cùng một lượt.
+      // Khối "tóm tắt gửi hỗ trợ" (core/handoff.ts): chỉ dựng khi thật sự cần (nhánh chuyển nhân viên), tính một lần cho cả lượt
+      // dù buildReply có thể được gọi lại (rơi vào chuyển nhân viên do vi phạm ngôn ngữ bên dưới) — không gọi LLM tóm tắt hai lần.
       let supportSummaryVar: string | undefined;
-      const supportLang = lang; // chốt tại đây: không đổi theo các lần buildReply gọi lại bên dưới (vd rơi về "en" cho lưới an toàn)
-      const supportSummary = isAdmin ? undefined : async () => (supportSummaryVar ??= await this.buildSupportSummaryVar(ep, supportLang));
+      const supportLang = lang; // chốt tại đây: không đổi theo các lần buildReply gọi lại bên dưới
+      const supportSummary = isAdmin ? undefined : async (reason: HandoffReason) => (supportSummaryVar ??= await this.buildSupportSummaryVar(ep, supportLang, reason, settings["handoff.max_timeline_steps"]));
       let built;
       try {
-        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary, ep?.ref_code);
       } catch (e) {
         if (!(e instanceof LlmUnavailableError) || e.badOutput) throw e;
         result.trace.notes.push(`không dịch được câu trả lời (${e.message.slice(0, 80)}): gửi câu báo mất kết nối`);
         outcome = { kind: "UNAVAILABLE", tier: outcome.tier, reason: "mất kết nối LLM khi dịch câu trả lời" };
         extraReplies.length = 0;
-        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary, ep?.ref_code);
       }
       // Ràng buộc chung về ngôn ngữ (bằng code, không nhờ LLM): khách nhắn ngôn ngữ nào thì nhận ngôn ngữ đó, và khách không dùng
       // tiếng Việt TUYỆT ĐỐI không nhận chữ tiếng Việt — dù kho tri thức, bản dịch hay LLM trả về gì. Vi phạm -> chuyển người thật.
@@ -297,15 +296,16 @@ export class BotPipeline {
           resolved = await resolveFor(outcome, undefined);
           ep = resolved.episode;
         }
-        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
+        built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary, ep?.ref_code);
         // Câu chuyển người thật cũng dịch nhiều lần không đạt (hiếm): khách vẫn phải được báo là đã chuyển người thật. Câu khẩn: bản dịch
         // sẵn / dịch tại chỗ; không có bản dịch hợp lệ thì lối cuối là bản gốc tiếng Anh (không bao giờ tiếng Việt cho khách không dùng
         // tiếng Việt), có ghi vết. Khối tóm tắt (đã dịch, nếu có) vẫn đi kèm.
         if (built.blocked || !built.texts.length || (lang !== "vi" && built.texts.some(looksVietnamese))) {
-          const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english", vars: { SUPPORT_SUMMARY: (await supportSummary?.()) ?? "" } });
+          const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english", vars: { REF: ep?.ref_code ?? "" } });
           result.trace.notes.push(`câu chuyển người thật không dịch được sang ${lang} (${(built.blocked ?? "").slice(0, 120)}): dùng ${esc.source === "fallback" ? "bản gốc tiếng Anh" : "bản dịch của câu khẩn"}`);
           if (esc.source === "fallback") await this.urgentFallback(batch.userId, ESCALATE_TEMPLATE_ID, lang, now);
-          built = { texts: [esc.text!], lang: esc.lang, mode: `urgent_${esc.source}` };
+          const block = supportSummary ? await supportSummary(handoffReasonOf(outcome.reason)) : "";
+          built = { texts: [esc.text!, ...(block ? [block] : [])], lang: esc.lang, mode: `urgent_${esc.source}`, handoffBlock: block || undefined };
         }
       }
       // Dấu vết các khối của workflow cho quản trị viên xem lại ở mục "Vì sao bot trả lời thế này"
@@ -338,19 +338,29 @@ export class BotPipeline {
       // Lưới an toàn cuối cùng cho MỌI câu sắp gửi (kể cả cảnh báo ảnh chứa key, cảnh báo chống spam dựng sau lớp chặn ở trên):
       // khách không dùng tiếng Việt không nhận chữ tiếng Việt. Thay bằng câu chuyển người thật (câu khẩn, ngôn ngữ của khách).
       if (!isAdmin && lang !== "vi" && replies.some(looksVietnamese)) {
-        const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english" });
+        const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english", vars: { REF: ep?.ref_code ?? "" } });
         const safe = esc.text!;
-        for (let i = 0; i < replies.length; i++) {
-          if (!looksVietnamese(replies[i]!)) continue;
-          this.log("warn", "lưới an toàn ngôn ngữ: thay câu trả lời còn tiếng Việt", { userId: batch.userId, lang });
-          result.trace.notes.push("ràng buộc ngôn ngữ: một câu trả lời còn tiếng Việt đã bị thay bằng câu chuyển người thật");
-          replies[i] = safe;
+        const kept: string[] = [];
+        for (const r of replies) {
+          if (!looksVietnamese(r)) kept.push(r);
+          else if (r === built.handoffBlock) result.trace.notes.push("ràng buộc ngôn ngữ: khối tóm tắt còn tiếng Việt, bỏ khối (khách vẫn có mã tham chiếu)");
+          else {
+            this.log("warn", "lưới an toàn ngôn ngữ: thay câu trả lời còn tiếng Việt", { userId: batch.userId, lang });
+            result.trace.notes.push("ràng buộc ngôn ngữ: một câu trả lời còn tiếng Việt đã bị thay bằng câu chuyển người thật");
+            if (!kept.includes(safe)) kept.push(safe);
+          }
         }
+        replies.splice(0, replies.length, ...kept);
       }
 
       // ---- Gửi ----
       const sentIds: (number | undefined)[] = [];
-      for (let i = 0; i < replies.length; i++) sentIds.push((await this.send(batch.chatId, replies[i]!, `r:${items[0]!.updateId}:${i}`))?.messageId);
+      // Khối tóm tắt gửi dạng khối code (entity "pre", không dùng parse_mode): khách chạm để sao chép nguyên khối
+      for (let i = 0; i < replies.length; i++) {
+        const text = replies[i]!;
+        const entities = text === built.handoffBlock ? [{ type: "pre" as const, offset: 0, length: text.length }] : undefined;
+        sentIds.push((await this.send(batch.chatId, text, `r:${items[0]!.updateId}:${i}`, entities))?.messageId);
+      }
 
       if (isAdmin) return { status: "ok", replies, decisionKind: outcome.kind, templateId: outcomeTemplateId(outcome), tier: outcome.tier };
 
@@ -388,7 +398,7 @@ export class BotPipeline {
       }
       const tid = outcomeTemplateId(outcome);
       if (tid) await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "template_sent", payload: { template_id: tid, tier: outcome.tier } }, now);
-      if (outcome.kind === "GROUNDED") await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "knowledge_sent", payload: { chunk_ids: outcome.sources.map((s) => s.chunkId) } }, now);
+      if (outcome.kind === "GROUNDED") await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "knowledge_sent", payload: { chunk_ids: outcome.sources.map((s) => s.chunkId), headings: outcome.sources.map((s) => s.heading) } }, now);
 
       let ticketId: number | null = null;
       if (isEsc) ticketId = await this.escalate(batch, ep, outcome, tmpl, related ? lastTemplate : undefined, related ? loaded.active?.topic_group ?? null : null, masked);
@@ -408,7 +418,7 @@ export class BotPipeline {
         reason: outcome.kind === "ESCALATE" || outcome.kind === "OFFTOPIC" ? outcome.reason : null,
         candidates: trace.candidates,
         gates: { steps: trace.gates, ranked: trace.ranked },
-        notes: { new_question: newQuestion, follow_up: trace.followUp ?? null, llm: trace.llm ?? null, notes: [...trace.notes, ...(built.note ? [built.note] : []), ...(imgs.note ? [imgs.note] : [])], ticket_id: ticketId, anti: antiEvent, switched: resolved?.switchedFrom?.id ?? null, reopened: resolved?.reopened ?? false, ref_code: ep?.ref_code ?? null },
+        notes: { new_question: newQuestion, follow_up: trace.followUp ?? null, llm: trace.llm ?? null, notes: [...trace.notes, ...(built.note ? [built.note] : []), ...(imgs.note ? [imgs.note] : [])], ticket_id: ticketId, anti: antiEvent, switched: resolved?.switchedFrom?.id ?? null, reopened: resolved?.reopened ?? false, ref_code: ep?.ref_code ?? null, handoff_reason: isEsc ? (outcome.kind === "ESCALATE" ? handoffReasonOf(outcome.reason, trace.followUp) : "other") : null },
         kbVersion: this.d.live.version,
       });
 
@@ -426,15 +436,17 @@ export class BotPipeline {
 
   /**
    * Khách phản hồi thế nào sau nội dung bot vừa gửi trong vụ việc (`last_ref`): ghi event `step_outcome` một lần cho mỗi lần
-   * gửi, từ kết quả SKILL understand của lượt này (không thêm lời gọi AI). Khách hỏi sang chủ đề khác thì không ghi.
+   * gửi, từ kết quả của lượt này — loại tin nối tiếp do SKILL understand hoặc luật nối tiếp bằng code nhận ra (không thêm lời
+   * gọi AI). Khách hỏi sang chủ đề khác thì không ghi.
    */
-  private async recordStepOutcome(active: EpisodeRow, u: NonNullable<RouteResult["understand"]>, routed: Template | undefined, now: Date) {
+  private async recordStepOutcome(active: EpisodeRow, u: RouteResult["understand"], codeFollowUp: string | undefined, routed: Template | undefined, now: Date) {
     const ref = active.last_ref;
     if (!ref) return;
     const byFollowUp: Partial<Record<string, string>> = { thanks: "solved", negative: "not_solved", not_receive: "not_received", no_old_email: "no_old_email", info_provided: "info_provided" };
     let outcome: string | undefined;
-    if (u.intent === "follow_up") outcome = byFollowUp[u.follow_up];
-    else if (u.intent === "question") {
+    if (u?.intent === "follow_up") outcome = byFollowUp[u.follow_up];
+    else if (codeFollowUp) outcome = byFollowUp[codeFollowUp];
+    else if (u?.intent === "question") {
       const key = topicKeyOf(routed);
       const activeKey = active.topic_key ?? topicKeyOfGroup(active.topic_group);
       if (!key || !activeKey || key === activeKey) outcome = "asked_again";
@@ -517,24 +529,30 @@ export class BotPipeline {
   }
 
   // ------------------------------------------------------------------------------------------------------------
-  private async buildReply(outcome: Outcome, lang: string, pendingIssue: string | undefined, supportSummary?: () => Promise<string>): Promise<{ texts: string[]; lang?: string; note?: string; blocked?: string; mode?: string }> {
+  /**
+   * `refCode`: mã tham chiếu của vụ việc, điền vào biến {REF} của câu chuyển nhân viên (khách luôn có mã, kể cả khi không có
+   * khối tóm tắt). `supportSummary`: khối tóm tắt đã dịch (tin RIÊNG, gửi dạng khối code) — "" khi không có.
+   */
+  private async buildReply(outcome: Outcome, lang: string, pendingIssue: string | undefined, supportSummary?: (reason: HandoffReason) => Promise<string>, refCode?: string | null): Promise<{ texts: string[]; lang?: string; note?: string; blocked?: string; mode?: string; handoffBlock?: string }> {
     const { resolver } = this.d;
+    const escalation = async (templateId: string, reason: HandoffReason, vars: Record<string, string>) => {
+      // {SUPPORT_SUMMARY}: chỗ chèn khối trong câu chuyển nhân viên cũ — nay khối là tin riêng nên luôn để trống
+      const r = await resolver.forTemplate(templateId, lang, { ...vars, REF: refCode ?? "", SUPPORT_SUMMARY: "" });
+      if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
+      const block = supportSummary ? await supportSummary(reason) : "";
+      return { texts: [r.text, ...(block ? [block] : [])], lang: r.lang, note: r.note, mode: r.mode, handoffBlock: block || undefined };
+    };
     switch (outcome.kind) {
       case "TEMPLATE": {
         const vars: Record<string, string> = { ISSUE: pendingIssue ?? "" };
-        // Một số template escalate cụ thể (esc-wallet-create...) trỏ answer_from về fp-12-escalate: cùng khối {SUPPORT_SUMMARY}.
-        if (supportSummary && isEscalationTemplate(this.d.live.index.get(outcome.templateId))) vars.SUPPORT_SUMMARY = await supportSummary();
-        const r = await resolver.forTemplate(outcome.templateId, lang, vars);
+        // Template chuyển nhân viên cụ thể (esc-wallet-create...) trỏ answer_from về fp-12-escalate: cùng mã tham chiếu và khối tóm tắt
+        if (isEscalationTemplate(this.d.live.index.get(outcome.templateId))) return escalation(outcome.templateId, "other", vars);
+        const r = await resolver.forTemplate(outcome.templateId, lang, { ...vars, REF: refCode ?? "" });
         if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
         return { texts: [r.text], lang: r.lang, note: r.note, mode: r.mode };
       }
-      case "ESCALATE": {
-        const vars: Record<string, string> = {};
-        if (supportSummary) vars.SUPPORT_SUMMARY = await supportSummary();
-        const r = await resolver.forTemplate(ESCALATE_TEMPLATE_ID, lang, vars);
-        if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
-        return { texts: [r.text], lang: r.lang, note: r.note, mode: r.mode };
-      }
+      case "ESCALATE":
+        return escalation(ESCALATE_TEMPLATE_ID, handoffReasonOf(outcome.reason), {});
       case "GROUNDED": {
         const r = await resolver.dynamic(outcome.answer, lang, outcome.sourceLang);
         if (r.blocked) return { texts: [], lang, note: r.note, blocked: r.note ?? "không dịch được", mode: r.mode };
@@ -559,52 +577,74 @@ export class BotPipeline {
   }
 
   /**
-   * Conversation Escalation & Support Summary: khối văn bản khách sao chép gửi @interlink_technicalsupport khi bot
-   * chuyển người thật. Phạm vi = vụ việc của lượt này (`EpisodeManager.resolveEpisode`, xác định trước khi dựng câu trả lời,
-   * kể cả khi chuyển nhân viên ngay câu đầu), tách theo chủ đề / khoảng lặng nên KHÔNG lẫn các vấn đề cũ. Không có gì
-   * đáng tóm tắt -> trả về "" (không thêm khối trống vào câu trả lời).
-   * Nội dung DỰNG bằng tiếng Anh trước (issue/tóm tắt vốn đã viết tiếng Anh — SKILL summarize-episode), qua HAI lớp
-   * kiểm trước khi gửi khách — đúng yêu cầu: không chỉ tóm tắt-dịch-gửi thẳng:
-   *  1. code: `checkOutput` (forbidFinancialClaims: dự đoán giá/ROI, công thức HCS — cùng chuẩn với câu AI viết ở
-   *     nhánh GROUNDED sinh, vì đây cũng là văn bản gửi khách lần đầu, chưa qua tay admin duyệt trước);
-   *  2. SKILL verify-handoff (LLM): xác nhận nội dung đúng nguồn, không vi phạm giới hạn nghiệp vụ (R1-R3).
-   * Không đạt ở bước nào -> bỏ khối này (KHÔNG gửi câu trả lời rỗng: vẫn còn câu FP-12 + ticket, chỉ thiếu phần tóm tắt).
-   * Đạt cả hai -> dịch sang đúng NGÔN NGỮ KHÁCH ĐANG DÙNG qua `resolver.translateFreeform` (cùng SKILL dịch, cùng
-   * kiểm chứng `translationProblems` như mọi nội dung khác, dịch lại kèm lỗi khi không đạt); vẫn không đạt -> bỏ khối này
-   * (không gửi bản tiếng Anh cho khách dùng ngôn ngữ khác).
+   * Khối "tóm tắt gửi hỗ trợ" (core/handoff.ts): tin RIÊNG gửi sau câu chuyển nhân viên, khách chạm để sao chép và gửi cho
+   * @interlink_technicalsupport. Phạm vi = vụ việc của lượt này (EpisodeManager.resolveEpisode, kể cả khi chuyển nhân viên
+   * ngay câu đầu). Dựng bằng tiếng Anh, qua `checkOutput` (cấm dự đoán giá / công thức HCS) và SKILL verify-handoff, rồi dịch
+   * có kiểm sang ngôn ngữ của khách. Hai bậc:
+   *  A. đầy đủ: tóm tắt cuộn (AI viết, cleanSummary đã kiểm) + dòng thời gian (code, nhãn đã duyệt) + giá trị khách nêu;
+   *  B. rút gọn khi A không đạt: bỏ các dòng của tóm tắt cuộn, chỉ còn tên vụ việc, dòng thời gian, giá trị do code trích.
+   * Không đạt cả hai, dịch 3 lần vẫn không đạt, hoặc không có AI -> không có khối ("", event handoff_block tier "none"):
+   * khách vẫn có mã tham chiếu trong câu chuyển nhân viên. Không có bản tiếng Anh dự phòng cho khối này.
    */
-  private async buildSupportSummaryVar(active: EpisodeRow | null, lang: string): Promise<string> {
-    if (!active) return "";
+  private async buildSupportSummaryVar(ep: EpisodeRow | null, lang: string, reason: HandoffReason, maxSteps: number): Promise<string> {
+    if (!ep) return "";
     const llm = usableLlm(this.d.llm);
-    const summary = llm ? await this.episodes.summarizeNow(llm, active.id).catch(() => readSummary(active.summary)) : readSummary(active.summary);
-    const stepsSent = await this.episodes.stepsSent(active.id);
-    const inp = { issue: active.issue, summary, stepsSent };
-    if (!hasHandoffContent(inp)) return "";
-    const body = buildHandoffText(inp);
-    const policyChk = checkOutput(body, { urlHostWhitelist: this.d.live.urlHosts, forbidFinancialClaims: true });
-    if (!policyChk.ok) {
-      this.log("warn", "khối tóm tắt chuyển hỗ trợ: không qua kiểm tra chính sách, bỏ khối này", { episodeId: active.id, problems: policyChk.problems });
+    const reasons: string[] = [];
+    const record = (tier: "A" | "B" | "none") => this.d.conv.addEvent({ userId: ep.user_id, episodeId: ep.id, type: "handoff_block", payload: { tier, lang, reason, reasons } }, this.now()).catch(() => undefined);
+    if (!llm) {
+      reasons.push("không có AI để kiểm tra và dịch khối");
+      await record("none");
       return "";
     }
-    if (llm) {
+    const summary = await this.episodes.summarizeNow(llm, ep.id).catch(() => readSummary(ep.summary));
+    const { steps, dropped } = await this.episodes.stepsSent(ep.id, maxSteps);
+    const events = await this.d.conv.episodeEvents(ep.id);
+    const codeFacts = mergeFacts(events.filter((e) => e.type === "customer_fact").map((e) => ((e.payload as { facts?: CustomerFact[] }).facts ?? []))).map((f) => f.replace(/^[a-z_]+=/, ""));
+    // Khối viết tiếng Anh rồi dịch: giá trị khách nêu bằng tiếng Việt (vd chữ đọc từ ảnh app tiếng Việt) không được lọt tới khách không dùng tiếng Việt
+    const keep = (xs: string[]) => (lang === "vi" ? xs : xs.filter((x) => !looksVietnamese(x) && !/[Ạ-ỹ]/.test(x)));
+    const cleanIssue = (s: string | null | undefined) => (s && !looksVietnamese(s) && !hasDiacritics(s) ? s : undefined);
+
+    const tiers: { tier: "A" | "B"; inp: HandoffInput }[] = [
+      { tier: "A", inp: { refCode: ep.ref_code, issue: cleanIssue(summary?.issue) ?? cleanIssue(ep.issue) ?? ep.anchor_query_en, summary: summary ? { user_reported: summary.user_reported, unresolved_points: summary.unresolved_points } : undefined, steps, droppedSteps: dropped, facts: keep([...new Set([...(summary?.exact_facts ?? []), ...codeFacts])]).slice(0, 6), reason } },
+      { tier: "B", inp: { refCode: ep.ref_code, issue: cleanIssue(ep.issue) ?? ep.anchor_query_en, steps, droppedSteps: dropped, facts: keep(codeFacts).slice(0, 6), reason } },
+    ];
+    for (const { tier, inp } of tiers) {
+      if (!hasHandoffContent(inp)) {
+        reasons.push(`${tier}: không có nội dung đáng tóm tắt`);
+        continue;
+      }
+      const body = buildHandoffText(inp);
+      const policyChk = checkOutput(body, { urlHostWhitelist: this.d.live.urlHosts, forbidFinancialClaims: true, maxChars: TELEGRAM_MAX_CHARS });
+      if (!policyChk.ok) {
+        reasons.push(`${tier}: ${policyChk.problems.join("; ")}`);
+        continue;
+      }
       try {
-        const v = await llm.verifyHandoff({ text: body, source: { issue: active.issue ?? "", userReported: summary?.user_reported ?? "", unresolvedPoints: summary?.unresolved_points ?? "", facts: summary?.exact_facts ?? [], steps: stepsSent } });
+        const v = await llm.verifyHandoff({ text: body, source: { issue: inp.issue ?? "", userReported: inp.summary?.user_reported ?? "", unresolvedPoints: inp.summary?.unresolved_points ?? "", facts: inp.facts, steps: inp.steps.map(timelineLine) } });
         if (!v.ok) {
-          this.log("warn", "khối tóm tắt chuyển hỗ trợ: SKILL verify-handoff từ chối, bỏ khối này", { episodeId: active.id, reason: v.reason });
-          return "";
+          reasons.push(`${tier}: verify-handoff từ chối (${(v.reason ?? "").slice(0, 80)})`);
+          continue;
         }
       } catch (e) {
-        this.log("warn", "khối tóm tắt chuyển hỗ trợ: verify-handoff lỗi, bỏ khối này", { episodeId: active.id, err: (e as Error).message });
-        return "";
+        reasons.push(`${tier}: verify-handoff lỗi (${(e as Error).message.slice(0, 80)})`);
+        if (e instanceof LlmUnavailableError && !e.badOutput) break; // mất kết nối: bậc sau cũng không kiểm được
+        continue;
       }
+      const tr = await this.d.resolver.translateFreeform(body, lang).catch((e: Error) => ({ ok: false as const, note: e.message }));
+      if (!tr.ok) {
+        reasons.push(`${tier}: dịch không đạt (${tr.note.slice(0, 120)})`);
+        break; // bậc B dùng cùng khung câu: dịch lại cũng khó đạt, không tốn thêm lời gọi
+      }
+      if (tr.text.length > TELEGRAM_MAX_CHARS) {
+        reasons.push(`${tier}: bản dịch vượt ${TELEGRAM_MAX_CHARS} ký tự`);
+        continue;
+      }
+      await record(tier);
+      return tr.text;
     }
-    const en = `📋 Summary to send to support (tap to copy):\n\`\`\`\n${body}\n\`\`\``;
-    const tr = await this.d.resolver.translateFreeform(en, lang);
-    if (!tr.ok) {
-      this.log("warn", "khối tóm tắt chuyển hỗ trợ: dịch nhiều lần vẫn không đạt, bỏ khối này", { episodeId: active.id, lang, note: tr.note.slice(0, 200) });
-      return "";
-    }
-    return `\n\n${tr.text}`;
+    this.log("warn", "khối tóm tắt chuyển hỗ trợ: không gửi được khối nào", { episodeId: ep.id, reasons });
+    await record("none");
+    return "";
   }
 
   /** Tạo hoặc nối tiếp ticket khi chuyển cho người thật. */
@@ -659,13 +699,13 @@ export class BotPipeline {
     return () => clearInterval(timer);
   }
 
-  private async send(chatId: number, text: string, dedupeKey: string): Promise<{ messageId?: number } | undefined> {
+  private async send(chatId: number, text: string, dedupeKey: string, entities?: MessageEntity[]): Promise<{ messageId?: number } | undefined> {
     try {
-      return await this.d.channel.send(chatId, text);
+      return await this.d.channel.send(chatId, text, entities ? { entities } : undefined);
     } catch (e) {
-      // Telegram lỗi: đưa vào hộp thư đi để worker gửi lại, không mất tin
+      // Telegram lỗi: đưa vào hộp thư đi để worker gửi lại (giữ cả định dạng khối), không mất tin
       this.log("warn", "gửi Telegram lỗi, đưa vào outbox", { err: (e as Error).message });
-      await this.d.ops.enqueueOutbox(chatId, text, dedupeKey);
+      await this.d.ops.enqueueOutbox(chatId, text, dedupeKey, entities);
       return undefined;
     }
   }

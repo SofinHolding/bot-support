@@ -7,6 +7,7 @@ import { activeEmbedder, cosine, embedTagged } from "../core/embedding";
 import { checkOutput, collectHosts, urlHosts } from "../core/gate";
 import { buildIndex } from "../core/bundle";
 import { GUIDE_SLUG, guidePolicyProblems, parseGuide, type Guide } from "../core/guide";
+import { staffLabelProblems } from "../core/handoff";
 import { chunkEmbedText, parseKnowledgeDoc, sha1, type KnowledgeChunk } from "../core/knowledge";
 import { makeEvaluator, type PredicateMap } from "../core/predicates";
 import { detectKeyLeak } from "../core/sanitize";
@@ -183,8 +184,9 @@ export class KbService {
     const parsed = this.parse(kind, md, slug);
     const push = (name: string, issues: string[], level: "warning" | "error" = "error") => steps.push({ name, status: issues.length ? level : "ok", details: issues });
 
-    // 1. Cấu trúc
-    push("1. Cấu trúc", parsed.issues.filter((i) => i.level === "error").map((i) => (i.templateId ? `[${i.templateId}] ` : "") + i.message));
+    // 1. Cấu trúc (kèm nhãn cho nhân viên: tiếng Anh, ngắn, không link, không số ngoài câu trả lời — core/handoff.ts)
+    const labelIssues = parsed.templates.flatMap((t) => (t.staff_label ? staffLabelProblems(t.staff_label, t.answers.en ?? "").map((m) => `[${t.id}] ${m}`) : []));
+    push("1. Cấu trúc", [...parsed.issues.filter((i) => i.level === "error").map((i) => (i.templateId ? `[${i.templateId}] ` : "") + i.message), ...labelIssues]);
     for (const w of parsed.issues.filter((i) => i.level === "warning")) steps[0]!.details.push(`cảnh báo: ${w.message}`);
     const report: ValidationReport = { ok: false, steps, templateCount: parsed.templates.length, chunkCount: parsed.chunks.length };
     if (steps[0]!.status === "error") {

@@ -114,6 +114,7 @@ export function parseTemplateFile(md: string, source?: string): { templates: Tem
       ticket: meta.ticket ? (meta.ticket as Template["ticket"]) : undefined,
       required_info: meta.required_info ? asStringArray(meta.required_info) : undefined,
       source: meta.source ? String(meta.source) : source,
+      ...(typeof meta.staff_label === "string" && meta.staff_label.trim() ? { staff_label: meta.staff_label.trim() } : {}),
     });
   });
   return { templates, issues };
@@ -165,6 +166,7 @@ export function templateToMarkdown(t: Template): string {
     priority: t.priority,
   };
   if (t.source) meta.source = t.source;
+  if (t.staff_label) meta.staff_label = t.staff_label;
   const m: Record<string, unknown> = {};
   if (t.match.keywords.length) m.keywords = t.match.keywords;
   if (t.match.exact.length) m.exact = t.match.exact;

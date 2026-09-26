@@ -12,9 +12,13 @@ beforeAll(async () => {
 });
 afterAll(async () => w.close());
 
-const last = (chat: number) => w.channel.textsTo(chat).at(-1);
-// Câu chuyển nhân viên chuẩn, bỏ chỗ chèn khối tóm tắt ({SUPPORT_SUMMARY} rỗng khi vụ việc chưa có gì để tóm tắt), giống resolver.forTemplate.
-const tplOf = (id: string) => w.live.index.get(id)!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd();
+/** Tin trả lời cuối cùng, không tính khối tóm tắt gửi support (tin riêng dạng khối code, gửi sau câu chuyển nhân viên) */
+const replyTexts = (world: World, chat: number) => world.channel.sent.filter((s) => s.chatId === chat && !s.entities).map((s) => s.text);
+const last = (chat: number) => replyTexts(w, chat).at(-1);
+/** Khối tóm tắt gửi support gần nhất (tin riêng, entity "pre") */
+const lastBlock = (chat: number) => w.channel.sent.filter((s) => s.chatId === chat && s.entities?.some((e) => e.type === "pre")).at(-1)?.text;
+// Câu trả lời đã duyệt, bỏ phần biến điền sau dịch ({SUPPORT_SUMMARY} bản cũ, câu mã tham chiếu của câu chuyển nhân viên) để so phần cố định.
+const tplOf = (id: string) => w.live.index.get(id)!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").replace(/ Your reference code: \{REF\}/g, "").trimEnd();
 /** Câu chuyển nhân viên (có thể kèm khối tóm tắt vụ việc: chuyển nhân viên ngay câu đầu vẫn có vụ việc để tóm tắt) */
 const isEscalation = (text: string | undefined) => !!text && text.startsWith(tplOf("fp-12-escalate"));
 
@@ -87,10 +91,12 @@ describe("FAST-PATH và ngữ cảnh", () => {
     await w.sayPhoto(u, "kyc2"); // thêm ảnh: cùng case, gửi lại cùng template
     expect(last(u)).toBe(tplOf("fp-5b-kyc-email-queue"));
     await w.say(u, "Nooo");
-    // episode đã có bước hướng dẫn trước đó (2 lần gửi fp-5b-kyc-email-queue) -> khối "sao chép gửi hỗ trợ" xuất hiện
+    // episode đã có bước hướng dẫn trước đó (2 lần gửi fp-5b-kyc-email-queue, gộp thành 1 bước) -> khối tóm tắt là tin riêng, bước ghi bằng nhãn
     expect(last(u)).toContain(tplOf("fp-12-escalate"));
-    expect(last(u)).toContain("Summary to send to support");
-    expect(last(u)).toContain("fp-5b-kyc-email-queue");
+    expect(lastBlock(u)).toContain("Support request");
+    expect(lastBlock(u)).toContain("Customer sent a screenshot (kyc email)");
+    expect(lastBlock(u)).toMatch(/ {2}4\. .+ - not solved\n/); // "Nooo" (luật nối tiếp bằng code) ghi kết quả cho đúng bước vừa gửi
+    expect(lastBlock(u)).not.toContain("fp-5b-kyc-email-queue");
     const t = (await w.conv.listTickets({ limit: 5, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toBeDefined();
     expect(t.status).toBe("open");
@@ -112,9 +118,9 @@ describe("FAST-PATH và ngữ cảnh", () => {
     await w.say(u, "why ITLG reduce");
     expect(last(u)).toContain("The token burn mechanism is now active");
     await w.say(u, "not burn");
-    // episode đã có bước hướng dẫn trước đó (fp-4-itlg-burn) -> khối "sao chép gửi hỗ trợ" xuất hiện
+    // episode đã có bước hướng dẫn trước đó (fp-4-itlg-burn) -> khối tóm tắt là tin riêng
     expect(last(u)).toContain(tplOf("fp-12-escalate"));
-    expect(last(u)).toContain("Summary to send to support");
+    expect(lastBlock(u)).toContain("Support request");
     const t = (await w.conv.listTickets({ limit: 20, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toMatchObject({ error_code: "M02", pic: "Quang" });
   });
@@ -123,7 +129,7 @@ describe("FAST-PATH và ngữ cảnh", () => {
     const u = newUser();
     await w.say(u, "swap fail");
     expect(isEscalation(last(u))).toBe(true);
-    expect(last(u)).toContain("Summary to send to support"); // chuyển nhân viên ngay câu đầu: vụ việc mở TRƯỚC khi dựng câu trả lời nên có khối tóm tắt
+    expect(lastBlock(u)).toContain("Support request"); // chuyển nhân viên ngay câu đầu: vụ việc mở TRƯỚC khi dựng câu trả lời nên có khối tóm tắt
     const t = (await w.conv.listTickets({ limit: 30, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toMatchObject({ error_code: "SWAP", pic: "Quang" });
     expect(t.required_info).toContain("wallet address");
@@ -259,7 +265,7 @@ describe("nhóm chat và idempotency", () => {
     const b = await w.pipeline.handle(batch);
     expect(a.status).toBe("ok");
     expect(b.status).toBe("duplicate");
-    expect(w.channel.textsTo(u).length).toBe(1);
+    expect(replyTexts(w, u).length).toBe(1);
     expect((await w.conv.listTickets({ limit: 100, offset: 0 })).filter((t) => t.user_id === u).length).toBe(1);
   });
 });
@@ -346,7 +352,9 @@ describe("đa ngôn ngữ", () => {
     const w2 = await makeWorld({ llm });
     try {
       await w2.say(703, "câu hỏi rất lạ về quantum banana zebra");
-      expect(w2.channel.textsTo(703).at(-1)).toBe(w2.live.index.get("fp-12-escalate")!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd());
+      const reply = replyTexts(w2, 703).at(-1)!;
+      expect(reply.startsWith(w2.live.index.get("fp-12-escalate")!.answers.en!.replace(/ Your reference code: \{REF\}/g, ""))).toBe(true);
+      expect(reply).toMatch(/Your reference code: EP-[A-HJKMNP-Z2-9]{5}$/);
       expect(await w2.kb.getTranslation("fp-12-escalate", "vi")).toBeNull();
     } finally {
       await w2.close();
@@ -386,7 +394,7 @@ describe("ảnh", () => {
     const u = newUser();
     w.channel.images.set("s", { screen_type: "error_dialog", has_secret: true, error_text: "creating wallet failed" });
     await w.sayPhoto(u, "s");
-    const texts = w.channel.textsTo(u);
+    const texts = replyTexts(w, u);
     expect(texts[0]).toBe("⚠️ Please cover sensitive information (seed phrase, private key, password) before sending screenshots. NEVER share these with anyone.");
     expect(isEscalation(texts.at(-1))).toBe(true);
   });
@@ -452,7 +460,7 @@ describe("chống đốt chi phí và ảnh không liên quan", () => {
       // khách khác vẫn được phục vụ bằng LLM
       await w2.say(8002, "please explain quantum banana zebra protocol");
       expect(llmCalls).toBeGreaterThan(0);
-      expect(w2.channel.textsTo(8002).at(-1)).toContain("I'm sorry, I don't have enough information");
+      expect(replyTexts(w2, 8002).at(-1)).toContain("I'm sorry, I don't have enough information");
     } finally {
       await w2.close();
     }

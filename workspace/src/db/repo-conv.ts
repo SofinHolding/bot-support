@@ -373,11 +373,12 @@ export function convRepo(db: Db) {
     async appendTicketNote(id: number, note: string, episodeRefCode?: string | null) {
       await db.query("UPDATE tickets SET notes = COALESCE(notes || E'\\n', '') || $2, episode_ref_code = COALESCE(episode_ref_code, $3), updated_at = now() WHERE id = $1", [id, note, episodeRefCode ?? null]);
     },
-    async listTickets(opts: { status?: string; limit: number; offset: number }) {
+    /** `ref`: mã tham chiếu khách gửi cho support ("EP-XXXXX") — tìm ticket của đúng vụ việc đó. */
+    async listTickets(opts: { status?: string; ref?: string; limit: number; offset: number }) {
       const r = await db.query(
         `SELECT t.*, u.name AS user_name, u.username AS user_username FROM tickets t LEFT JOIN users u ON u.telegram_id = t.user_id
-         WHERE $1::text IS NULL OR t.status = $1 ORDER BY t.created_at DESC LIMIT $2 OFFSET $3`,
-        [opts.status ?? null, opts.limit, opts.offset],
+         WHERE ($1::text IS NULL OR t.status = $1) AND ($4::text IS NULL OR t.episode_ref_code = $4) ORDER BY t.created_at DESC LIMIT $2 OFFSET $3`,
+        [opts.status ?? null, opts.limit, opts.offset, opts.ref ? opts.ref.trim().toUpperCase() : null],
       );
       return r.rows.map((x) => ({ ...mapTicket(x), user_name: x.user_name as string | null, user_username: x.user_username as string | null }));
     },

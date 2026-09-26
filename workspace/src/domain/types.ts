@@ -56,6 +56,8 @@ export interface Template {
   source?: string;
   /** Thời gian hiệu lực (ngày YYYY-MM-DD, tính cả hai đầu). Ngoài khoảng này bot không dùng nội dung. */
   valid?: { from?: string; until?: string };
+  /** Nhãn ngắn tiếng Anh (đã duyệt) mô tả hướng dẫn này, dùng trong khối tóm tắt gửi support thay cho id (core/handoff.ts stepLabel) */
+  staff_label?: string;
   /** Có khi template được dịch từ "mục hỏi đáp" (src/core/items.ts): tên, ngữ cảnh, bước, mục tương tự đã xác nhận là khác. */
   item?: TemplateItemMeta;
 }
