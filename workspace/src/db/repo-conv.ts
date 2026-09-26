@@ -252,7 +252,7 @@ export function convRepo(db: Db) {
     },
     /** Episode im lặng quá ngưỡng: open -> dormant. Trả về số dòng. */
     async markDormant(before: Date): Promise<number> {
-      const r = await db.query("UPDATE episodes SET status = 'dormant' WHERE status = 'open' AND last_activity_at < $1", [iso(before)]);
+      const r = await db.query("UPDATE episodes SET status = 'dormant', pending_clarify = NULL WHERE status = 'open' AND last_activity_at < $1", [iso(before)]);
       return r.rowCount;
     },
     /** Episode bỏ dở quá lâu: dormant -> resolved (không xoá, lịch sử còn cho admin). */

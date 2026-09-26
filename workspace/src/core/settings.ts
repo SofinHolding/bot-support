@@ -18,6 +18,7 @@ export interface Settings {
   "episode.closed_lookback_days": number;
   "episode.ask_when_unclear": boolean;
   "episode.reopen_window_hours": number;
+  "episode.max_clarify_per_episode": number; // số lần bot được hỏi lại khách trong MỘT vụ việc (ADR 0002: tối đa 1)
   "handoff.max_timeline_steps": number; // số bước bot đã hướng dẫn tối đa trong khối tóm tắt gửi support // khách quay lại chủ đề của vụ việc đang tạm lắng trong ngưỡng này thì mở lại vụ việc đó thay vì tạo mới
 
   "antispam.stale_days": number; // HEARTBEAT.md: xoá antispam không hoạt động > 30 ngày
@@ -52,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   "episode.closed_lookback_days": 30,
   "episode.ask_when_unclear": false,
   "episode.reopen_window_hours": 24,
+  "episode.max_clarify_per_episode": 1,
   "handoff.max_timeline_steps": 6,
 
   "antispam.stale_days": 30,

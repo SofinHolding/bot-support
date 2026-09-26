@@ -202,6 +202,7 @@ export class BotPipeline {
         tooShortMaxChars: settings["router.too_short_max_chars"],
         urlHostWhitelist: this.d.live.urlHosts,
         askWhenUnclear: settings["episode.ask_when_unclear"],
+        maxClarify: settings["episode.max_clarify_per_episode"],
       };
       const isSticker = items.every((i) => i.sticker) ;
       const otherMediaOnly = !rawText && !photos.length && items.some((i) => i.otherMedia) && !isSticker;
@@ -222,7 +223,7 @@ export class BotPipeline {
         const router = mode === "llm_first" ? routeLlmFirst : routeHybrid;
         try {
           result = await router(
-          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, lastAnswer: lastChunk ? { id: lastRef!, text: lastChunk.text } : undefined, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
+          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, lastAnswer: lastChunk ? { id: lastRef!, text: lastChunk.text } : undefined, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, clarifyCount: loaded.active?.clarify_count ?? 0, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
           { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge, conflicts: this.d.live.conflicts, answerTime: (k: string) => this.d.live.answerTimes.get(k) },
           );
         } finally {
@@ -382,8 +383,16 @@ export class BotPipeline {
         await conv.addEvent({ userId: batch.userId, type: "unanswered_question", payload: { message_id: messageId } }, now);
       }
       // Hỏi lại khách: ghi các mục đang chờ phân biệt; lượt kế tiếp (dù kết quả gì) xoá đi — chỉ hỏi lại 1 lần
-      if (outcome.kind === "CLARIFY" && ep) await conv.updateEpisode(ep.id, { pending_clarify: { items: outcome.items } });
-      else if (loaded.active?.pending_clarify) await conv.updateEpisode(loaded.active.id, { pending_clarify: null });
+      // Vết hỏi lại trong events (pending_clarify bị xoá sau một lượt): dòng thời gian của khối tóm tắt và thống kê tỉ lệ hỏi lại thành công
+      if (loaded.active?.pending_clarify) {
+        const asked = loaded.active.pending_clarify.items.map((x) => (/^[TK]:/.test(x) ? x : `T:${x}`));
+        const got = outcome.kind === "TEMPLATE" ? `T:${outcome.templateId}` : outcome.kind === "GROUNDED" && outcome.sources[0] ? `K:${outcome.sources[0].chunkId}` : null;
+        await conv.addEvent({ userId: batch.userId, episodeId: loaded.active.id, type: "clarify_answered", payload: { chosen: got && asked.includes(got) ? got : null } }, now);
+      }
+      if (outcome.kind === "CLARIFY" && ep) {
+        await conv.updateEpisode(ep.id, { pending_clarify: { items: outcome.items } });
+        await conv.addEvent({ userId: batch.userId, episodeId: ep.id, type: "clarify_asked", payload: { refs: outcome.items, message_id: messageId } }, now);
+      } else if (loaded.active?.pending_clarify) await conv.updateEpisode(loaded.active.id, { pending_clarify: null });
 
       // Nội dung ảnh (đã che) đi cùng sự kiện: các lượt sau vẫn biết ảnh nói gì dù ảnh không được đọc lại
       const imageText = vision && !vision.has_secret ? maskSensitive(vision.error_text).replace(/["\s]+/g, " ").trim().slice(0, 160) : "";

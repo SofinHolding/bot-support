@@ -32,6 +32,8 @@ export interface RouterSettings extends GateSettings {
   urlHostWhitelist: Set<string>;
   /** Cho AI hỏi lại khách 1 lần khi câu hỏi mơ hồ giữa hai mục hỏi đáp đã khai báo là khác nhau (setting episode.ask_when_unclear) */
   askWhenUnclear?: boolean;
+  /** Số lần hỏi lại tối đa trong một vụ việc (setting episode.max_clarify_per_episode) */
+  maxClarify?: number;
 }
 
 export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> = {
@@ -52,6 +54,8 @@ export interface RouteContext {
   contextPack?: ContextPack;
   /** Lượt trước bot đã hỏi lại khách để phân biệt các mục này: lượt này chỉ chọn trong đây, không rõ nữa thì chuyển nhân viên */
   pendingClarify?: { items: string[] };
+  /** Số lần bot đã hỏi lại khách trong vụ việc đang mở (episodes.clarify_count) */
+  clarifyCount?: number;
   /** Nội dung đã gửi khách trong vụ việc đang mở ("T:<id>", "K:<chunkId>"): khách báo chưa giải quyết được thì không gửi lại */
   answersSent?: string[];
   /**
@@ -702,6 +706,10 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
       return done({ kind: "ESCALATE", tier: 2, reason: "mơ hồ giữa nhiều template", sourceTemplateId: last?.id }, lang);
     };
     if (!settings.askWhenUnclear) return refused("tính năng hỏi lại đang tắt (episode.ask_when_unclear)");
+    if ((req.ctx.clarifyCount ?? 0) >= (settings.maxClarify ?? 1)) {
+      trace.notes.push(`AI muốn hỏi lại khách nhưng vụ việc đã hỏi lại ${req.ctx.clarifyCount} lần -> chuyển nhân viên`);
+      return done({ kind: "ESCALATE", tier: 2, reason: "đã dùng hết lượt hỏi lại trong vụ việc", sourceTemplateId: last?.id }, lang);
+    }
     if (refs.length < 2 || refs.length > 4) return refused(`số trường hợp không hợp lệ (${refs.length})`);
     if (!refs.every((r) => candidates.some((c) => c.ref === r))) return refused("có trường hợp không nằm trong kết quả tìm kiếm");
     const conflictKey = (r: string) => (r.startsWith("T:") ? `template:${r.slice(2)}` : `chunk:${r.slice(2)}`);

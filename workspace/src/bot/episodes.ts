@@ -82,8 +82,9 @@ export class EpisodeManager {
     let active = await this.conv.getActiveEpisode(userId);
     const gapMs = active ? now.getTime() - active.last_activity_at.getTime() : 0;
     if (active && active.status === "open" && gapMs > s["episode.t_gap_minutes"] * 60_000) {
-      await this.conv.updateEpisode(active.id, { status: "dormant" });
-      active = { ...active, status: "dormant" };
+      // Im lặng lâu: câu hỏi lại còn chờ hết hiệu lực (khách quay lại thường đã hỏi việc khác)
+      await this.conv.updateEpisode(active.id, { status: "dormant", pending_clarify: null });
+      active = { ...active, status: "dormant", pending_clarify: null };
     }
     const recent = await this.conv.recentEpisodes(userId, 5);
     let parentEscalatedGroup: string | undefined;
@@ -257,6 +258,7 @@ export class EpisodeManager {
     // Câu trả lời từ tài liệu: tin nối tiếp sau đó KHÔNG được xử lý theo luật nối tiếp của một template gửi trước đó
     if (inp.kind === "GROUNDED") patch.last_template_id = null;
     if (inp.sentRef) patch.last_ref = inp.sentRef;
+    if (inp.kind === "CLARIFY") patch.clarify_count = episode.clarify_count + 1;
     if (directive === "escalated") {
       patch.status = "escalated";
       patch.closed_at = inp.now;

@@ -2776,6 +2776,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "translation.prewarm_languages": "Các ngôn ngữ được dịch sẵn nhóm câu khẩn (cảnh báo bảo mật, chống spam, báo mất kết nối, câu chuyển nhân viên), ngăn bằng dấu phẩy. Ngôn ngữ khách đã dùng tự được thêm. Nhờ dịch sẵn, các câu này gửi được bằng ngôn ngữ của khách cả khi AI mất kết nối.",
     "translation.urgent_timeout_ms": "Thời gian chờ tối đa (ms) khi phải dịch câu khẩn tại chỗ vì chưa có bản dịch sẵn. Quá thời gian thì dùng phương án dự phòng.",
     "handoff.max_timeline_steps": "Số bước bot đã hướng dẫn (kèm kết quả) tối đa trong khối tóm tắt khách gửi cho support; các bước cũ hơn được gộp thành một dòng.",
+    "episode.max_clarify_per_episode": "Số lần bot được hỏi lại khách trong một vụ việc khi câu hỏi mơ hồ. Hết lượt thì chuyển nhân viên. Chỉ có tác dụng khi bật hỏi lại.",
   };
   const SETTING_TITLE = {
     "router.semantic_confident": "Ngưỡng tin tưởng ngữ nghĩa",
@@ -2804,6 +2805,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "translation.prewarm_languages": "Ngôn ngữ dịch sẵn câu khẩn",
     "translation.urgent_timeout_ms": "Thời gian chờ dịch câu khẩn tại chỗ (ms)",
     "handoff.max_timeline_steps": "Số bước tối đa trong khối tóm tắt gửi support",
+    "episode.max_clarify_per_episode": "Số lần hỏi lại tối đa trong một vụ việc",
   };
   const SETTING_ENUM = { "router.mode": ["hybrid", "llm_first"], "router.tier3_mode": ["extractive", "generative"], "router.knowledge_lang": ["vi", "en"] };
 

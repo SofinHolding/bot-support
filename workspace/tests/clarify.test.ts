@@ -158,6 +158,36 @@ describe("mục hỏi đáp trong luồng chọn câu trả lời", () => {
     expect(again.pending).toBeNull();
   });
 
+  it("mỗi vụ việc chỉ hỏi lại tối đa 1 lần (episode.max_clarify_per_episode); vết hỏi lại nằm trong events", async () => {
+    await setAsk(true);
+    select = () => "CLARIFY:app-pin-reset,card-pin-reset";
+    const first = await ask(7109, "I need to reset my pin");
+    expect(first.d.kind).toBe("CLARIFY");
+    select = () => "T:card-pin-reset";
+    await ask(7109, "the card one");
+    select = () => "CLARIFY:app-pin-reset,card-pin-reset";
+    const third = await ask(7109, "and how do I reset the other pin?");
+    expect(third.d.kind).toBe("ESCALATE");
+    expect(third.d.reason).toBe("đã dùng hết lượt hỏi lại trong vụ việc");
+    const ev = (await w.db.query<{ type: string; payload: Record<string, unknown> }>("SELECT type, payload FROM events WHERE user_id = 7109 AND type LIKE 'clarify_%' ORDER BY id")).rows;
+    expect(ev.map((e) => [e.type, e.type === "clarify_asked" ? e.payload.refs : e.payload.chosen])).toEqual([
+      ["clarify_asked", ["T:app-pin-reset", "T:card-pin-reset"]],
+      ["clarify_answered", "T:card-pin-reset"],
+    ]);
+    const ep = (await w.db.query<{ clarify_count: number }>("SELECT clarify_count FROM episodes WHERE user_id = 7109 ORDER BY id LIMIT 1")).rows[0]!;
+    expect(ep.clarify_count).toBe(1);
+  });
+
+  it("câu hỏi lại hết hiệu lực khi vụ việc tạm lắng (job maintenance)", async () => {
+    await setAsk(true);
+    select = () => "CLARIFY:app-pin-reset,card-pin-reset";
+    expect((await ask(7110, "I need to reset my pin")).pending).not.toBeNull();
+    w.clock.advance(2 * 3600_000);
+    await w.conv.markDormant(new Date(w.clock.now.getTime() - 60 * 60_000));
+    const ep = (await w.db.query<{ status: string; pending_clarify: unknown }>("SELECT status, pending_clarify FROM episodes WHERE user_id = 7110")).rows[0]!;
+    expect(ep).toEqual({ status: "dormant", pending_clarify: null });
+  });
+
   it("nhiều bước: 'vẫn chưa được' → bước 2 → vẫn chưa được → chuyển nhân viên", async () => {
     select = () => "T:sync-stuck";
     const s1 = await ask(7106, "my sync is stuck");
