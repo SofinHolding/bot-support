@@ -9,6 +9,7 @@ import { LlmUnavailableError, type LlmPort, type UnderstandRequest } from "../sr
 import { protectTerms, restoreTerms, translationProblems } from "../src/core/translate";
 import { PgKnowledge } from "../src/kb/knowledge-search";
 import { HashEmbedder } from "../src/core/embedding";
+import { HANDLERS, type JobContext } from "../src/worker/jobs";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
 let w: World | undefined;
@@ -190,5 +191,49 @@ describe("lấy lại đoạn tài liệu theo id", () => {
     expect((await knowledge.byIds([id])).map((h) => h.chunkId)).toEqual([id]);
     await w.db.query("UPDATE kb_chunks SET metadata = metadata || '{\"valid_until\": \"2000-01-01\"}'::jsonb WHERE id = $1", [id]);
     expect(await knowledge.byIds([id])).toEqual([]);
+  });
+});
+
+describe("hồ sơ khách xuyên vụ việc (thiết bị, phiên bản app)", () => {
+  it("giá trị code trích được nhớ qua vụ việc sau và đưa vào ngữ cảnh AI", async () => {
+    const seen: UnderstandRequest[] = [];
+    w = await makeWorld({ llm: fakeLlm({ understand: async (r) => { seen.push(r); return { language: "en", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }; } }) });
+    const u = 881008;
+    await w.say(u, "how to login, I use Samsung S23 with version 3.2.1");
+    expect((await w.conv.getUser(u))!.profile).toMatchObject({ device: { value: "Samsung S23" }, app_version: { value: "3.2.1" } });
+    w.clock.advance(3 * 86_400_000);
+    await w.say(u, "wallet address");
+    expect(seen.at(-1)!.context?.profile).toContain("device: Samsung S23; app version: 3.2.1");
+  });
+});
+
+describe("xoá dữ liệu theo thời hạn (job retention)", () => {
+  it("mặc định không xoá gì; đặt thời hạn thì xoá đúng thứ tự, giữ sự kiện bảo mật / ticket và dòng vụ việc", async () => {
+    w = await makeWorld();
+    const u = 881009;
+    await w.say(u, "swap fail");
+    await w.say(u, "abandon ability able about above absent absorb abstract absurd abuse access accident");
+    const count = async (sql: string) => Number((await w!.db.query<{ n: string }>(sql, [u])).rows[0]!.n);
+    const snapshot = async () => ({
+      messages: await count("SELECT count(*) AS n FROM messages WHERE user_id = $1"),
+      decisions: await count("SELECT count(*) AS n FROM decisions WHERE user_id = $1"),
+      kept: await count("SELECT count(*) AS n FROM events WHERE user_id = $1 AND (type = 'security_alert' OR type LIKE 'ticket\\_%')"),
+      events: await count("SELECT count(*) AS n FROM events WHERE user_id = $1"),
+      episodes: await count("SELECT count(*) AS n FROM episodes WHERE user_id = $1"),
+    });
+    const ctx = { ops: w.ops, settings: w.settings, now: () => new Date(w!.clock.now.getTime() + 400 * 86_400_000) } as unknown as JobContext;
+    const before = await snapshot();
+    expect((await HANDLERS.retention!(ctx, {})) as { purged: Record<string, number> }).toMatchObject({ purged: {} });
+    expect(await snapshot()).toEqual(before);
+
+    for (const k of ["messages", "events", "decisions", "episodes"]) await w.ops.setSetting(`retention.${k}_days`, 180, "test");
+    w.settings.invalidate();
+    await HANDLERS.retention!(ctx, {});
+    const after = await snapshot();
+    expect(after).toMatchObject({ messages: 0, decisions: 0, episodes: before.episodes });
+    expect(after.kept).toBe(before.kept);
+    expect(after.events).toBe(before.kept);
+    const ep = (await w.db.query<{ issue: string | null; summary: unknown }>("SELECT issue, summary FROM episodes WHERE user_id = $1 AND closed_at IS NOT NULL", [u])).rows;
+    expect(ep.every((e) => e.issue === null && e.summary === null)).toBe(true);
   });
 });

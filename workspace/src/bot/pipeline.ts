@@ -401,6 +401,9 @@ export class BotPipeline {
       // Trích trên cả bản tiếng Anh do AI viết lại: mẫu trích viết cho Anh/Việt, không đọc được "ошибку 504, версия 2.3.1" trong tiếng Nga/Hàn
       const facts = ep ? extractFacts([masked, imageText, result.queryEn].filter(Boolean).join("\n")) : [];
       if (ep && facts.length) await conv.addEvent({ userId: batch.userId, episodeId: ep.id, type: "customer_fact", payload: { facts } }, now);
+      // Thiết bị / phiên bản app: giá trị ổn định của khách, giữ qua các vụ việc (users.profile, hết hạn 30 ngày ở contextPack)
+      const stable = Object.fromEntries(facts.filter((f) => f.kind === "device" || f.kind === "app_version").map((f) => [f.kind, { value: f.value, seen_at: now.toISOString() }]));
+      if (Object.keys(stable).length) await conv.updateProfile(batch.userId, stable);
       const outIds: number[] = [];
       for (let i = 0; i < replies.length; i++) {
         outIds.push(await conv.addMessage({ at: now, episodeId: ep?.id ?? null, userId: batch.userId, direction: "out", text: replies[i]!, language: built.lang ?? lang, tier: outcome.tier, templateId: outcomeTemplateId(outcome), telegramMessageId: sentIds[i] ?? null, latencyMs: Date.now() - started }));

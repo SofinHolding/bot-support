@@ -237,7 +237,16 @@ export const HANDLERS: Record<string, JobHandler> = {
   async retention(ctx) {
     const s = await ctx.settings.get();
     const mediaDeleted = ctx.media ? ctx.media.purgeOlderThan(s["retention.media_days"]) : 0;
-    return { mediaDeleted, days: s["retention.media_days"] };
+    const purged = await ctx.ops.purgeConversationData(ctx.now(), {
+      messages: s["retention.messages_days"],
+      events: s["retention.events_days"],
+      decisions: s["retention.decisions_days"],
+      llmCalls: s["retention.llm_calls_days"],
+      inboundUpdates: s["retention.inbound_updates_days"],
+      outbox: s["retention.outbox_days"],
+      episodes: s["retention.episodes_days"],
+    });
+    return { mediaDeleted, days: s["retention.media_days"], purged };
   },
 
   /** Gửi thông báo hàng loạt (đã được owner xác nhận). Xử lý theo lô để không chiếm worker, tuân giới hạn Telegram. */

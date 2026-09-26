@@ -104,7 +104,12 @@ export class EpisodeManager {
       .slice(0, 3)
       .map((e) => `"${e.issue ?? e.topic_group ?? "?"}" (${e.status}, ${Math.max(0, Math.round((now.getTime() - e.last_activity_at.getTime()) / DAY))}d ago)`);
     const flags = Object.keys(user.flags ?? {}).filter((k) => user.flags[k]);
-    const profile = [`language=${lang}`, past.length ? `previous episodes: ${past.join(", ")}` : "", flags.length ? `flags: ${flags.join(",")}` : ""].filter(Boolean).join("; ");
+    // Thiết bị / phiên bản app khách nêu ở vụ việc trước (code trích, users.profile): còn dùng trong 30 ngày, khách khỏi phải nói lại
+    const known = (["device", "app_version"] as const)
+      .map((k) => [k, user.profile?.[k]] as const)
+      .filter(([, v]) => v && now.getTime() - new Date(v.seen_at).getTime() <= 30 * DAY)
+      .map(([k, v]) => `${k === "device" ? "device" : "app version"}: ${v!.value}`);
+    const profile = [`language=${lang}`, past.length ? `previous episodes: ${past.join(", ")}` : "", flags.length ? `flags: ${flags.join(",")}` : "", ...known].filter(Boolean).join("; ");
 
     const a = loaded.active;
     if (!a) return { profile, events: [], recent: [] };

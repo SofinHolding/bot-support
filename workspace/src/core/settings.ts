@@ -34,6 +34,14 @@ export interface Settings {
   "translation.urgent_timeout_ms": number; // thời gian chờ tối đa khi phải dịch câu khẩn tại chỗ (chưa có bản dịch sẵn)
   "batching.window_ms": number; // gom tin nhắn liên tiếp (gateway cũ: debounce 2000ms)
   "retention.media_days": number;
+  // Thời hạn giữ dữ liệu hội thoại (ngày). 0 = giữ vô thời hạn (mặc định, chờ pháp chế chốt). Job retention xoá lúc 03:30.
+  "retention.messages_days": number;
+  "retention.events_days": number; // trừ security_alert và ticket_*
+  "retention.decisions_days": number;
+  "retention.llm_calls_days": number; // usage_daily đã tổng hợp nên không mất thống kê
+  "retention.inbound_updates_days": number;
+  "retention.outbox_days": number; // chỉ tin đã gửi / đã bỏ
+  "retention.episodes_days": number; // tính từ lúc đóng: xoá tóm tắt, tên vụ việc, câu truy vấn neo; giữ dòng để ticket còn trỏ tới
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -69,6 +77,13 @@ export const DEFAULT_SETTINGS: Settings = {
   "translation.urgent_timeout_ms": 8000,
   "batching.window_ms": 2000,
   "retention.media_days": 30,
+  "retention.messages_days": 0,
+  "retention.events_days": 0,
+  "retention.decisions_days": 0,
+  "retention.llm_calls_days": 0,
+  "retention.inbound_updates_days": 0,
+  "retention.outbox_days": 0,
+  "retention.episodes_days": 0,
 };
 
 /** Danh sách ngôn ngữ dịch sẵn câu khẩn (setting translation.prewarm_languages). */

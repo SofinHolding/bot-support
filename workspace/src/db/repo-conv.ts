@@ -9,6 +9,8 @@ export interface UserRow {
   username: string | null;
   language: string | null;
   flags: Record<string, unknown>;
+  /** Giá trị ổn định khách đã nêu (thiết bị, phiên bản app), do code trích: { device?: { value, seen_at }, app_version?: {...} } */
+  profile: Record<string, { value: string; seen_at: string }>;
   first_seen: Date;
   last_seen: Date;
   seen_count: number;
@@ -144,6 +146,10 @@ export function convRepo(db: Db) {
     },
     async setLanguage(id: number, lang: string) {
       await db.query("UPDATE users SET language = $2 WHERE telegram_id = $1", [id, lang]);
+    },
+    /** Ghi đè từng khoá hồ sơ (vd thiết bị mới nhất khách nêu). */
+    async updateProfile(id: number, patch: Record<string, { value: string; seen_at: string }>) {
+      await db.query("UPDATE users SET profile = profile || $2::jsonb WHERE telegram_id = $1", [id, JSON.stringify(patch)]);
     },
     async setFlag(id: number, key: string, value: unknown) {
       await db.query("UPDATE users SET flags = flags || $2::jsonb WHERE telegram_id = $1", [id, JSON.stringify({ [key]: value })]);

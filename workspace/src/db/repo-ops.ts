@@ -213,6 +213,25 @@ export function opsRepo(db: Db) {
       if (attempts + 1 >= maxAttempts) await db.query("UPDATE outbox SET status = 'dead', attempts = attempts + 1, last_error = $2 WHERE id = $1", [id, error.slice(0, 500)]);
       else await db.query("UPDATE outbox SET attempts = attempts + 1, last_error = $2, next_at = now() + ($3 || ' seconds')::interval WHERE id = $1", [id, error.slice(0, 500), String(30 * 2 ** attempts)]);
     },
+    /**
+     * Xoá dữ liệu hội thoại quá thời hạn (days <= 0: bỏ qua bảng đó). Thứ tự xoá theo khoá ngoại: decisions -> events -> messages;
+     * episodes chỉ xoá nội dung (tóm tắt, tên vụ việc, câu neo), giữ dòng để ticket / event bảo mật còn trỏ tới.
+     */
+    async purgeConversationData(now: Date, days: { messages: number; events: number; decisions: number; llmCalls: number; inboundUpdates: number; outbox: number; episodes: number }) {
+      const before = (d: number) => iso(new Date(now.getTime() - d * 86_400_000));
+      const out: Record<string, number> = {};
+      const run = async (key: string, d: number, sql: string) => {
+        if (d > 0) out[key] = (await db.query(sql, [before(d)])).rowCount;
+      };
+      await run("decisions", days.decisions, "DELETE FROM decisions WHERE created_at < $1");
+      await run("events", days.events, "DELETE FROM events WHERE at < $1 AND type <> 'security_alert' AND type NOT LIKE 'ticket\\_%'");
+      await run("messages", days.messages, "DELETE FROM messages WHERE created_at < $1");
+      await run("llm_calls", days.llmCalls, "DELETE FROM llm_calls WHERE created_at < $1");
+      await run("inbound_updates", days.inboundUpdates, "DELETE FROM inbound_updates WHERE received_at < $1 AND processed_at IS NOT NULL");
+      await run("outbox", days.outbox, "DELETE FROM outbox WHERE created_at < $1 AND status IN ('sent', 'dead')");
+      await run("episodes", days.episodes, "UPDATE episodes SET summary = NULL, issue = NULL, anchor_query_en = NULL WHERE closed_at < $1 AND (summary IS NOT NULL OR issue IS NOT NULL OR anchor_query_en IS NOT NULL)");
+      return out;
+    },
     async outboxStats() {
       const r = await db.query<{ status: string; n: number }>("SELECT status, count(*)::int AS n FROM outbox GROUP BY status");
       return Object.fromEntries(r.rows.map((x) => [x.status, num(x.n)]));
