@@ -169,14 +169,29 @@ export function hasHandoffContent(inp: HandoffInput): boolean {
 export function buildHandoffText(inp: HandoffInput): string {
   const lines: string[] = [HEADER];
   if (inp.refCode) lines.push(`Ref: ${inp.refCode}`);
+  lines.push(...claimLines(inp));
+  lines.push(`Reason for transfer: ${HANDOFF_REASON_TEXT[inp.reason]}`);
+  return lines.join("\n");
+}
+
+/**
+ * Phần NỘI DUNG của khối (vấn đề, điều khách báo, bước đã hướng dẫn, giá trị khách nêu, điểm chưa giải quyết) — đúng phần SKILL
+ * verify-handoff đối chiếu với nguồn. Tiêu đề, mã tham chiếu và lý do chuyển là chữ cố định / mã do code thêm, không có trong
+ * nguồn nên không đưa cho AI kiểm (kiểm thực tế: AI từ chối cả khối vì "reference / contact không có trong nguồn").
+ */
+export function buildHandoffClaims(inp: HandoffInput): string {
+  return claimLines(inp).join("\n");
+}
+
+function claimLines(inp: HandoffInput): string[] {
+  const lines: string[] = [];
   if (inp.issue?.trim()) lines.push(`Issue: ${inp.issue.trim()}`);
   if (inp.summary?.user_reported) lines.push(`Customer reported: ${inp.summary.user_reported}`);
   if (inp.steps.length) {
     const head = inp.droppedSteps ? [`  (+${inp.droppedSteps} earlier steps)`] : [];
     lines.push(`Bot guidance already given:\n${[...head, ...inp.steps.map((s, i) => `  ${i + 1}. ${timelineLine(s)}`)].join("\n")}`);
-  } else lines.push("Bot guidance already given: no approved answer was sent");
+  } // không có bước nào: bỏ hẳn dòng này (một câu khẳng định "chưa gửi gì" không có trong nguồn, verify-handoff từ chối cả khối)
   if (inp.facts.length) lines.push(`Details provided by the customer: ${inp.facts.join(" · ")}`);
   if (inp.summary?.unresolved_points) lines.push(`Still unresolved: ${inp.summary.unresolved_points}`);
-  lines.push(`Reason for transfer: ${HANDOFF_REASON_TEXT[inp.reason]}`);
-  return lines.join("\n");
+  return lines;
 }

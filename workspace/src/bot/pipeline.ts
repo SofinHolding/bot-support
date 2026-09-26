@@ -8,7 +8,7 @@ import { applyOfftopic, blockJustExpired, isBlocked, newAntispamState } from "..
 import { extractFacts, mergeFacts, type CustomerFact } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
 import { topicKeyOf, topicKeyOfGroup } from "../core/items";
-import { buildHandoffText, handoffReasonOf, hasDiacritics, hasHandoffContent, timelineLine, type HandoffInput, type HandoffReason } from "../core/handoff";
+import { buildHandoffClaims, buildHandoffText, handoffReasonOf, hasDiacritics, hasHandoffContent, timelineLine, type HandoffInput, type HandoffReason } from "../core/handoff";
 import { detectLanguage, looksVietnamese, resolveLanguage } from "../core/language";
 import type { KnowledgePort, LlmPort } from "../core/ports";
 import { LlmUnavailableError, usableLlm } from "../core/ports";
@@ -632,7 +632,7 @@ export class BotPipeline {
         continue;
       }
       try {
-        const v = await llm.verifyHandoff({ text: body, source: { issue: inp.issue ?? "", userReported: inp.summary?.user_reported ?? "", unresolvedPoints: inp.summary?.unresolved_points ?? "", facts: inp.facts, steps: inp.steps.map(timelineLine) } });
+        const v = await llm.verifyHandoff({ text: buildHandoffClaims(inp), source: { issue: inp.issue ?? "", userReported: inp.summary?.user_reported ?? "", unresolvedPoints: inp.summary?.unresolved_points ?? "", facts: inp.facts, steps: inp.steps.map(timelineLine) } });
         if (!v.ok) {
           reasons.push(`${tier}: verify-handoff từ chối (${(v.reason ?? "").slice(0, 80)})`);
           continue;

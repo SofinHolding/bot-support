@@ -131,6 +131,24 @@ describe("ranh giới vụ việc", () => {
   });
 });
 
+describe("chuyển nhân viên liên tiếp", () => {
+  it("khách nhắn tiếp ngay sau lần chuyển nhân viên và lại được chuyển: dùng lại vụ việc và mã tham chiếu cũ", async () => {
+    w = await makeWorld();
+    const u = 881010;
+    await w.say(u, "swap fail");
+    const [first] = await episodes(u);
+    w.clock.advance(5 * 60_000);
+    await w.say(u, "quantum banana zebra still broken");
+    const eps = await episodes(u);
+    expect(eps.length).toBe(1);
+    expect(eps[0]!.status).toBe("escalated");
+    expect(w.channel.sent.filter((m) => m.chatId === u && !m.entities).at(-1)!.text).toContain(`Your reference code: ${first!.ref_code}`);
+    w.clock.advance(3 * 3600_000); // quá khoảng im lặng: việc mới, mã mới
+    await w.say(u, "quantum banana zebra again");
+    expect((await episodes(u)).length).toBe(2);
+  });
+});
+
 describe("câu hỏi gửi lúc mất kết nối AI", () => {
   it("vụ việc mở ở lượt sau nhận tin đó làm điểm bắt đầu", async () => {
     let down = true;

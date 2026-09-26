@@ -198,6 +198,22 @@ describe("hai bậc kiểm trước khi gửi khối", () => {
     }
   });
 
+  it("verify-handoff chỉ đối chiếu phần nội dung: không có tiêu đề, mã tham chiếu, lý do chuyển (chữ cố định của code)", async () => {
+    const texts: string[] = [];
+    const llm = fakeLlm({ verifyHandoff: async (r) => { texts.push(r.text); return { ok: true }; } });
+    const w = await makeWorld({ llm });
+    try {
+      await w.say(u + 4, "why ITLG reduce");
+      await w.say(u + 4, "not burn");
+      expect(texts.length).toBe(1);
+      expect(texts[0]).toContain("Bot guidance already given");
+      expect(texts[0]).not.toMatch(/Ref: |Support request|@interlink_technicalsupport|Reason for transfer/);
+      expect(lastBlock(w, u + 4)!.text).toMatch(/Ref: EP-.*Reason for transfer/s);
+    } finally {
+      await w.close();
+    }
+  });
+
   it("gửi khối lỗi -> hộp thư đi giữ định dạng khối để gửi lại", async () => {
     const w = await makeWorld();
     try {

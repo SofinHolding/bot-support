@@ -215,6 +215,14 @@ export class EpisodeManager {
     // (nếu không, chủ đề cũ bị coi là "đã escalate" và mọi câu hỏi sau về chủ đề đó đều bị ép chuyển support).
     if (active && escalating && inp.relatedToActive === false) active = null;
 
+    // Khách nhắn tiếp ngay sau khi vừa được chuyển nhân viên (trong khoảng im lặng T_gap) và lượt này lại chuyển nhân viên, không có
+    // chủ đề mới: vẫn là vụ việc vừa chuyển — dùng lại vụ việc đó và mã tham chiếu của nó, không mở vụ việc mới với mã khác
+    // (kiểm thực tế: "Still not solved, I lost 50 ITLG" ngay sau lần chuyển đầu nhận một mã tham chiếu thứ hai).
+    if (!active && escalating && !key && !inp.active) {
+      const latest = await this.conv.getLatestEpisode(inp.userId);
+      if (latest?.status === "escalated" && inp.now.getTime() - latest.last_activity_at.getTime() <= s["episode.t_gap_minutes"] * 60_000) active = latest;
+    }
+
     // Khách quay lại vấn đề cũ cùng chủ đề: mở lại vụ việc tạm lắng thay vì tạo mới
     if (!active && key) {
       const since = new Date(inp.now.getTime() - s["episode.reopen_window_hours"] * HOUR);
