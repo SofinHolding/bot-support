@@ -293,6 +293,19 @@ export function kbRepo(db: Db) {
       return r.rows.map((x) => ({ chunkId: String(x.id), docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), searchText: String(x.search_text), lang: (x.lang as string | null) ?? undefined, url: (x.url as string | null) ?? undefined }));
     },
 
+    /** Các đoạn đang publish VÀ đang trong thời gian hiệu lực, theo id (khách trả lời câu hỏi lại, câu trả lời gần nhất của vụ việc). */
+    async listActiveChunksByIds(ids: string[]): Promise<{ chunkId: string; docSlug: string; heading: string; text: string; lang?: string; url?: string }[]> {
+      const want = ids.filter((x) => /^\d+$/.test(x));
+      if (!want.length) return [];
+      const r = await db.query(
+        `SELECT c.id::text AS id, c.doc_slug, c.heading, c.text, c.url, c.metadata->>'lang' AS lang
+         FROM kb_chunks c JOIN kb_document_versions v ON v.id = c.version_id
+         WHERE v.status = 'published' AND c.id = ANY($1::bigint[]) AND ${ACTIVE_CHUNK} ORDER BY c.id`,
+        [want],
+      );
+      return r.rows.map((x) => ({ chunkId: String(x.id), docSlug: String(x.doc_slug), heading: String(x.heading), text: String(x.text), lang: (x.lang as string | null) ?? undefined, url: (x.url as string | null) ?? undefined }));
+    },
+
     /** Vector đã lưu của mọi đoạn đang publish theo `model` (máy quét chồng lấn dùng lại, không gọi API embed). */
     async listPublishedChunkVectors(model: string): Promise<Map<string, number[]>> {
       const r = await db.query<{ id: string; v: string }>(

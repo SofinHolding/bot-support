@@ -36,6 +36,46 @@ export const ITEM_TOPICS: Record<string, string> = {
   system: "Tin nhắn hệ thống",
 };
 
+/** Nhóm của hệ thống cũ -> chủ đề mới. Nhóm không có ở đây -> "general" (kb/migrate-items.ts ghi nhật ký). */
+export const GROUP_TOPIC: Record<string, string> = {
+  Greeting: "greeting",
+  FollowUp: "greeting",
+  Account: "account",
+  KYC: "kyc",
+  Tokens: "itlg",
+  Burn: "itlg",
+  Listing: "itlg",
+  Withdraw: "itlg",
+  Wallet: "wallet",
+  HCS: "hcs",
+  Game: "game",
+  GroupMining: "mining",
+  Ambassador: "programs",
+  Campaign: "programs",
+  FAQ: "general",
+  Escalate: "support",
+  AntiSpam: "system",
+  Security: "system",
+  System: "system",
+  Image: "system",
+};
+
+/** Chủ đề không phải một vấn đề của khách (lời chào, chuyển nhân viên, tin hệ thống): không mở/đổi vụ việc. */
+const NON_TOPIC_KEYS = new Set(["greeting", "support", "system"]);
+
+/**
+ * Khoá chủ đề chuẩn hoá của một nhóm: nhóm cũ ("Wallet") và chủ đề mục hỏi đáp ("wallet") cho cùng một khoá, theo đúng bảng
+ * chuyển dữ liệu (nhóm cũ lạ -> "general", như lúc chuyển sang mục hỏi đáp). undefined = nhóm "không chủ đề".
+ */
+export function topicKeyOfGroup(group: string | null | undefined): string | undefined {
+  if (!group) return undefined;
+  const key = GROUP_TOPIC[group] ?? (ITEM_TOPICS[group] ? group : "general");
+  return NON_TOPIC_KEYS.has(key) ? undefined : key;
+}
+
+/** Khoá chủ đề của nội dung được chọn trả lời (template cũ hoặc mục hỏi đáp đã dịch). */
+export const topicKeyOf = (t: { group: string } | undefined): string | undefined => topicKeyOfGroup(t?.group);
+
 export type ItemKind = "answer" | "handoff" | "system";
 /** Đích của một bước khi khách phản hồi: bước kế tiếp, chuyển nhân viên, hoặc mục khác (`<id>` hay `<id>#<số bước>`). */
 export type StepTarget = "next" | "handoff" | string;

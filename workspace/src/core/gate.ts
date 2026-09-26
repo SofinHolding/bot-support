@@ -9,6 +9,7 @@
 import type { Condition, Template } from "../domain/types";
 import { makeInput, type Evaluator } from "./predicates";
 import type { Hit, IndexInput, Suggestion, TemplateIndex } from "./template-index";
+import { topicKeyOf, topicKeyOfGroup } from "./items";
 
 export interface GateSettings {
   semanticConfident: number; // điểm tối thiểu để tin một ứng viên chỉ-ngữ-nghĩa
@@ -20,7 +21,7 @@ export const DEFAULT_GATE_SETTINGS: GateSettings = { semanticConfident: 0.82, se
 
 export interface GateContext {
   lastTemplateId?: string;
-  /** topic_group của episode cha đã escalate gần đây (khách quay lại cùng chủ đề) */
+  /** Chủ đề (khoá topicKeyOf, hoặc tên nhóm cũ) của episode đã escalate gần đây (khách quay lại cùng chủ đề) */
   parentEscalatedGroup?: string;
 }
 
@@ -41,8 +42,6 @@ export interface GateResult {
   steps: GateStep[];
   ranked: { templateId: string; kind: string; priority: number; phraseLen: number }[];
 }
-
-const NON_TOPIC_GROUPS = new Set(["Greeting", "FollowUp", "System", "Image", "Security", "AntiSpam", "Escalate"]);
 
 function describe(c: Condition): string {
   return typeof c === "string" ? c : JSON.stringify(c);
@@ -86,11 +85,9 @@ export function decide(
   // ---- Cổng 3: ngữ cảnh ----
   const g3: GateStep = { gate: 3, name: "ngữ cảnh", removed: [] };
   const hasOverride = alive.some((h) => h.kind === "override");
-  if (ctx.parentEscalatedGroup && !hasOverride) {
-    const sameTopic = alive.find((h) => {
-      const t = index.get(h.templateId)!;
-      return t.group === ctx.parentEscalatedGroup && !NON_TOPIC_GROUPS.has(t.group);
-    });
+  const escalatedTopic = topicKeyOfGroup(ctx.parentEscalatedGroup);
+  if (escalatedTopic && !hasOverride) {
+    const sameTopic = alive.find((h) => topicKeyOf(index.get(h.templateId)) === escalatedTopic);
     if (sameTopic) {
       return {
         result: { verdict: "ESCALATE", reason: `khách quay lại chủ đề "${ctx.parentEscalatedGroup}" đã được chuyển support trước đó`, sourceTemplateId: sameTopic.templateId },
@@ -138,7 +135,7 @@ export function decide(
     return t.response_mode === "EXACT_TEMPLATE" && t.match.examples.length > 0;
   });
   const [s1, s2] = eligible;
-  if (s1 && ctx.parentEscalatedGroup && s1.score >= settings.semanticConfident && index.get(s1.templateId)!.group === ctx.parentEscalatedGroup) {
+  if (s1 && escalatedTopic && s1.score >= settings.semanticConfident && topicKeyOf(index.get(s1.templateId)) === escalatedTopic) {
     return { result: { verdict: "ESCALATE", reason: `khách quay lại chủ đề "${ctx.parentEscalatedGroup}" đã được chuyển support trước đó`, sourceTemplateId: s1.templateId }, steps, ranked: [] };
   }
   const linkedRunnerUp = !!s1 && eligible.slice(1).some((s) => s.score >= settings.semanticSuggest && index.distinctPair(s1.templateId, s.templateId));

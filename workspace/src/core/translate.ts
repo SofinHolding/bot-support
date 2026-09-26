@@ -1,15 +1,22 @@
 /**
  * Dịch template mà KHÔNG làm hỏng những thứ không được dịch (AGENTS.md > Ngôn ngữ):
- * URL, tên sản phẩm (Interlink, ITLG, ITL, HCS, HHP, KYC), Telegram handle.
+ * URL, tên sản phẩm (Interlink, ITLG, ITL, HCS, HHP, KYC), Telegram handle, biến điền sau khi dịch, mã tham chiếu vụ việc.
  * Ta thay chúng bằng token trước khi gửi cho LLM, rồi khôi phục và KIỂM TRA đủ token sau khi dịch.
  */
 import { looksVietnamese, scriptProblem } from "./language";
 
+/** Biến điền SAU khi dịch ({ISSUE}, {SUPPORT_SUMMARY}, {REF}...): bản dịch phải giữ nguyên, đúng một lần. */
+export const PLACEHOLDER_RE = /\{[A-Z][A-Z_]*\}/g;
+/** Mã tham chiếu vụ việc (repo-conv.ts newRefCode): khách gửi mã này cho support nên không được dịch hay đổi. */
+export const REF_CODE_RE = /\bEP-[A-HJKMNP-Z2-9]{5}\b/g;
+
 const PATTERNS: RegExp[] = [
-  /\bhttps?:\/\/[^\s)>\]"']+/gi, // URL
+  /\bhttps?:\/\/[^\s)>\]"'{]+/gi, // URL ("{" không thuộc URL: biến dính liền sau link vẫn được bảo vệ riêng)
   /(?<![\w])@[A-Za-z0-9_]{4,}/g, // Telegram handle
   /\$?\b(?:ITLG|ITL|HCS|HHP|KYC)\b/g,
   /\bInter[Ll]ink(?:\s+Network)?\b/g,
+  PLACEHOLDER_RE,
+  REF_CODE_RE,
 ];
 
 const open = "⟦";
@@ -107,6 +114,9 @@ export function translationProblems(source: string, translated: string, targetLa
   if (targetLang !== "vi" && looksVietnamese(t)) problems.push("bản dịch còn sót tiếng Việt");
   const script = scriptProblem(t, targetLang);
   if (script) problems.push(script);
+  // Biến điền sau khi dịch: bản dịch (kể cả bản đã lưu từ trước khi biến được bảo vệ) làm mất / nhân đôi thì chèn sai hoặc mất nội dung
+  const vars = (x: string) => [...x.matchAll(PLACEHOLDER_RE)].map((m) => m[0]).sort().join(",");
+  if (vars(source) !== vars(translated)) problems.push(`bản dịch làm sai biến (gốc: ${vars(source) || "-"}; dịch: ${vars(translated) || "-"})`);
   return problems;
 }
 
@@ -123,6 +133,7 @@ export function translationFeedback(problems: string[]): string[] {
     if (/độ dài/.test(p)) return "The translation length does not match the source. Translate every sentence, add nothing, leave nothing out (R2).";
     if (/tiếng Việt/.test(p)) return "The translation still contains Vietnamese. Rewrite every Vietnamese word in the target language; no Vietnamese diacritic letter may remain (R1a).";
     if (/Kana/.test(p) || /chữ của ngôn ngữ đích|không phải Latin/.test(p)) return "The translation is not written in the script of the target language. Write it entirely in the target language's script (R1, R10).";
+    if (/biến/.test(p)) return "A placeholder such as {ISSUE} was changed, translated, lost or duplicated. Keep every protected token ⟦n⟧ exactly once (R5).";
     if (/URL|handle/.test(p)) return "A URL or @handle was changed, added or lost. Keep every protected token ⟦n⟧ exactly once and write no URL or handle yourself (R5).";
     if (/vượt \d+ ký tự/.test(p)) return "The translation is too long for one message. Translate faithfully and concisely without adding anything (R2).";
     return "The translation failed an automatic faithfulness check. Translate the source again, literally and completely (R2, R10).";

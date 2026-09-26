@@ -1,48 +1,76 @@
 /**
  * EpisodeManager: mỗi vấn đề của khách là một episode. Quyết định nối tiếp / tách / mở lại, và dựng gói ngữ cảnh
  * gửi LLM (kích thước gần cố định). Trạng thái nghiệp vụ lấy từ `events` do CODE ghi, không từ tóm tắt của LLM.
+ *
+ * Một lượt đi qua hai bước:
+ *  - `resolveEpisode` ngay sau định tuyến, TRƯỚC khi dựng câu trả lời: chọn / mở / mở lại / chuyển episode, sinh mã tham
+ *    chiếu, gắn tin đến và ghi điểm neo. Khối tóm tắt chuyển nhân viên và ticket dùng đúng episode này (kể cả khi chuyển
+ *    nhân viên ngay câu đầu).
+ *  - `commitEpisode` sau khi gửi: trạng thái, nội dung vừa gửi (`last_ref`, `last_template_id`), mốc hoạt động.
+ * Chủ đề so theo khoá chuẩn hoá `topicKeyOf` (core/items.ts), ở mọi tầng; đoạn tài liệu không có khoá (kế thừa vụ việc đang mở).
  */
 import type { ContextPack, LlmPort } from "../core/ports";
 import type { Settings } from "../core/settings";
 import type { Template } from "../domain/types";
 import { mergeFacts, type CustomerFact } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
+import { topicKeyOf, topicKeyOfGroup } from "../core/items";
 import { cleanSummary, degradedSummary, readSummary, summaryForContext, type EpisodeSummary } from "../core/summary";
 import type { ConvRepo, EpisodeRow, EventRow, UserRow } from "../db/repo-conv";
 
-const NON_TOPIC_GROUPS = new Set(["Greeting", "FollowUp", "System", "Image", "Security", "AntiSpam", "Escalate"]);
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+/** Không chiếm chỗ trong 8 sự kiện gần nhất của gói ngữ cảnh: customer_fact đi riêng (facts), còn lại là vết nội bộ */
+const CONTEXT_HIDDEN_EVENTS = new Set(["customer_fact", "step_outcome", "unanswered_question"]);
 
 export interface LoadedEpisode {
   active: EpisodeRow | null;
   /** Bản ghi `active` sau khi áp dụng open -> dormant (im lặng quá T_gap) */
   gapMs: number;
   pendingIssue?: string;
+  /** Khoá chủ đề của vụ việc đã chuyển nhân viên gần đây (khi không có vụ việc đang mở) */
   parentEscalatedGroup?: string;
   recent: EpisodeRow[];
 }
 
 export type TurnKind = "TEMPLATE" | "ESCALATE" | "GROUNDED" | "OFFTOPIC" | "SECURITY" | "BLOCKED" | "CLARIFY" | "UNAVAILABLE";
 
-export interface FinalizeInput {
+export interface ResolveInput {
   userId: number;
   now: Date;
+  settings: Settings;
   active: EpisodeRow | null;
+  /** Kết quả định tuyến của lượt (trước khi dựng câu trả lời) */
   kind: TurnKind;
   template?: Template;
-  /** tier của quyết định: chỉ tin chuyển chủ đề khi khớp chắc chắn (tầng 0-1) */
-  tier: number;
-  escalateReason?: string;
+  /** Lượt là tin nối tiếp ("vẫn chưa được", "cảm ơn"...): không đổi vụ việc dù nội dung được chọn thuộc chủ đề khác */
+  followUp: boolean;
   /** false: lượt này KHÔNG thuộc vấn đề của episode đang mở (vd câu lạ sau thời gian im lặng) => mở episode riêng, giữ nguyên episode cũ. */
   relatedToActive?: boolean;
   /** Mô tả ngắn (đã che dữ liệu) dùng làm issue khi template không mang chủ đề (vd FP-12). */
   issueHint?: string;
+  /** Tin đến của lượt (null với admin / tin không lưu): gắn vào episode; là tin neo khi là câu hỏi hoặc mở vụ việc */
+  messageId: number | null;
+  isQuestion: boolean;
+  /** Câu truy vấn tiếng Anh AI viết cho tin này (đã qua kiểm tra): ghi cùng điểm neo */
+  queryEn?: string;
 }
 
-export interface FinalizeResult {
+export interface ResolveResult {
   episode: EpisodeRow | null;
   switchedFrom?: EpisodeRow;
   reopened: boolean;
+  opened: boolean;
+}
+
+export interface CommitInput {
+  now: Date;
+  /** Kết quả cuối cùng của lượt (có thể khác lúc định tuyến: vd dịch không đạt -> chuyển nhân viên) */
+  kind: TurnKind;
+  template?: Template;
+  escalateReason?: string;
+  /** Nội dung vừa gửi: "T:<id>" (template có chủ đề) | "K:<chunk id>"; không có = giữ nội dung gửi trước đó */
+  sentRef?: string;
 }
 
 export class EpisodeManager {
@@ -59,8 +87,8 @@ export class EpisodeManager {
     let parentEscalatedGroup: string | undefined;
     if (!active) {
       const since = now.getTime() - s["episode.closed_lookback_days"] * DAY;
-      const esc = recent.find((e) => e.status === "escalated" && e.topic_group && e.last_activity_at.getTime() >= since);
-      parentEscalatedGroup = esc?.topic_group ?? undefined;
+      const esc = recent.find((e) => e.status === "escalated" && (e.topic_key || e.topic_group) && e.last_activity_at.getTime() >= since);
+      parentEscalatedGroup = esc ? (esc.topic_key ?? topicKeyOfGroup(esc.topic_group)) : undefined;
     }
     const pendingIssue = active?.issue && (active.status === "open" || active.status === "dormant") ? active.issue : undefined;
     return { active, gapMs, pendingIssue, parentEscalatedGroup, recent };
@@ -79,7 +107,7 @@ export class EpisodeManager {
     if (!a) return { profile, events: [], recent: [] };
     const all = await this.conv.episodeEvents(a.id);
     // customer_fact đi riêng: không chiếm chỗ của 8 sự kiện gần nhất và không mất khi tin gốc đã được tóm tắt
-    const events = all.filter((e) => e.type !== "customer_fact").slice(-8).map((e) => fmtEvent(e, now));
+    const events = all.filter((e) => !CONTEXT_HIDDEN_EVENTS.has(e.type)).slice(-8).map((e) => fmtEvent(e, now));
     const facts = mergeFacts(all.filter((e) => e.type === "customer_fact").map((e) => ((e.payload as { facts?: CustomerFact[] }).facts ?? [])));
     const s = readSummary(a.summary);
     const msgs = await this.conv.messagesAfter(a.id, a.summary_upto_message_id, 6);
@@ -133,21 +161,32 @@ export class EpisodeManager {
     return [...new Set(out)];
   }
 
-  /** Sau khi định tuyến: chọn / tạo / cập nhật episode cho lượt này. */
-  async finalize(inp: FinalizeInput): Promise<FinalizeResult> {
+  /**
+   * Ngay sau định tuyến, trước khi dựng câu trả lời: episode của lượt này.
+   *  - Nội dung được chọn thuộc chủ đề KHÁC vụ việc đang mở (và không phải tin nối tiếp, không phải chuyển nhân viên)
+   *    -> vụ việc cũ tạm lắng; mở lại vụ việc tạm lắng cùng chủ đề (trong `episode.reopen_window_hours`) hoặc mở vụ việc mới.
+   *  - Chuyển nhân viên cho câu KHÔNG thuộc vụ việc đang mở -> vụ việc riêng, giữ nguyên vụ việc cũ.
+   *  - Chưa có vụ việc: chỉ mở khi lượt "mở vụ việc" (chuyển nhân viên, câu trả lời có trạng thái pending/resolved, trả lời
+   *    từ tài liệu, hỏi lại). Vụ việc mới nhận luôn các tin khách gửi lúc mất kết nối AI ngay trước đó.
+   * Giới hạn: chủ đề chỉ biết SAU định tuyến, nên ở lượt đổi / quay lại vụ việc, AI đã dùng ngữ cảnh của vụ việc trước.
+   */
+  async resolveEpisode(inp: ResolveInput): Promise<ResolveResult> {
     const t = inp.template;
-    const group = t && !NON_TOPIC_GROUPS.has(t.group) ? t.group : undefined;
+    const key = topicKeyOf(t);
+    const s = inp.settings;
     const escalating = inp.kind === "ESCALATE" || isEscalationTemplate(t);
     const directive = escalating ? "escalated" : t?.sets_context.status ?? (inp.kind === "GROUNDED" || inp.kind === "CLARIFY" ? "pending" : "none");
-    const issue = group ? t?.sets_context.issue : undefined; // chỉ template có chủ đề mới đặt/đổi issue: FP-12, chào, cảm ơn không xoá vấn đề gốc
+    const issue = key ? t?.sets_context.issue : undefined; // chỉ template có chủ đề mới đặt/đổi issue: FP-12, chào, cảm ơn không xoá vấn đề gốc
     const opensCase = escalating || directive === "pending" || directive === "resolved";
 
     let active = inp.active;
     let switchedFrom: EpisodeRow | undefined;
     let reopened = false;
+    let opened = false;
 
-    // Khách chuyển chủ đề (khớp chắc chắn ở nhóm khác) -> đóng ngữ cảnh cũ, KHÔNG nạp sang episode mới
-    if (active && group && active.topic_group && group !== active.topic_group && inp.tier <= 1 && inp.kind === "TEMPLATE" && !escalating) {
+    // Khách chuyển chủ đề: đóng tạm vụ việc cũ, KHÔNG nạp ngữ cảnh cũ sang vụ việc mới
+    const activeKey = active ? (active.topic_key ?? topicKeyOfGroup(active.topic_group)) : undefined;
+    if (active && key && activeKey && key !== activeKey && !inp.followUp && !escalating) {
       await this.conv.updateEpisode(active.id, { status: "dormant" });
       switchedFrom = active;
       active = null;
@@ -157,23 +196,54 @@ export class EpisodeManager {
     // (nếu không, chủ đề cũ bị coi là "đã escalate" và mọi câu hỏi sau về chủ đề đó đều bị ép chuyển support).
     if (active && escalating && inp.relatedToActive === false) active = null;
 
+    // Khách quay lại vấn đề cũ cùng chủ đề: mở lại vụ việc tạm lắng thay vì tạo mới
+    if (!active && key) {
+      const since = new Date(inp.now.getTime() - s["episode.reopen_window_hours"] * HOUR);
+      const dormant = await this.conv.getDormantEpisodeByTopic(inp.userId, key, since, switchedFrom?.id ?? null);
+      if (dormant) active = dormant;
+    }
+
     if (!active) {
-      if (!opensCase) return { episode: null, switchedFrom, reopened };
-      const since = new Date(inp.now.getTime() - 30 * DAY);
-      const parent = group ? await this.conv.getRecentClosedEpisode(inp.userId, group, since) : null;
-      const ep = await this.conv.openEpisode({ userId: inp.userId, parentId: parent?.id ?? null, issue: issue ?? inp.issueHint ?? t?.sets_context.issue ?? null, topicGroup: group ?? null }, inp.now);
-      active = ep;
+      if (!opensCase) return { episode: null, switchedFrom, reopened, opened };
+      const since = new Date(inp.now.getTime() - s["episode.closed_lookback_days"] * DAY);
+      const parent = key ? await this.conv.getRecentClosedEpisode(inp.userId, key, since) : null;
+      active = await this.conv.openEpisode({ userId: inp.userId, parentId: parent?.id ?? null, issue: issue ?? inp.issueHint ?? t?.sets_context.issue ?? null, topicGroup: key ? t!.group : null, topicKey: key ?? null }, inp.now);
+      opened = true;
+      // Câu hỏi khách gửi lúc mất kết nối AI ngay trước đó: thuộc vụ việc này, và là điểm bắt đầu của vấn đề
+      for (const mid of await this.conv.unansweredMessages(inp.userId, new Date(inp.now.getTime() - s["episode.t_gap_minutes"] * 60_000))) {
+        await this.conv.linkMessage(mid, active.id);
+        await this.conv.setAnchor(active.id, mid, null);
+      }
     } else if (active.status === "dormant") {
       reopened = true;
     }
 
+    const patch: Parameters<ConvRepo["updateEpisode"]>[1] = {};
+    if (issue && !opened) patch.issue = issue;
+    if (key && !active.topic_key) patch.topic_key = key;
+    if (key && !active.topic_group) patch.topic_group = t!.group;
+    if (Object.keys(patch).length) await this.conv.updateEpisode(active.id, patch);
+
+    if (inp.messageId) {
+      await this.conv.linkMessage(inp.messageId, active.id);
+      if (inp.isQuestion || opened) await this.conv.setAnchor(active.id, inp.messageId, inp.queryEn?.slice(0, 200) ?? null);
+    }
+    return { episode: (await this.conv.getEpisode(active.id))!, switchedFrom, reopened, opened };
+  }
+
+  /** Sau khi gửi: trạng thái vụ việc theo kết quả CUỐI của lượt, và nội dung vừa gửi. */
+  async commitEpisode(episode: EpisodeRow, inp: CommitInput): Promise<EpisodeRow> {
+    const t = inp.template;
+    const escalating = inp.kind === "ESCALATE" || isEscalationTemplate(t);
+    const directive = escalating ? "escalated" : t?.sets_context.status ?? (inp.kind === "GROUNDED" || inp.kind === "CLARIFY" ? "pending" : "none");
     const patch: Parameters<ConvRepo["updateEpisode"]>[1] = { last_activity_at: inp.now };
-    if (issue) patch.issue = issue;
-    if (group && !active.topic_group) patch.topic_group = group;
     if (t) {
       patch.last_template_id = t.id;
       patch.last_bot_action = `${inp.kind}:${t.id}`;
     } else patch.last_bot_action = inp.kind + (inp.escalateReason ? `:${inp.escalateReason.slice(0, 80)}` : "");
+    // Câu trả lời từ tài liệu: tin nối tiếp sau đó KHÔNG được xử lý theo luật nối tiếp của một template gửi trước đó
+    if (inp.kind === "GROUNDED") patch.last_template_id = null;
+    if (inp.sentRef) patch.last_ref = inp.sentRef;
     if (directive === "escalated") {
       patch.status = "escalated";
       patch.closed_at = inp.now;
@@ -184,9 +254,8 @@ export class EpisodeManager {
       patch.status = "open";
       patch.closed_at = null;
     }
-    await this.conv.updateEpisode(active.id, patch);
-    const fresh = (await this.conv.getEpisode(active.id))!;
-    return { episode: fresh, switchedFrom, reopened };
+    await this.conv.updateEpisode(episode.id, patch);
+    return (await this.conv.getEpisode(episode.id))!;
   }
 }
 

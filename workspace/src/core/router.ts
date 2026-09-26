@@ -10,14 +10,15 @@ import { ESCALATE_TEMPLATE_ID, GREETING_RETURNING_ID, GREETING_TEMPLATE_ID, IMAG
 import { checkOutput, decide, type GateContext, type GateResult, type GateSettings, DEFAULT_GATE_SETTINGS, type GateStep } from "./gate";
 import { detectStrongFollowUp, resolveFollowUp, type FollowUpKind } from "./followup";
 import { contentTokens } from "./knowledge";
+import { topicKeyOf, topicKeyOfGroup } from "./items";
 import { scriptProblem, sourceLangOf } from "./language";
 import { numbersNotIn, queryProblems } from "./translate";
 import { sha1 } from "./knowledge";
-import { LlmUnavailableError, type ContextPack, type KnowledgeHit, type KnowledgePort, type LlmPort } from "./ports";
+import { LlmUnavailableError, type ContextPack, type KnowledgeHit, type KnowledgePort, type LlmPort, type UnderstandFollowUp, type UnderstandIntent } from "./ports";
 import type { Evaluator } from "./predicates";
 import { makeInput } from "./predicates";
 import { maskSensitive } from "./sanitize";
-import type { TemplateIndex } from "./template-index";
+import { TemplateIndex } from "./template-index";
 import { graphemeLength, isEmojiOnly, normalize, wordCount } from "./text";
 
 export interface RouterSettings extends GateSettings {
@@ -46,12 +47,18 @@ export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> =
 export interface RouteContext {
   lastTemplate?: Template;
   pendingIssue?: string;
+  /** Chủ đề (khoá topicKeyOf; dữ liệu cũ: tên nhóm) của vụ việc đã chuyển nhân viên gần đây: quay lại chủ đề này thì chuyển nhân viên */
   parentEscalatedGroup?: string;
   contextPack?: ContextPack;
   /** Lượt trước bot đã hỏi lại khách để phân biệt các mục này: lượt này chỉ chọn trong đây, không rõ nữa thì chuyển nhân viên */
   pendingClarify?: { items: string[] };
   /** Nội dung đã gửi khách trong vụ việc đang mở ("T:<id>", "K:<chunkId>"): khách báo chưa giải quyết được thì không gửi lại */
   answersSent?: string[];
+  /**
+   * Câu trả lời gần nhất bot gửi trong vụ việc khi đó là ĐOẠN TÀI LIỆU (last_ref "K:<id>"): SKILL understand nhận ra tin nối tiếp
+   * ("cảm ơn", "vẫn không được") sau câu trả lời tài liệu. Câu trả lời gần nhất là template thì dùng `lastTemplate` như cũ.
+   */
+  lastAnswer?: { id: string; text: string };
 }
 
 export interface RouteRequest {
@@ -92,6 +99,8 @@ export interface RouteResult {
   lang?: string;
   /** Bản tiếng Anh của câu hỏi do AI viết lại (đã qua kiểm tra): dùng để trích giá trị khách nêu khi ngôn ngữ gốc không trích được */
   queryEn?: string;
+  /** Kết quả SKILL understand của lượt (không có ở các nhánh không gọi understand: luật ảnh không kèm chữ, không có LLM) */
+  understand?: { intent: UnderstandIntent; follow_up: UnderstandFollowUp };
 }
 
 export interface RouterDeps {
@@ -198,7 +207,7 @@ export async function route(req: RouteRequest, deps: RouterDeps): Promise<RouteR
         return done({ kind: "ESCALATE", tier: 2, reason: "LLM chọn template ngoài danh sách cho phép", sourceTemplateId: last?.id });
       }
       // Cổng ngữ cảnh áp dụng cho MỌI đường: khách quay lại chủ đề đã chuyển support thì không lặp lại chuỗi template.
-      if (req.ctx.parentEscalatedGroup && t.group === req.ctx.parentEscalatedGroup) {
+      if (sameEscalatedTopic(req.ctx.parentEscalatedGroup, t)) {
         return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id });
       }
       return done({ kind: "TEMPLATE", templateId: t.id === GREETING_TEMPLATE_ID ? greeting(req) : t.id, tier: 2, via: "llm" });
@@ -369,6 +378,12 @@ function selectCandidates(templates: Template[], chunks: KnowledgeHit[], index: 
 /** Ngôn ngữ thật của một đoạn tri thức (đoạn có dấu tiếng Việt luôn là "vi" dù lời khai ghi gì). */
 const hitLang = (h: KnowledgeHit): string => sourceLangOf(h.text, h.lang);
 
+/** Template thuộc đúng chủ đề đã chuyển nhân viên trước đó (so theo khoá chủ đề chuẩn hoá, core/items.ts). */
+function sameEscalatedTopic(parentEscalated: string | undefined, t: Template): boolean {
+  const topic = topicKeyOfGroup(parentEscalated);
+  return !!topic && topicKeyOf(t) === topic;
+}
+
 function greeting(req: RouteRequest): string {
   return req.ctx.pendingIssue ? GREETING_RETURNING_ID : GREETING_TEMPLATE_ID;
 }
@@ -474,7 +489,8 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
 
   const trace: RouteTrace = { gates: [], ranked: [], candidates: [], notes: [opts.fastPath ? "luồng: workflow hai nhánh (AI xác định ngôn ngữ -> router)" : "luồng: AI hiểu trước"] };
   let queryEnOut: string | undefined;
-  const done = (outcome: Outcome, lang?: string): RouteResult => ({ outcome, trace, lang, queryEn: queryEnOut });
+  let understandOut: RouteResult["understand"];
+  const done = (outcome: Outcome, lang?: string): RouteResult => ({ outcome, trace, lang, queryEn: queryEnOut, understand: understandOut });
 
   /** SKILL verify-answer: câu trả lời đã duyệt này có trả lời đúng tin của khách không. Lỗi LLM -> Outcome thất bại để trả về ngay. */
   const verifyTemplate = async (templateId: string, why: string | undefined, queryEn?: string): Promise<"ok" | "no" | Outcome> => {
@@ -500,6 +516,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   if (noWords) {
     try {
       const u0 = await llm.understand({ text: req.text || "(sticker)", knowledgeLang: settings.knowledgeLang, context: req.ctx.contextPack });
+      understandOut = { intent: u0.intent, follow_up: u0.follow_up };
       trace.llm = { action: `understand:${u0.intent}` };
       const lang0 = resolveReplyLang(u0.language, req.lang, req.codeDetectedLang, trace);
       trace.notes.push("tin không có nội dung câu hỏi (sticker/emoji/quá ngắn): AI đã đọc, gửi lời chào");
@@ -525,12 +542,13 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   // ---- 1. AI HIỂU ----
   let u;
   try {
-    const lastAnswer = last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : undefined;
+    const lastAnswer = last ? { id: last.id, text: index.resolveAnswerSource(last).answers.en ?? "" } : req.ctx.lastAnswer ? { id: req.ctx.lastAnswer.id, text: req.ctx.lastAnswer.text.slice(0, 1800) } : undefined;
     u = await llm.understand({ text: req.text, imageText: req.vision?.error_text || undefined, knowledgeLang: settings.knowledgeLang, lastAnswer, context: req.ctx.contextPack });
   } catch (e) {
     // KHÔNG quay về khớp từ khoá: nội dung trong kho không bao giờ được gửi thẳng khi AI không đánh giá được
     return done(llmFailure(e, 2, trace, last?.id));
   }
+  understandOut = { intent: u.intent, follow_up: u.follow_up };
   const lang = resolveReplyLang(u.language, req.lang, req.codeDetectedLang, trace);
   trace.llm = { action: `understand:${u.intent}${u.follow_up !== "none" ? `/${u.follow_up}` : ""}` };
   trace.notes.push(`AI hiểu: ngôn ngữ=${u.language} ý định=${u.intent}${u.follow_up !== "none" ? ` nối tiếp=${u.follow_up}` : ""}`);
@@ -542,7 +560,8 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
   // Tin nối tiếp: AI nhận ra LOẠI phản hồi (mọi ngôn ngữ), luật nghiệp vụ của template quyết định bước tiếp theo
   // Khách đang trả lời câu hỏi lại của bot: ứng viên là đúng các trường hợp đã hỏi (mã cũ không có tiền tố = câu trả lời)
   const pendingRefs = (req.ctx.pendingClarify?.items ?? []).map((x) => (/^[TK]:/.test(x) ? x : `T:${x}`));
-  const pending = pendingRefs.filter((r) => r.startsWith("T:")).map((r) => index.get(r.slice(2))).filter((t): t is Template => !!t);
+  // Nội dung đã hết / chưa tới thời gian hiệu lực không được làm ứng viên, kể cả khi lượt trước đã hỏi lại khách về nó (R30)
+  const pending = pendingRefs.filter((r) => r.startsWith("T:")).map((r) => index.get(r.slice(2))).filter((t): t is Template => !!t && TemplateIndex.isActive(t));
   const pendingChunkIds = pendingRefs.filter((r) => r.startsWith("K:")).map((r) => r.slice(2));
   const clarifying = pendingRefs.length > 0;
   if (u.intent === "follow_up" && u.follow_up !== "none" && (last || u.follow_up === "thanks") && !clarifying) {
@@ -608,7 +627,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
       if (why) {
         fast.trace.notes.unshift(...trace.notes, `nhánh: FAST PATH — ${why}${fastText === req.text ? "" : ` (khớp trên bản tiếng Anh: "${fastText}")`}`);
         fast.trace.llm = trace.llm;
-        return { ...fast, lang, queryEn };
+        return { ...fast, lang, queryEn, understand: understandOut };
       }
       trace.notes.push(`nhánh: AI/RAG${fast.outcome.kind === "TEMPLATE" ? ` (luật/từ khoá gợi ý ${fast.outcome.templateId} nhưng chưa đủ chắc chắn)` : ""}`);
     } else trace.notes.push("nhánh: AI/RAG (không có bản chuẩn hoá đạt kiểm tra để khớp luật/từ khoá)");
@@ -755,7 +774,7 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
 
   if (t) {
     // Cổng ngữ cảnh áp dụng cho MỌI đường: khách quay lại chủ đề đã chuyển support thì không lặp lại chuỗi template.
-    if (req.ctx.parentEscalatedGroup && t.group === req.ctx.parentEscalatedGroup) return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id }, lang);
+    if (sameEscalatedTopic(req.ctx.parentEscalatedGroup, t)) return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id }, lang);
     return done({ kind: "TEMPLATE", templateId: t.id === GREETING_TEMPLATE_ID ? greeting(req) : t.id, tier: 2, via: clarifying ? "clarified" : "llm_select" }, lang);
   }
   if (!c) {

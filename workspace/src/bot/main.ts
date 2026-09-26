@@ -16,9 +16,13 @@ export async function startBot(svc: Services) {
   const bot = { id: me.id, username: me.username ?? "" };
   log("info", "bot sẵn sàng", { username: bot.username });
 
+  // Cửa sổ gom tin theo setting batching.window_ms (mặc định 2000ms như gateway cũ); đọc lại định kỳ vì Coalescer cần giá trị đồng bộ
+  let windowMs = (await svc.settings.get())["batching.window_ms"];
+  const windowTimer = setInterval(() => void svc.settings.get().then((s) => (windowMs = s["batching.window_ms"])).catch(() => undefined), 10_000);
+  windowTimer.unref();
   const coalescer = new Coalescer(
     (b) => pipeline.handle(b),
-    () => 2000, // gateway cũ debounce 2000ms
+    () => windowMs,
     (e) => log("error", "xử lý lượt lỗi", { err: (e as Error).message }),
   );
   /** true = đã xử lý xong (hoặc không cần xử lý); false = update này còn dang dở ở lượt khác, Telegram cần gửi lại sau. */
@@ -71,6 +75,7 @@ export async function startBot(svc: Services) {
   return {
     async stop() {
       stopPolling = true;
+      clearInterval(windowTimer);
       await coalescer.flush();
       await app.close();
     },

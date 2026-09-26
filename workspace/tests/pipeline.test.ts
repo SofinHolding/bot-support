@@ -13,8 +13,10 @@ beforeAll(async () => {
 afterAll(async () => w.close());
 
 const last = (chat: number) => w.channel.textsTo(chat).at(-1);
-// Không có episode đang mở (escalate ngay câu đầu) -> {SUPPORT_SUMMARY} được thay bằng rỗng, giống resolver.forTemplate.
+// Câu chuyển nhân viên chuẩn, bỏ chỗ chèn khối tóm tắt ({SUPPORT_SUMMARY} rỗng khi vụ việc chưa có gì để tóm tắt), giống resolver.forTemplate.
 const tplOf = (id: string) => w.live.index.get(id)!.answers.en!.replace(/\{SUPPORT_SUMMARY\}/g, "").trimEnd();
+/** Câu chuyển nhân viên (có thể kèm khối tóm tắt vụ việc: chuyển nhân viên ngay câu đầu vẫn có vụ việc để tóm tắt) */
+const isEscalation = (text: string | undefined) => !!text && text.startsWith(tplOf("fp-12-escalate"));
 
 describe("FP-0: lộ key / seed", () => {
   it("cảnh báo nguyên văn, KHÔNG lưu key, chỉ ghi security-alert-key-leak, báo owner", async () => {
@@ -120,7 +122,8 @@ describe("FAST-PATH và ngữ cảnh", () => {
   it("lỗi hệ thống -> câu FP-12 + ticket có mã lỗi/PIC/thông tin cần xin", async () => {
     const u = newUser();
     await w.say(u, "swap fail");
-    expect(last(u)).toBe(tplOf("fp-12-escalate"));
+    expect(isEscalation(last(u))).toBe(true);
+    expect(last(u)).toContain("Summary to send to support"); // chuyển nhân viên ngay câu đầu: vụ việc mở TRƯỚC khi dựng câu trả lời nên có khối tóm tắt
     const t = (await w.conv.listTickets({ limit: 30, offset: 0 })).find((x) => x.user_id === u)!;
     expect(t).toMatchObject({ error_code: "SWAP", pic: "Quang" });
     expect(t.required_info).toContain("wallet address");
@@ -208,7 +211,7 @@ describe("admin", () => {
     const u = newUser();
     await w.say(u, "/contexts");
     expect(last(u)).not.toContain("admin.example.test");
-    expect(last(u)).toBe(tplOf("fp-12-escalate"));
+    expect(isEscalation(last(u))).toBe(true);
   });
 });
 
@@ -359,7 +362,7 @@ describe("ảnh", () => {
     await w.sayPhoto(u, "s");
     const texts = w.channel.textsTo(u);
     expect(texts[0]).toBe("⚠️ Please cover sensitive information (seed phrase, private key, password) before sending screenshots. NEVER share these with anyone.");
-    expect(texts.at(-1)).toBe(tplOf("fp-12-escalate"));
+    expect(isEscalation(texts.at(-1))).toBe(true);
   });
 
   it("ảnh không đọc được: yêu cầu ảnh rõ hơn", async () => {
@@ -373,7 +376,7 @@ describe("ảnh", () => {
     const u = newUser();
     w.channel.images.set("err", { screen_type: "error_dialog", error_text: "Something went wrong, try again" });
     await w.sayPhoto(u, "err");
-    expect(last(u)).toBe(tplOf("fp-12-escalate"));
+    expect(isEscalation(last(u))).toBe(true);
   });
 });
 

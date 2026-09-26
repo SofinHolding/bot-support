@@ -8,9 +8,9 @@ import type { KbRepo } from "../db/repo-kb";
 export class PgKnowledge implements KnowledgePort {
   constructor(private readonly kb: KbRepo, private readonly embedder: Embedder) {}
 
+  /** Đoạn đang publish theo id; đoạn đã hết / chưa tới thời gian hiệu lực bị bỏ như ở tìm kiếm thường (R30). */
   async byIds(ids: string[]): Promise<KnowledgeHit[]> {
-    const want = new Set(ids);
-    return (await this.kb.listPublishedChunks()).filter((c) => want.has(c.chunkId)).map((c) => ({ chunkId: c.chunkId, docSlug: c.docSlug, heading: c.heading, text: c.text, url: c.url, lang: sourceLangOf(c.text, c.lang), score: 1 }));
+    return (await this.kb.listActiveChunksByIds(ids)).map((c) => ({ chunkId: c.chunkId, docSlug: c.docSlug, heading: c.heading, text: c.text, url: c.url, lang: sourceLangOf(c.text, c.lang), score: 1 }));
   }
 
   async search(query: string, k: number, queryLang?: string): Promise<KnowledgeHit[]> {

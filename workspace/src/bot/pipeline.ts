@@ -7,6 +7,7 @@ import { checkOutput, TELEGRAM_MAX_CHARS } from "../core/gate";
 import { applyOfftopic, blockJustExpired, isBlocked, newAntispamState } from "../core/antispam";
 import { extractFacts } from "../core/facts";
 import { isEscalationTemplate } from "../core/followup";
+import { topicKeyOf, topicKeyOfGroup } from "../core/items";
 import { buildHandoffText, hasHandoffContent } from "../core/handoff";
 import { detectLanguage, looksVietnamese, resolveLanguage } from "../core/language";
 import type { KnowledgePort, LlmPort } from "../core/ports";
@@ -178,10 +179,16 @@ export class BotPipeline {
         }
       }
 
+      // Ảnh đã lưu gắn vào tin đến: xoá / mở ảnh theo khách được
+      if (messageId && (imgs.refs.length || vision)) await conv.setMessageImages(messageId, imgs.refs, vision?.screen_type ?? null);
+
       // ---- Episode + ngữ cảnh ----
       const loaded = isAdmin ? { active: null, gapMs: 0, recent: [] as never[] } : await this.episodes.load(batch.userId, now, settings);
       const lastTemplate = loaded.active?.last_template_id ? this.d.live.index.get(loaded.active.last_template_id) : undefined;
       const contextPack = isAdmin ? undefined : await this.episodes.contextPack(user, lang, loaded as never, now);
+      // Câu trả lời gần nhất là đoạn tài liệu: đưa nội dung đoạn cho SKILL understand để nhận ra tin nối tiếp ("vẫn không được")
+      const lastRef = loaded.active?.last_ref;
+      const lastChunk = !lastTemplate && lastRef?.startsWith("K:") && this.d.knowledge?.byIds ? (await this.d.knowledge.byIds([lastRef.slice(2)]))[0] : undefined;
 
       // ---- Router + Cổng quyết định ----
       const rs: RouterSettings = {
@@ -215,7 +222,7 @@ export class BotPipeline {
         const router = mode === "llm_first" ? routeLlmFirst : routeHybrid;
         try {
           result = await router(
-          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
+          { codeDetectedLang: detectLanguage(masked), text: masked, norm: normalize(masked), lang, vision, hasImage: photos.length > 0, isSticker, ctx: { lastTemplate, lastAnswer: lastChunk ? { id: lastRef!, text: lastChunk.text } : undefined, pendingIssue: loaded.pendingIssue, parentEscalatedGroup: loaded.parentEscalatedGroup, contextPack, pendingClarify: loaded.active?.pending_clarify ?? undefined, answersSent: loaded.active ? await this.episodes.answersSent(loaded.active.id) : undefined } },
           { index: this.d.live.index, evaluator: this.d.live.evaluator, settings: rs, llm, knowledge: this.d.knowledge, conflicts: this.d.live.conflicts, answerTime: (k: string) => this.d.live.answerTimes.get(k) },
           );
         } finally {
@@ -226,13 +233,38 @@ export class BotPipeline {
       if (result.lang) lang = result.lang;
       if (!isAdmin && lang !== user.language && (result.lang || langRes.update)) await conv.setLanguage(batch.userId, lang);
 
+      // ---- Kết quả của bước bot gửi trước đó (khách phản hồi thế nào): code ghi từ kết quả SKILL understand ----
+      const routedTmpl = this.d.live.index.get(outcomeTemplateId(outcome) ?? "");
+      if (!isAdmin && loaded.active && result.understand) await this.recordStepOutcome(loaded.active, result.understand, routedTmpl, now);
+
+      // ---- Vụ việc của lượt này: xác định TRƯỚC khi dựng câu trả lời (khối tóm tắt chuyển nhân viên, mã tham chiếu, ticket dùng đúng vụ việc) ----
+      const resolveFor = (o: Outcome, t: Template | undefined) => {
+        const esc = o.kind === "ESCALATE" || isEscalationTemplate(t);
+        return this.episodes.resolveEpisode({
+          userId: batch.userId,
+          now,
+          settings,
+          active: loaded.active,
+          kind: o.kind,
+          template: o.kind === "OFFTOPIC" ? undefined : t ?? (o.kind === "ESCALATE" ? this.d.live.index.get(ESCALATE_TEMPLATE_ID) : undefined),
+          followUp: !!result.trace.followUp || result.understand?.intent === "follow_up",
+          relatedToActive: relatedToActive(loaded.active, esc, !!result.trace.followUp, t),
+          issueHint: masked.slice(0, 120) || undefined,
+          messageId,
+          isQuestion: result.understand?.intent === "question",
+          queryEn: result.queryEn,
+        });
+      };
+      let resolved = isAdmin ? null : await resolveFor(outcome, routedTmpl);
+      let ep = resolved?.episode ?? null;
+
       // ---- Xây câu trả lời ----
       // Conversation Escalation & Support Summary (core/handoff.ts): khối "sao chép gửi hỗ trợ" chỉ dựng khi thật sự
       // cần (nhánh escalate), tính một lần cho cả lượt dù buildReply có thể được gọi lại (rơi vào escalate do vi
       // phạm ngôn ngữ bên dưới) — tránh gọi lại LLM tóm tắt hai lần cho cùng một lượt.
       let supportSummaryVar: string | undefined;
       const supportLang = lang; // chốt tại đây: không đổi theo các lần buildReply gọi lại bên dưới (vd rơi về "en" cho lưới an toàn)
-      const supportSummary = isAdmin ? undefined : async () => (supportSummaryVar ??= await this.buildSupportSummaryVar(loaded.active, supportLang));
+      const supportSummary = isAdmin ? undefined : async () => (supportSummaryVar ??= await this.buildSupportSummaryVar(ep, supportLang));
       let built;
       try {
         built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
@@ -254,6 +286,11 @@ export class BotPipeline {
         this.log("warn", "chặn câu trả lời vi phạm ràng buộc ngôn ngữ", { userId: batch.userId, lang, problem: langProblem });
         result.trace.notes.push(`ràng buộc ngôn ngữ: ${langProblem}`);
         outcome = { kind: "ESCALATE", tier: outcome.tier, reason: `không gửi được câu trả lời đúng ngôn ngữ của khách: ${langProblem}`.slice(0, 200) }; // không gắn sourceTemplateId: câu tri thức bị chặn không được vào ticket của chủ đề trước đó
+        // Lượt không mở vụ việc (vd lời chào) nay thành chuyển nhân viên: mở vụ việc cho lần chuyển này (ticket, mã tham chiếu)
+        if (!isAdmin && !ep) {
+          resolved = await resolveFor(outcome, undefined);
+          ep = resolved.episode;
+        }
         built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
         // Câu chuyển người thật cũng dịch nhiều lần không đạt (hiếm): khách vẫn phải được báo là đã chuyển người thật. Lối cuối cùng là bản gốc
         // tiếng Anh của câu đó (không bao giờ tiếng Việt cho khách không dùng tiếng Việt), có ghi vết.
@@ -309,19 +346,19 @@ export class BotPipeline {
       const tmpl = this.d.live.index.get(outcomeTemplateId(outcome) ?? "");
       const isEsc = outcome.kind === "ESCALATE" || isEscalationTemplate(tmpl);
       const related = relatedToActive(loaded.active, isEsc, !!result.trace.followUp, tmpl);
-      const fin = await this.episodes.finalize({
-        relatedToActive: related,
-        issueHint: masked.slice(0, 120) || undefined,
-        userId: batch.userId,
-        now,
-        active: loaded.active,
-        kind: outcome.kind === "TEMPLATE" ? "TEMPLATE" : outcome.kind,
-        template: outcome.kind === "OFFTOPIC" ? undefined : tmpl ?? (outcome.kind === "ESCALATE" ? this.d.live.index.get(ESCALATE_TEMPLATE_ID) : undefined),
-        tier: outcome.tier,
-        escalateReason: outcome.kind === "ESCALATE" ? outcome.reason : undefined,
-      });
-      const ep = fin.episode;
-      if (ep && messageId) await this.linkMessage(messageId, ep.id);
+      if (ep) {
+        const sentRef = outcome.kind === "TEMPLATE" && topicKeyOf(tmpl) ? `T:${outcome.templateId}` : outcome.kind === "GROUNDED" && outcome.sources[0] ? `K:${outcome.sources[0].chunkId}` : undefined;
+        ep = await this.episodes.commitEpisode(ep, {
+          now,
+          kind: outcome.kind,
+          template: outcome.kind === "OFFTOPIC" ? undefined : tmpl ?? (outcome.kind === "ESCALATE" ? this.d.live.index.get(ESCALATE_TEMPLATE_ID) : undefined),
+          escalateReason: outcome.kind === "ESCALATE" ? outcome.reason : undefined,
+          sentRef,
+        });
+      } else if (outcome.kind === "UNAVAILABLE" && messageId && masked.trim()) {
+        // Câu hỏi gửi lúc mất kết nối AI, chưa thuộc vụ việc nào: vụ việc mở ở lượt kế tiếp nhận tin này làm điểm bắt đầu
+        await conv.addEvent({ userId: batch.userId, type: "unanswered_question", payload: { message_id: messageId } }, now);
+      }
       // Hỏi lại khách: ghi các mục đang chờ phân biệt; lượt kế tiếp (dù kết quả gì) xoá đi — chỉ hỏi lại 1 lần
       if (outcome.kind === "CLARIFY" && ep) await conv.updateEpisode(ep.id, { pending_clarify: { items: outcome.items } });
       else if (loaded.active?.pending_clarify) await conv.updateEpisode(loaded.active.id, { pending_clarify: null });
@@ -342,7 +379,7 @@ export class BotPipeline {
       if (outcome.kind === "GROUNDED") await conv.addEvent({ userId: batch.userId, episodeId: ep?.id ?? null, type: "knowledge_sent", payload: { chunk_ids: outcome.sources.map((s) => s.chunkId) } }, now);
 
       let ticketId: number | null = null;
-      if (isEsc) ticketId = await this.escalate(batch, ep?.id ?? null, outcome, tmpl, related ? lastTemplate : undefined, related ? loaded.active?.topic_group ?? null : null, masked);
+      if (isEsc) ticketId = await this.escalate(batch, ep, outcome, tmpl, related ? lastTemplate : undefined, related ? loaded.active?.topic_group ?? null : null, masked);
 
       const trace = result.trace;
       // "⚠️ CÂU HỎI MỚI": khách hỏi điều chưa có trong kho => admin cần bổ sung template/tri thức
@@ -359,7 +396,7 @@ export class BotPipeline {
         reason: outcome.kind === "ESCALATE" || outcome.kind === "OFFTOPIC" ? outcome.reason : null,
         candidates: trace.candidates,
         gates: { steps: trace.gates, ranked: trace.ranked },
-        notes: { new_question: newQuestion, follow_up: trace.followUp ?? null, llm: trace.llm ?? null, notes: [...trace.notes, ...(built.note ? [built.note] : []), ...(imgs.note ? [imgs.note] : [])], ticket_id: ticketId, anti: antiEvent, switched: fin.switchedFrom?.id ?? null, reopened: fin.reopened },
+        notes: { new_question: newQuestion, follow_up: trace.followUp ?? null, llm: trace.llm ?? null, notes: [...trace.notes, ...(built.note ? [built.note] : []), ...(imgs.note ? [imgs.note] : [])], ticket_id: ticketId, anti: antiEvent, switched: resolved?.switchedFrom?.id ?? null, reopened: resolved?.reopened ?? false, ref_code: ep?.ref_code ?? null },
         kbVersion: this.d.live.version,
       });
 
@@ -373,6 +410,29 @@ export class BotPipeline {
       }
       return { status: "ok", replies, decisionKind: outcome.kind, templateId: tid, tier: outcome.tier };
     });
+  }
+
+  /**
+   * Khách phản hồi thế nào sau nội dung bot vừa gửi trong vụ việc (`last_ref`): ghi event `step_outcome` một lần cho mỗi lần
+   * gửi, từ kết quả SKILL understand của lượt này (không thêm lời gọi AI). Khách hỏi sang chủ đề khác thì không ghi.
+   */
+  private async recordStepOutcome(active: EpisodeRow, u: NonNullable<RouteResult["understand"]>, routed: Template | undefined, now: Date) {
+    const ref = active.last_ref;
+    if (!ref) return;
+    const byFollowUp: Partial<Record<string, string>> = { thanks: "solved", negative: "not_solved", not_receive: "not_received", no_old_email: "no_old_email", info_provided: "info_provided" };
+    let outcome: string | undefined;
+    if (u.intent === "follow_up") outcome = byFollowUp[u.follow_up];
+    else if (u.intent === "question") {
+      const key = topicKeyOf(routed);
+      const activeKey = active.topic_key ?? topicKeyOfGroup(active.topic_group);
+      if (!key || !activeKey || key === activeKey) outcome = "asked_again";
+    }
+    if (!outcome) return;
+    const events = await this.d.conv.episodeEvents(active.id);
+    const sentAt = events.map((e, i) => ({ e, i })).filter(({ e }) => sentRefsOf(e).includes(ref)).pop()?.i;
+    if (sentAt === undefined) return;
+    if (events.slice(sentAt + 1).some((e) => e.type === "step_outcome" && (e.payload as { ref?: unknown }).ref === ref)) return; // mỗi lần gửi chỉ một kết quả
+    await this.d.conv.addEvent({ userId: active.user_id, episodeId: active.id, type: "step_outcome", payload: { ref, outcome, via: "understand" } }, now);
   }
 
   /** Lượt xử lý hỏng giữa chừng: khách chỉ nhận câu báo mất kết nối cố định (NETWORK_DISCONNECTED_EN), nên phải để lại ticket + quyết định cho người thật theo dõi. */
@@ -470,9 +530,9 @@ export class BotPipeline {
 
   /**
    * Conversation Escalation & Support Summary: khối văn bản khách sao chép gửi @interlink_technicalsupport khi bot
-   * chuyển người thật. Phạm vi = episode đang mở (`active`), tức đúng vấn đề hiện tại — EpisodeManager đã tách theo
-   * topic_group/khoảng lặng nên KHÔNG lẫn các vấn đề cũ. Không có episode đang mở (escalate ngay từ câu đầu, chưa có
-   * gì để tóm tắt) -> trả về "" (không thêm khối trống vào câu trả lời).
+   * chuyển người thật. Phạm vi = vụ việc của lượt này (`EpisodeManager.resolveEpisode`, xác định trước khi dựng câu trả lời,
+   * kể cả khi chuyển nhân viên ngay câu đầu), tách theo chủ đề / khoảng lặng nên KHÔNG lẫn các vấn đề cũ. Không có gì
+   * đáng tóm tắt -> trả về "" (không thêm khối trống vào câu trả lời).
    * Nội dung DỰNG bằng tiếng Anh trước (issue/tóm tắt vốn đã viết tiếng Anh — SKILL summarize-episode), qua HAI lớp
    * kiểm trước khi gửi khách — đúng yêu cầu: không chỉ tóm tắt-dịch-gửi thẳng:
    *  1. code: `checkOutput` (forbidFinancialClaims: dự đoán giá/ROI, công thức HCS — cùng chuẩn với câu AI viết ở
@@ -518,7 +578,8 @@ export class BotPipeline {
   }
 
   /** Tạo hoặc nối tiếp ticket khi chuyển cho người thật. */
-  private async escalate(batch: InboundBatch, episodeId: number | null, outcome: Outcome, tmpl: Template | undefined, last: Template | undefined, topicGroup: string | null, masked: string): Promise<number> {
+  private async escalate(batch: InboundBatch, ep: EpisodeRow | null, outcome: Outcome, tmpl: Template | undefined, last: Template | undefined, topicGroup: string | null, masked: string): Promise<number> {
+    const episodeId = ep?.id ?? null;
     const { conv } = this.d;
     const src = outcome.kind === "ESCALATE" && outcome.sourceTemplateId ? this.d.live.index.get(outcome.sourceTemplateId) : undefined;
     const info = tmpl?.ticket ?? src?.ticket ?? last?.ticket ?? {};
@@ -527,19 +588,21 @@ export class BotPipeline {
     const reason = outcome.kind === "ESCALATE" ? outcome.reason : `trigger ${tmpl?.id ?? ""}`;
     const open = await conv.openTicketFor(batch.userId, category);
     if (open) {
-      await conv.appendTicketNote(open.id, `[${this.now().toISOString()}] khách hỏi lại: ${masked.slice(0, 200)}`);
+      await conv.appendTicketNote(open.id, `[${this.now().toISOString()}] khách hỏi lại: ${masked.slice(0, 200)}`, ep?.ref_code);
       await conv.addEvent({ userId: batch.userId, episodeId, type: "ticket_updated", payload: { ticket_id: open.id } }, this.now());
       return open.id;
     }
-    const t = await conv.createTicket({ episodeId, userId: batch.userId, category, errorCode: info.error_code ?? null, pic: info.pic ?? null, reason, requiredInfo, sourceTemplateId: src?.id ?? tmpl?.id ?? last?.id ?? null });
+    const t = await conv.createTicket({ episodeId, userId: batch.userId, category, errorCode: info.error_code ?? null, pic: info.pic ?? null, reason, requiredInfo, sourceTemplateId: src?.id ?? tmpl?.id ?? last?.id ?? null, episodeRefCode: ep?.ref_code ?? null });
     await conv.addEvent({ userId: batch.userId, episodeId, type: "ticket_created", payload: { ticket_id: t.id, error_code: info.error_code ?? null } }, this.now());
     return t.id;
   }
 
   // ------------------------------------------------------------------------------------------------------------
-  private async readImages(batch: InboundBatch, photos: InboundBatch["items"], caption: string, llm: LlmPort | undefined, isAdmin: boolean): Promise<{ vision?: VisionResult; failed?: "unavailable" | "no_vision" | "error"; note?: string }> {
-    if (!photos.length) return {};
-    if (!llm) return { failed: "no_vision" };
+  /** `refs`: ảnh đã lưu vào MEDIA_DIR (ảnh có seed/key không bao giờ được lưu). */
+  private async readImages(batch: InboundBatch, photos: InboundBatch["items"], caption: string, llm: LlmPort | undefined, isAdmin: boolean): Promise<{ vision?: VisionResult; failed?: "unavailable" | "no_vision" | "error"; note?: string; refs: string[] }> {
+    const refs: string[] = [];
+    if (!photos.length) return { refs };
+    if (!llm) return { failed: "no_vision", refs };
     const results: VisionResult[] = [];
     let note: string | undefined;
     for (const p of photos.slice(0, 3)) {
@@ -547,15 +610,15 @@ export class BotPipeline {
         const img = await this.d.channel.downloadImage(p.photoFileId!);
         const v = await llm.vision({ mime: img.mime, base64: img.base64, caption: caption || undefined });
         results.push(v);
-        if (!v.has_secret && this.d.media && !isAdmin) this.d.media.save(img.mime, img.base64);
+        if (!v.has_secret && this.d.media && !isAdmin) refs.push(this.d.media.save(img.mime, img.base64));
         else if (v.has_secret) note = "ảnh có seed/key: không lưu";
       } catch (e) {
-        if (e instanceof LlmUnavailableError && !e.badOutput) return { failed: "unavailable" };
+        if (e instanceof LlmUnavailableError && !e.badOutput) return { failed: "unavailable", refs };
         // từ chối đọc ảnh, đầu ra sai, tải ảnh lỗi...: không đoán nội dung ảnh, chuyển người thật
-        return { failed: "error", note: `không đọc được ảnh: ${(e as Error).message.slice(0, 160)}` };
+        return { failed: "error", note: `không đọc được ảnh: ${(e as Error).message.slice(0, 160)}`, refs };
       }
     }
-    return { vision: combineVision(results), note };
+    return { vision: combineVision(results), note, refs };
   }
 
   /** Gửi "đang soạn" ngay và lặp lại mỗi 4 giây; trả về hàm dừng. */
@@ -589,6 +652,13 @@ function relatedToActive(active: { status: string; topic_group: string | null } 
   const category = tmpl?.ticket?.category;
   if (category) return !active.topic_group || category.toLowerCase() === active.topic_group.toLowerCase();
   return active.status === "open";
+}
+
+/** Nội dung một event gửi cho khách: "T:<template id>" / "K:<chunk id>". */
+function sentRefsOf(e: { type: string; payload: Record<string, unknown> }): string[] {
+  if (e.type === "template_sent" && e.payload.template_id) return [`T:${String(e.payload.template_id)}`];
+  if (e.type === "knowledge_sent" && Array.isArray(e.payload.chunk_ids)) return e.payload.chunk_ids.map((id) => `K:${String(id)}`);
+  return [];
 }
 
 function outcomeTemplateId(o: Outcome): string | null {

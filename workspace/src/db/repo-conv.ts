@@ -1,4 +1,5 @@
 /** Truy cập dữ liệu hội thoại: user, antispam, episode, message, event, decision, ticket, idempotency, LLM usage. */
+import { randomInt } from "node:crypto";
 import type { AntispamState } from "../core/antispam";
 import { iso, num, numOrNull, type Db } from "./db";
 
@@ -29,6 +30,16 @@ export interface EpisodeRow {
   last_bot_action: string | null;
   /** bot vừa hỏi lại khách để phân biệt các mục này (tối đa 1 lần); lượt sau chỉ chọn trong đây */
   pending_clarify: { items: string[] } | null;
+  /** mã tham chiếu khách nhìn thấy ("EP-XXXXX"), sinh khi mở episode; null với episode mở trước migration 010 */
+  ref_code: string | null;
+  /** khoá chủ đề chuẩn hoá (core/items.ts topicKeyOf); null = chưa biết chủ đề */
+  topic_key: string | null;
+  /** tin khách nêu vấn đề (ghi một lần) và câu truy vấn tiếng Anh AI viết cho tin đó */
+  anchor_message_id: number | null;
+  anchor_query_en: string | null;
+  /** nội dung gửi gần nhất: "T:<template id>" | "K:<chunk id>" */
+  last_ref: string | null;
+  clarify_count: number;
   opened_at: Date;
   last_activity_at: Date;
   closed_at: Date | null;
@@ -81,6 +92,8 @@ const mapEpisode = (r: Record<string, unknown>): EpisodeRow => ({
   parent_episode_id: numOrNull(r.parent_episode_id),
   summary_upto_message_id: numOrNull(r.summary_upto_message_id),
   summary_version: num(r.summary_version),
+  anchor_message_id: numOrNull(r.anchor_message_id),
+  clarify_count: num(r.clarify_count ?? 0),
 });
 const mapMessage = (r: Record<string, unknown>): MessageRow => ({ ...(r as unknown as MessageRow), id: num(r.id), user_id: num(r.user_id), episode_id: numOrNull(r.episode_id), tier: numOrNull(r.tier) });
 const mapEvent = (r: Record<string, unknown>): EventRow => ({ ...(r as unknown as EventRow), id: num(r.id), user_id: num(r.user_id), episode_id: numOrNull(r.episode_id) });
@@ -172,14 +185,22 @@ export function convRepo(db: Db) {
 
     // ---- Episode ----
     async getActiveEpisode(userId: number): Promise<EpisodeRow | null> {
-      const r = await db.query("SELECT * FROM episodes WHERE user_id = $1 AND status IN ('open', 'dormant') ORDER BY last_activity_at DESC LIMIT 1", [userId]);
+      const r = await db.query("SELECT * FROM episodes WHERE user_id = $1 AND status IN ('open', 'dormant') ORDER BY last_activity_at DESC, id DESC LIMIT 1", [userId]);
       return r.rows[0] ? mapEpisode(r.rows[0]) : null;
     },
-    /** Episode đã đóng gần đây cùng nhóm chủ đề (để nối tiếp khi khách quay lại). */
-    async getRecentClosedEpisode(userId: number, topicGroup: string, since: Date): Promise<EpisodeRow | null> {
+    /** Episode đã đóng gần đây cùng chủ đề (để nối tiếp khi khách quay lại). */
+    async getRecentClosedEpisode(userId: number, topicKey: string, since: Date): Promise<EpisodeRow | null> {
       const r = await db.query(
-        "SELECT * FROM episodes WHERE user_id = $1 AND topic_group = $2 AND status IN ('resolved', 'escalated') AND last_activity_at >= $3 ORDER BY last_activity_at DESC LIMIT 1",
-        [userId, topicGroup, iso(since)],
+        "SELECT * FROM episodes WHERE user_id = $1 AND topic_key = $2 AND status IN ('resolved', 'escalated') AND last_activity_at >= $3 ORDER BY last_activity_at DESC LIMIT 1",
+        [userId, topicKey, iso(since)],
+      );
+      return r.rows[0] ? mapEpisode(r.rows[0]) : null;
+    },
+    /** Vụ việc đang tạm lắng cùng chủ đề (khách quay lại vấn đề cũ): mở lại thay vì tạo mới. */
+    async getDormantEpisodeByTopic(userId: number, topicKey: string, since: Date, excludeId: number | null): Promise<EpisodeRow | null> {
+      const r = await db.query(
+        "SELECT * FROM episodes WHERE user_id = $1 AND topic_key = $2 AND status = 'dormant' AND last_activity_at >= $3 AND id IS DISTINCT FROM $4::bigint ORDER BY last_activity_at DESC LIMIT 1",
+        [userId, topicKey, iso(since), excludeId],
       );
       return r.rows[0] ? mapEpisode(r.rows[0]) : null;
     },
@@ -191,16 +212,23 @@ export function convRepo(db: Db) {
       const r = await db.query("SELECT * FROM episodes WHERE id = $1", [id]);
       return r.rows[0] ? mapEpisode(r.rows[0]) : null;
     },
-    async openEpisode(e: { userId: number; parentId?: number | null; issue?: string | null; topicGroup?: string | null }, now: Date): Promise<EpisodeRow> {
+    /** Mở episode mới kèm mã tham chiếu (sinh ngẫu nhiên, trùng thì sinh lại). */
+    async openEpisode(e: { userId: number; parentId?: number | null; issue?: string | null; topicGroup?: string | null; topicKey?: string | null }, now: Date): Promise<EpisodeRow> {
+      let code = newRefCode();
+      for (let attempt = 0; attempt < 10 && (await db.query("SELECT 1 FROM episodes WHERE ref_code = $1", [code])).rowCount > 0; attempt++) code = newRefCode();
       const r = await db.query(
-        "INSERT INTO episodes (user_id, parent_episode_id, issue, topic_group, opened_at, last_activity_at) VALUES ($1, $2, $3, $4, $5, $5) RETURNING *",
-        [e.userId, e.parentId ?? null, e.issue ?? null, e.topicGroup ?? null, iso(now)],
+        "INSERT INTO episodes (user_id, parent_episode_id, issue, topic_group, topic_key, ref_code, opened_at, last_activity_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *",
+        [e.userId, e.parentId ?? null, e.issue ?? null, e.topicGroup ?? null, e.topicKey ?? null, code, iso(now)],
       );
       return mapEpisode(r.rows[0]!);
     },
+    /** Ghi điểm neo MỘT lần: episode đã có neo thì giữ nguyên. */
+    async setAnchor(id: number, messageId: number, queryEn: string | null) {
+      await db.query("UPDATE episodes SET anchor_message_id = $2, anchor_query_en = $3 WHERE id = $1 AND anchor_message_id IS NULL", [id, messageId, queryEn]);
+    },
     async updateEpisode(
       id: number,
-      p: Partial<{ issue: string | null; topic_group: string | null; status: EpisodeStatus; last_template_id: string | null; last_bot_action: string | null; last_activity_at: Date; closed_at: Date | null; pending_clarify: { items: string[] } | null }>,
+      p: Partial<{ issue: string | null; topic_group: string | null; topic_key: string | null; status: EpisodeStatus; last_template_id: string | null; last_ref: string | null; last_bot_action: string | null; last_activity_at: Date; closed_at: Date | null; pending_clarify: { items: string[] } | null; clarify_count: number }>,
     ) {
       const sets: string[] = [];
       const vals: unknown[] = [id];
@@ -255,6 +283,22 @@ export function convRepo(db: Db) {
       const r = await db.query("SELECT * FROM (SELECT * FROM messages WHERE episode_id = $1 AND id > $2 ORDER BY id DESC LIMIT $3) t ORDER BY id", [episodeId, afterId ?? 0, limit]);
       return r.rows.map(mapMessage);
     },
+    /** Ảnh khách gửi kèm tin (đường dẫn trong MEDIA_DIR, nhiều ảnh ngăn bằng dấu phẩy): để xoá / mở ảnh theo khách. */
+    async setMessageImages(messageId: number, refs: string[], imageType: string | null) {
+      await db.query("UPDATE messages SET image_ref = $2, image_type = $3 WHERE id = $1", [messageId, refs.length ? refs.join(",") : null, imageType]);
+    },
+    async linkMessage(messageId: number, episodeId: number) {
+      await db.query("UPDATE messages SET episode_id = $2 WHERE id = $1", [messageId, episodeId]);
+    },
+    /** Tin khách gửi lúc mất kết nối AI, chưa thuộc vụ việc nào, từ `since` (event unanswered_question). Cũ nhất trước. */
+    async unansweredMessages(userId: number, since: Date): Promise<number[]> {
+      const r = await db.query<{ id: string }>(
+        `SELECT m.id FROM events e JOIN messages m ON m.id = (e.payload->>'message_id')::bigint
+         WHERE e.user_id = $1 AND e.type = 'unanswered_question' AND e.at >= $2 AND m.episode_id IS NULL ORDER BY m.id`,
+        [userId, iso(since)],
+      );
+      return r.rows.map((x) => num(x.id));
+    },
     async allMessages(episodeId: number): Promise<MessageRow[]> {
       const r = await db.query("SELECT * FROM messages WHERE episode_id = $1 ORDER BY id", [episodeId]);
       return r.rows.map(mapMessage);
@@ -308,11 +352,11 @@ export function convRepo(db: Db) {
     },
 
     // ---- Ticket ----
-    async createTicket(t: { episodeId: number | null; userId: number; category?: string | null; errorCode?: string | null; pic?: string | null; reason?: string | null; requiredInfo?: string[] | null; sourceTemplateId?: string | null }): Promise<TicketRow> {
+    async createTicket(t: { episodeId: number | null; userId: number; category?: string | null; errorCode?: string | null; pic?: string | null; reason?: string | null; requiredInfo?: string[] | null; sourceTemplateId?: string | null; episodeRefCode?: string | null }): Promise<TicketRow> {
       const r = await db.query(
-        `INSERT INTO tickets (episode_id, user_id, category, error_code, pic, reason, required_info, source_template_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8) RETURNING *`,
-        [t.episodeId, t.userId, t.category ?? null, t.errorCode ?? null, t.pic ?? null, t.reason ?? null, JSON.stringify(t.requiredInfo ?? null), t.sourceTemplateId ?? null],
+        `INSERT INTO tickets (episode_id, user_id, category, error_code, pic, reason, required_info, source_template_id, episode_ref_code)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) RETURNING *`,
+        [t.episodeId, t.userId, t.category ?? null, t.errorCode ?? null, t.pic ?? null, t.reason ?? null, JSON.stringify(t.requiredInfo ?? null), t.sourceTemplateId ?? null, t.episodeRefCode ?? null],
       );
       return mapTicket(r.rows[0]!);
     },
@@ -321,8 +365,8 @@ export function convRepo(db: Db) {
       const r = await db.query("SELECT * FROM tickets WHERE user_id = $1 AND status <> 'closed' AND category IS NOT DISTINCT FROM $2::text ORDER BY created_at DESC LIMIT 1", [userId, category]);
       return r.rows[0] ? mapTicket(r.rows[0]) : null;
     },
-    async appendTicketNote(id: number, note: string) {
-      await db.query("UPDATE tickets SET notes = COALESCE(notes || E'\\n', '') || $2, updated_at = now() WHERE id = $1", [id, note]);
+    async appendTicketNote(id: number, note: string, episodeRefCode?: string | null) {
+      await db.query("UPDATE tickets SET notes = COALESCE(notes || E'\\n', '') || $2, episode_ref_code = COALESCE(episode_ref_code, $3), updated_at = now() WHERE id = $1", [id, note, episodeRefCode ?? null]);
     },
     async listTickets(opts: { status?: string; limit: number; offset: number }) {
       const r = await db.query(
@@ -356,4 +400,12 @@ export function convRepo(db: Db) {
 }
 
 export type ConvRepo = ReturnType<typeof convRepo>;
+
+/** Bảng chữ của mã tham chiếu: bỏ 0/O, 1/I/L để khách đọc và gõ lại không nhầm (khớp REF_CODE_PATTERN ở core/translate.ts). */
+const REF_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+export function newRefCode(): string {
+  let s = "EP-";
+  for (let i = 0; i < 5; i++) s += REF_ALPHABET[randomInt(REF_ALPHABET.length)];
+  return s;
+}
 export { mapEpisode, mapEvent, mapMessage, mapTicket, mapUser };

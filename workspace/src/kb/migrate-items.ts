@@ -16,33 +16,11 @@
  *  - Điều kiện kỹ thuật (exact, rules, requires, excludes, loại ảnh, ghi đè ngữ cảnh) giữ nguyên trong `advanced`.
  */
 import { ESCALATE_TEMPLATE_ID, type Template } from "../domain/types";
-import { ITEM_TOPICS, type ItemAdvanced, type ItemsDoc, type ItemStep, type KnowledgeItem, type StepTarget } from "../core/items";
+import { GROUP_TOPIC, ITEM_TOPICS, type ItemAdvanced, type ItemsDoc, type ItemStep, type KnowledgeItem, type StepTarget } from "../core/items";
 import type { FollowUpKind } from "../core/followup";
 import { normalize, wordCount } from "../core/text";
 
-/** Nhóm của hệ thống cũ -> chủ đề mới. Nhóm không có ở đây -> "general" (ghi nhật ký). */
-export const GROUP_TOPIC: Record<string, string> = {
-  Greeting: "greeting",
-  FollowUp: "greeting",
-  Account: "account",
-  KYC: "kyc",
-  Tokens: "itlg",
-  Burn: "itlg",
-  Listing: "itlg",
-  Withdraw: "itlg",
-  Wallet: "wallet",
-  HCS: "hcs",
-  Game: "game",
-  GroupMining: "mining",
-  Ambassador: "programs",
-  Campaign: "programs",
-  FAQ: "general",
-  Escalate: "support",
-  AntiSpam: "system",
-  Security: "system",
-  System: "system",
-  Image: "system",
-};
+export { GROUP_TOPIC };
 
 /** Nhóm mà mọi template trong đó là tin hệ thống (code gửi, không sửa qua form). */
 const SYSTEM_GROUPS = new Set(["AntiSpam", "Security", "System", "Image"]);

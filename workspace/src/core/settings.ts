@@ -17,6 +17,7 @@ export interface Settings {
   "episode.summary_every_k": number;
   "episode.closed_lookback_days": number;
   "episode.ask_when_unclear": boolean;
+  "episode.reopen_window_hours": number; // khách quay lại chủ đề của vụ việc đang tạm lắng trong ngưỡng này thì mở lại vụ việc đó thay vì tạo mới
 
   "antispam.stale_days": number; // HEARTBEAT.md: xoá antispam không hoạt động > 30 ngày
 
@@ -47,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   "episode.summary_every_k": 6,
   "episode.closed_lookback_days": 30,
   "episode.ask_when_unclear": false,
+  "episode.reopen_window_hours": 24,
 
   "antispam.stale_days": 30,
 
