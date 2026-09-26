@@ -74,6 +74,18 @@ sets_context:
 ⚠️ The system is currently experiencing high traffic. Please try again in a few minutes. We apologize for the inconvenience. If the issue persists, please contact @interlink_technicalsupport for assistance.
 <!-- next -->
 ---
+id: network-disconnected
+group: System
+response_mode: EXACT_TEMPLATE
+priority: 0
+source: core/fixed-messages.ts (câu khẩn khi mất kết nối AI)
+sets_context:
+  status: none
+---
+<!-- answer:en -->
+⚠️ Network disconnected: our support system cannot connect to its AI service right now, so your message could not be processed. Please try again in a few minutes. If the issue persists, please contact @interlink_technicalsupport.
+<!-- next -->
+---
 id: image-unreadable
 group: Image
 response_mode: EXACT_TEMPLATE

@@ -170,20 +170,46 @@ describe("chống spam", () => {
     }
   });
 
-  it("cảnh báo chống spam là ngoại lệ do code xử lý: luôn gửi nguyên văn tiếng Anh, không qua dịch, kể cả với khách không dùng tiếng Anh", async () => {
+  it("cảnh báo chống spam là câu khẩn: chỉ qua bước AI dịch sang ngôn ngữ của khách; bản dịch được lưu và dùng lại", async () => {
     let translateCalls = 0;
     const llm = fakeLlm({
       understand: async (r) => ({ language: "de", intent: "offtopic", follow_up: "none", query_en: r.text, query_kb: r.text }),
+      select: async () => { throw new Error("câu khẩn không được qua select"); },
+      verify: async () => { throw new Error("câu khẩn không được qua verify"); },
       translate: async (r) => { translateCalls++; return `[${r.lang}] ${r.text}`; },
     });
     const w2 = await makeWorld({ llm });
     try {
       const u = 778;
       await w2.say(u, "Wie ist das Wetter heute in Paris?");
-      expect(w2.channel.textsTo(u)).toEqual([DEFAULT_FIXED_EN["antispam-1"]]);
+      expect(w2.channel.textsTo(u)).toEqual([`[de] ${DEFAULT_FIXED_EN["antispam-1"]}`]);
       await w2.say(u, "Erzähl mir bitte einen Witz über Katzen");
-      expect(w2.channel.textsTo(u).at(-1)).toBe(DEFAULT_FIXED_EN["antispam-2"]);
-      expect(translateCalls).toBe(0);
+      expect(w2.channel.textsTo(u).at(-1)).toBe(`[de] ${DEFAULT_FIXED_EN["antispam-2"]}`);
+      expect(translateCalls).toBe(2);
+      const u2 = 779; // khách khác cùng ngôn ngữ: dùng bản dịch đã lưu, không gọi AI
+      await w2.say(u2, "Wie ist das Wetter heute in Berlin?");
+      expect(w2.channel.textsTo(u2)).toEqual([`[de] ${DEFAULT_FIXED_EN["antispam-1"]}`]);
+      expect(translateCalls).toBe(2);
+      const ev = await w2.conv.userEvents(u2, ["antispam_warning"], 5);
+      expect(ev[0]!.payload).toMatchObject({ lang: "de", source: "cache" });
+    } finally {
+      await w2.close();
+    }
+  });
+
+  it("cảnh báo chống spam không có bản dịch hợp lệ: không gửi câu tiếng Anh, bậc chặn vẫn áp dụng, có vết để dịch sẵn", async () => {
+    const llm = fakeLlm({
+      understand: async (r) => ({ language: "de", intent: "offtopic", follow_up: "none", query_en: r.text, query_kb: r.text }),
+      translate: async () => { throw new Error("translate down"); },
+    });
+    const w2 = await makeWorld({ llm });
+    try {
+      const u = 780;
+      await w2.say(u, "Wie ist das Wetter heute in Paris?");
+      expect(w2.channel.textsTo(u)).toEqual([]);
+      expect((await w2.conv.getAntispam(u))!.offtopic_count).toBe(1);
+      expect((await w2.conv.userEvents(u, ["urgent_fallback"], 5))[0]!.payload).toMatchObject({ template_id: "antispam-1", lang: "de" });
+      expect((await w2.db.query("SELECT 1 FROM jobs WHERE type = 'prewarm-urgent-translations'")).rowCount).toBeGreaterThan(0);
     } finally {
       await w2.close();
     }

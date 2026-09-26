@@ -20,6 +20,8 @@ export interface JsonRequest<T> {
   user: ContentPart[];
   schema: ZodType<T>;
   maxTokens: number;
+  /** Thời gian chờ tối đa của lời gọi này (ms). Không có = mặc định của provider (30 giây). Dùng cho câu khẩn: chờ ngắn rồi dùng phương án dự phòng. */
+  timeoutMs?: number;
 }
 
 export interface Usage {

@@ -12,7 +12,8 @@ import { checkOutput, TELEGRAM_MAX_CHARS } from "../core/gate";
 import { sha1 } from "../core/knowledge";
 import { looksVietnamese, scriptProblem } from "../core/language";
 import { LlmUnavailableError, usableLlm, type LlmPort } from "../core/ports";
-import { translationFeedback, translationProblems } from "../core/translate";
+import { PLACEHOLDER_RE, translationFeedback, translationProblems } from "../core/translate";
+import { DEFAULT_FIXED_EN } from "../core/fixed-messages";
 import type { TemplateIndex } from "../core/template-index";
 import type { KbRepo } from "../db/repo-kb";
 
@@ -31,6 +32,25 @@ export interface Resolved {
 }
 
 type Checked = { ok: true; text: string; attempts: number } | { ok: false; note: string };
+
+/** Kết quả của câu khẩn. `source`: câu gốc tiếng Anh (khách dùng tiếng Anh) / bản dịch sẵn / dịch tại chỗ / dự phòng / không gửi. */
+export interface UrgentText {
+  text: string | null;
+  lang: string;
+  source: "verbatim" | "approved" | "cache" | "live" | "fallback" | "none";
+}
+
+export interface UrgentOptions {
+  vars?: Record<string, string>;
+  /** Được dịch tại chỗ khi chưa có bản dịch sẵn (false: AI đang mất kết nối / khách hết ngân sách token) */
+  live: boolean;
+  /** Không có bản dịch hợp lệ: "english" = gửi bản gốc tiếng Anh (cảnh báo bảo mật, mất kết nối, chuyển nhân viên); "none" = không gửi (chống spam) */
+  fallback: "english" | "none";
+  timeoutMs?: number;
+}
+
+/** Điền biến {NAME} sau khi dịch; biến không có giá trị -> rỗng. Hàm thay thế: "$&" trong giá trị không bị hiểu thành mẫu. */
+const fillVars = (s: string, vars: Record<string, string>) => s.replace(PLACEHOLDER_RE, (m) => vars[m.slice(1, -1)] ?? "").trimEnd();
 
 export class ResponseResolver {
   constructor(
@@ -65,6 +85,94 @@ export class ResponseResolver {
       }
     }
     return { ok: false, note: `dịch ${TRANSLATE_ATTEMPTS} lần vẫn không đạt kiểm tra: ${problems.join("; ")}` };
+  }
+
+  /** Bản dịch sẵn của câu khẩn đã đọc được gần nhất (dùng khi DB lỗi đúng lúc cần gửi câu báo lỗi). */
+  private readonly urgentMemo = new Map<string, { hash: string; text: string }>();
+
+  /**
+   * Đường dịch nhanh cho câu khẩn (core/fixed-messages.ts): câu mẫu đã duyệt -> ngôn ngữ của khách.
+   * Thứ tự: khách dùng tiếng Anh -> nguyên văn; bản dịch đã duyệt trong mẫu; bản dịch sẵn (template_translations, cùng kiểm
+   * tra như mọi bản dịch); dịch tại chỗ MỘT lần với thời gian chờ ngắn (nếu được phép); cuối cùng theo `fallback`.
+   * Không ném lỗi: câu khẩn luôn phải có đường gửi. AI chỉ nhận câu mẫu, không bao giờ nhận tin hay bí mật của khách.
+   */
+  async forUrgent(id: string, lang: string, opts: UrgentOptions): Promise<UrgentText> {
+    const vars = opts.vars ?? {};
+    const index = this.getIndex();
+    const t = index.get(id);
+    const src = t ? index.resolveAnswerSource(t) : undefined;
+    const en = src?.answers.en ?? DEFAULT_FIXED_EN[id];
+    if (!en) throw new Error(`không có câu mẫu ${id}`);
+    if (lang === "en") return { text: fillVars(en, vars), lang: "en", source: "verbatim" };
+    const own = src?.answers[lang];
+    if (own && !this.problems(en, own, lang, TELEGRAM_MAX_CHARS).length) return { text: fillVars(own, vars), lang, source: "approved" };
+
+    const key = src?.id ?? id;
+    const hash = sha1(en);
+    const memoKey = `${key}:${lang}`;
+    try {
+      const stored = await this.kb.getTranslation(key, lang);
+      if (stored && stored.source_hash === hash && !this.problems(en, stored.text, lang, TELEGRAM_MAX_CHARS).length) {
+        this.urgentMemo.set(memoKey, { hash, text: stored.text });
+        return { text: fillVars(stored.text, vars), lang, source: "cache" };
+      }
+    } catch {
+      const m = this.urgentMemo.get(memoKey);
+      if (m && m.hash === hash) return { text: fillVars(m.text, vars), lang, source: "cache" };
+    }
+
+    const llm = opts.live ? usableLlm(this.llm) : undefined;
+    if (llm) {
+      try {
+        const out = await llm.translate({ text: en, lang, from: "en", timeoutMs: opts.timeoutMs });
+        if (!this.problems(en, out, lang, TELEGRAM_MAX_CHARS).length) {
+          this.urgentMemo.set(memoKey, { hash, text: out });
+          await this.kb.saveTranslation(key, lang, out, hash, "llm", "pending").catch(() => undefined);
+          return { text: fillVars(out, vars), lang, source: "live" };
+        }
+      } catch {
+        /* mất kết nối / quá thời gian / đầu ra hỏng: sang phương án dự phòng */
+      }
+    }
+    return opts.fallback === "english" ? { text: fillVars(en, vars), lang: "en", source: "fallback" } : { text: null, lang, source: "none" };
+  }
+
+  /**
+   * Dịch sẵn nhóm câu khẩn sang các ngôn ngữ (job prewarm-urgent-translations). Bản dịch hợp lệ đã có thì bỏ qua (chỉ đọc DB).
+   * Dịch có kiểm như mọi nội dung (tối đa TRANSLATE_ATTEMPTS lần); không đạt thì không lưu, lần chạy sau thử lại.
+   * Mất kết nối LLM -> ném LlmUnavailableError để job được chạy lại sau.
+   */
+  async prewarmUrgent(ids: readonly string[], langs: string[]): Promise<{ translated: number; skipped: number; failed: string[] }> {
+    const index = this.getIndex();
+    const out = { translated: 0, skipped: 0, failed: [] as string[] };
+    for (const id of ids) {
+      const t = index.get(id);
+      const src = t ? index.resolveAnswerSource(t) : undefined;
+      const en = src?.answers.en ?? DEFAULT_FIXED_EN[id];
+      if (!en) continue;
+      const key = src?.id ?? id;
+      const hash = sha1(en);
+      for (const lang of langs) {
+        if (lang === "en") continue;
+        if (src?.answers[lang] && !this.problems(en, src.answers[lang]!, lang, TELEGRAM_MAX_CHARS).length) {
+          out.skipped++;
+          continue;
+        }
+        const stored = await this.kb.getTranslation(key, lang);
+        if (stored && stored.source_hash === hash && !this.problems(en, stored.text, lang, TELEGRAM_MAX_CHARS).length) {
+          out.skipped++;
+          continue;
+        }
+        const r = await this.translateChecked(en, lang, "en", TELEGRAM_MAX_CHARS);
+        if (!r.ok) {
+          out.failed.push(`${key}:${lang}`);
+          continue;
+        }
+        await this.kb.saveTranslation(key, lang, r.text, hash, "llm", "pending");
+        out.translated++;
+      }
+    }
+    return out;
   }
 
   async forTemplate(templateId: string, lang: string, vars: Record<string, string> = {}): Promise<Resolved> {

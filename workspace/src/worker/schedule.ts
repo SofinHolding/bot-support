@@ -92,4 +92,5 @@ export const CRONS: CronDef[] = [
   { name: "whitepaper-health", spec: { kind: "daily", at: "09:00", tz: BKK }, replaces: "HEARTBEAT: kiểm tra 'Last synced' hàng ngày" },
   { name: "weekly-stats", spec: { kind: "weekly", dow: 1, at: "00:05", tz: BKK }, replaces: "HEARTBEAT: thống kê tuần + dọn dẹp mỗi thứ Hai" },
   { name: "retention", spec: { kind: "daily", at: "03:30", tz: BKK }, replaces: "session.maintenance.pruneAfter=3d (không được áp dụng): ảnh khách quá hạn lưu" },
+  { name: "prewarm-urgent-translations", spec: { kind: "hourly", minute: 20 }, replaces: "(mới) dịch sẵn câu khẩn sang ngôn ngữ của khách; bản dịch còn hợp lệ thì bỏ qua" },
 ];

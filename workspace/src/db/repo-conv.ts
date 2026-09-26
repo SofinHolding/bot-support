@@ -159,6 +159,11 @@ export function convRepo(db: Db) {
       );
       return r.rows.map((x) => ({ ...mapUser(x), episode_count: num(x.episode_count) }));
     },
+    /** Mọi ngôn ngữ khách đã dùng (users.language) — danh sách dịch sẵn câu khẩn. */
+    async knownLanguages(): Promise<string[]> {
+      const r = await db.query<{ language: string }>("SELECT DISTINCT language FROM users WHERE language IS NOT NULL ORDER BY language");
+      return r.rows.map((x) => x.language);
+    },
     async allUserIds(): Promise<number[]> {
       const r = await db.query("SELECT telegram_id FROM users ORDER BY telegram_id");
       return r.rows.map((x) => num(x.telegram_id));

@@ -46,7 +46,7 @@ export class AnthropicProvider implements LlmProvider {
           },
         ],
         output_config: { format: zodOutputFormat(req.schema as never) },
-      });
+      }, req.timeoutMs ? { timeout: req.timeoutMs, maxRetries: 0 } : undefined);
       if (res.stop_reason === "refusal") throw new LlmRefusalError("stop_reason=refusal");
       if (res.stop_reason === "max_tokens") throw new LlmBadOutputError("bị cắt do max_tokens");
       const parsed = res.parsed_output as T | null | undefined;

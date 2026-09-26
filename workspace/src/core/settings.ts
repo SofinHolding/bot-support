@@ -28,6 +28,8 @@ export interface Settings {
   "approval.second_person": boolean; // true: publish luật bảo mật / Hướng dẫn AI / SKILL, đổi quản trị viên, cấu hình bảo vệ cần người thứ hai duyệt. false: người đề xuất (đủ quyền) áp dụng ngay
 
   "limits.tokens_per_user_day": number; // chống đốt token: vượt thì không gọi LLM cho khách đó trong ngày
+  "translation.prewarm_languages": string; // mã ngôn ngữ (ngăn bằng dấu phẩy) dịch sẵn nhóm câu khẩn; cộng thêm mọi ngôn ngữ khách đã dùng
+  "translation.urgent_timeout_ms": number; // thời gian chờ tối đa khi phải dịch câu khẩn tại chỗ (chưa có bản dịch sẵn)
   "batching.window_ms": number; // gom tin nhắn liên tiếp (gateway cũ: debounce 2000ms)
   "retention.media_days": number;
 }
@@ -59,9 +61,14 @@ export const DEFAULT_SETTINGS: Settings = {
   "approval.second_person": true,
 
   "limits.tokens_per_user_day": 200_000,
+  "translation.prewarm_languages": "vi,ko,ja,zh,ru,id,th,tr,es,pt,fr,de,ar,hi,fa,uk",
+  "translation.urgent_timeout_ms": 8000,
   "batching.window_ms": 2000,
   "retention.media_days": 30,
 };
+
+/** Danh sách ngôn ngữ dịch sẵn câu khẩn (setting translation.prewarm_languages). */
+export const prewarmLanguages = (s: Settings): string[] => [...new Set(s["translation.prewarm_languages"].split(",").map((x) => x.trim()).filter((x) => /^[a-z]{2}$/.test(x)))];
 
 export class SettingsService {
   private cache: { at: number; value: Settings } | null = null;
@@ -91,5 +98,6 @@ export function validateSetting(key: string, value: unknown): string | null {
   if (key === "router.mode" && value !== "hybrid" && value !== "llm_first") return "chỉ nhận hybrid | llm_first";
   if (key === "router.knowledge_lang" && value !== "vi" && value !== "en") return "chỉ nhận vi | en";
   if (key.startsWith("router.semantic") && (value as number) > 1) return "ngưỡng phải trong khoảng 0..1";
+  if (key === "translation.prewarm_languages" && !/^\s*([a-z]{2}\s*(,\s*[a-z]{2}\s*)*)?$/.test(value as string)) return "nhập mã ngôn ngữ 2 chữ cái, ngăn bằng dấu phẩy (vd: vi,ko,ja)";
   return null;
 }

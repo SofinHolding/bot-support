@@ -217,7 +217,7 @@ export interface LlmPort {
    * SKILL translate-answer: dịch nguyên văn sang `lang`; `from` là ngôn ngữ nguồn (nếu biết). Bên gọi kiểm bản dịch (core/translate.ts).
    * `problems` (tiếng Anh): lỗi code tìm thấy ở bản dịch lần trước của CÙNG nguồn; có thì AI dịch lại và sửa đúng các lỗi đó.
    */
-  translate(req: { text: string; lang: string; from?: string; problems?: string[] }): Promise<string>;
+  translate(req: { text: string; lang: string; from?: string; problems?: string[]; timeoutMs?: number }): Promise<string>;
   /** SKILL translate-query: câu hỏi của khách (ngôn ngữ `from`) -> câu truy vấn đứng độc lập bằng ngôn ngữ tìm kiếm `to`. Chỉ để TÌM; bên gọi kiểm đầu ra. */
   translateQuery(req: TranslateQueryRequest): Promise<{ query: string }>;
   summarize(req: SummaryInput): Promise<SummaryResult>;

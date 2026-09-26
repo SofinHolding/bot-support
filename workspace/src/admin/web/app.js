@@ -2770,6 +2770,9 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "limits.tokens_per_user_day": "Ngân sách token mỗi khách mỗi ngày; vượt thì không gọi LLM cho khách đó.",
     "batching.window_ms": "Cửa sổ gom các tin nhắn liên tiếp (ms).",
     "retention.media_days": "Số ngày lưu ảnh khách gửi.",
+    "episode.reopen_window_hours": "Khách quay lại đúng chủ đề của một vụ việc đang tạm lắng trong số giờ này thì bot mở lại vụ việc đó (giữ lịch sử, tóm tắt) thay vì tạo vụ việc mới.",
+    "translation.prewarm_languages": "Các ngôn ngữ được dịch sẵn nhóm câu khẩn (cảnh báo bảo mật, chống spam, báo mất kết nối, câu chuyển nhân viên), ngăn bằng dấu phẩy. Ngôn ngữ khách đã dùng tự được thêm. Nhờ dịch sẵn, các câu này gửi được bằng ngôn ngữ của khách cả khi AI mất kết nối.",
+    "translation.urgent_timeout_ms": "Thời gian chờ tối đa (ms) khi phải dịch câu khẩn tại chỗ vì chưa có bản dịch sẵn. Quá thời gian thì dùng phương án dự phòng.",
   };
   const SETTING_TITLE = {
     "router.semantic_confident": "Ngưỡng tin tưởng ngữ nghĩa",
@@ -2794,6 +2797,9 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     "limits.tokens_per_user_day": "Ngân sách token mỗi khách mỗi ngày",
     "batching.window_ms": "Cửa sổ gom tin nhắn (ms)",
     "retention.media_days": "Số ngày lưu ảnh",
+    "episode.reopen_window_hours": "Mở lại vụ việc cùng chủ đề trong (giờ)",
+    "translation.prewarm_languages": "Ngôn ngữ dịch sẵn câu khẩn",
+    "translation.urgent_timeout_ms": "Thời gian chờ dịch câu khẩn tại chỗ (ms)",
   };
   const SETTING_ENUM = { "router.mode": ["hybrid", "llm_first"], "router.tier3_mode": ["extractive", "generative"], "router.knowledge_lang": ["vi", "en"] };
 

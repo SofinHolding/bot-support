@@ -13,10 +13,10 @@ import { detectLanguage, looksVietnamese, resolveLanguage } from "../core/langua
 import type { KnowledgePort, LlmPort } from "../core/ports";
 import { LlmUnavailableError, usableLlm } from "../core/ports";
 import { routeHybrid, routeLlmFirst, type Outcome, type RouteResult, type RouterSettings } from "../core/router";
-import { fixedEnglish, NETWORK_DISCONNECTED_EN } from "../core/fixed-messages";
-import { detectKeyLeak, maskSensitive, REDACTED_LOG_TEXT } from "../core/sanitize";
+import { NETWORK_DISCONNECTED_EN, NETWORK_DISCONNECTED_ID } from "../core/fixed-messages";
+import { detectKeyLeak, maskSensitive, REDACTED_LOG_TEXT, withoutSecrets } from "../core/sanitize";
 import type { Settings } from "../core/settings";
-import { SettingsService } from "../core/settings";
+import { prewarmLanguages, SettingsService } from "../core/settings";
 import { readSummary } from "../core/summary";
 import { normalize } from "../core/text";
 import type { Template, VisionResult, VisionScreenType } from "../domain/types";
@@ -31,7 +31,7 @@ import { llmContext } from "../llm/chain";
 import type { LiveContent } from "../kb/live-content";
 import { EpisodeManager } from "./episodes";
 import type { MediaStore } from "./media";
-import type { ResponseResolver } from "./resolver";
+import type { ResponseResolver, UrgentOptions, UrgentText } from "./resolver";
 import type { Channel, InboundBatch, PipelineResult } from "./types";
 
 export interface PipelineDeps {
@@ -93,8 +93,10 @@ export class BotPipeline {
     } catch (e) {
       this.log("error", "pipeline error", { err: (e as Error).stack ?? String(e) });
       for (const it of items) if (it.updateId > 0) await conv.finishUpdate(it.updateId, "error").catch(() => undefined);
-      // KHÔNG hiển thị lỗi kỹ thuật cho khách (AGENTS.md > Error Handling): gửi thông báo cố định.
-      const text = NETWORK_DISCONNECTED_EN;
+      // KHÔNG hiển thị lỗi kỹ thuật cho khách (AGENTS.md > Error Handling): câu báo mất kết nối bằng ngôn ngữ đã nhớ của khách
+      // (bản dịch sẵn; không dịch tại chỗ). Lỗi ở đây có thể chính là lỗi DB: mọi bước đều có lối cuối là câu gốc trong mã nguồn.
+      const lang = (await this.d.conv.getUser(batch.userId).catch(() => null))?.language ?? "en";
+      const text = (await this.d.resolver.forUrgent(NETWORK_DISCONNECTED_ID, lang, { live: false, fallback: "english" }).catch(() => null))?.text ?? NETWORK_DISCONNECTED_EN;
       await this.send(batch.chatId, text, `err:${items[0]!.updateId}`).catch(() => undefined);
       await this.recordFailure(batch, e).catch((e2) => this.log("error", "không ghi được ca lỗi", { err: (e2 as Error).message }));
       return { status: "error", replies: [text] };
@@ -116,7 +118,7 @@ export class BotPipeline {
 
     // ================= FP-0: lộ private key / seed phrase (ưu tiên cao nhất) =================
     const leak = detectKeyLeak(rawText);
-    if (leak) return this.handleKeyLeak(batch, items, user, leak, isAdmin, started);
+    if (leak) return this.handleKeyLeak(batch, items, user, leak, isAdmin, started, settings);
 
     const masked = maskSensitive(rawText);
 
@@ -167,16 +169,14 @@ export class BotPipeline {
       const langRes = resolveLanguage(masked, user.language);
       let lang = langRes.lang; // do code nhận diện; ở luồng "AI hiểu trước" AI xác định lại bên dưới (code vẫn kiểm)
 
-      let llmDown = false;
+      // Câu khẩn (đường dịch nhanh): chỉ bước AI dịch, bản dịch sẵn hoặc dịch tại chỗ với thời gian chờ ngắn
+      const urgent = (id: string, l: string, o: Omit<UrgentOptions, "timeoutMs" | "live"> & { live?: boolean }) =>
+        resolver.forUrgent(id, l, { live: o.live ?? !!llm, timeoutMs: settings["translation.urgent_timeout_ms"], ...o });
       if (vision?.has_secret) {
-        try {
-          // cảnh báo ảnh chứa key cùng loại với cảnh báo bảo mật: dịch nhiều lần vẫn không đạt thì gửi bản gốc tiếng Anh, không bỏ cảnh báo
-          const warn = await resolver.forTemplate(IMAGE_COVER_SECRET_ID, lang);
-          extraReplies.push(warn.blocked ? (await resolver.forTemplate(IMAGE_COVER_SECRET_ID, "en")).text : warn.text);
-        } catch (e) {
-          if (!(e instanceof LlmUnavailableError) || e.badOutput) throw e;
-          llmDown = true;
-        }
+        // cảnh báo ảnh chứa key cùng loại với cảnh báo bảo mật: không có bản dịch hợp lệ thì gửi bản gốc tiếng Anh, không bỏ cảnh báo
+        const warn = await urgent(IMAGE_COVER_SECRET_ID, lang, { fallback: "english" });
+        extraReplies.push(warn.text!);
+        if (warn.source === "fallback") await this.urgentFallback(batch.userId, IMAGE_COVER_SECRET_ID, lang, now);
       }
 
       // Ảnh đã lưu gắn vào tin đến: xoá / mở ảnh theo khách được
@@ -229,9 +229,15 @@ export class BotPipeline {
           typing?.();
         }
       }
-      let outcome: Outcome = llmDown ? { kind: "UNAVAILABLE", tier: result.outcome.tier, reason: "không dịch được cảnh báo ảnh: mất kết nối LLM" } : result.outcome;
+      let outcome: Outcome = result.outcome;
       if (result.lang) lang = result.lang;
-      if (!isAdmin && lang !== user.language && (result.lang || langRes.update)) await conv.setLanguage(batch.userId, lang);
+      if (!isAdmin && lang !== user.language && (result.lang || langRes.update)) {
+        await conv.setLanguage(batch.userId, lang);
+        // Ngôn ngữ chưa có trong danh sách dịch sẵn: dịch sẵn nhóm câu khẩn cho ngôn ngữ này ngay (câu khẩn phải gửi được cả khi mất AI)
+        if (lang !== "en" && !prewarmLanguages(settings).includes(lang) && usableLlm(this.d.llm)) {
+          await ops.enqueueJob("prewarm-urgent-translations", { langs: [lang] }, { dedupeKey: `prewarm:${lang}:${now.toISOString().slice(0, 10)}` }).catch(() => undefined);
+        }
+      }
 
       // ---- Kết quả của bước bot gửi trước đó (khách phản hồi thế nào): code ghi từ kết quả SKILL understand ----
       const routedTmpl = this.d.live.index.get(outcomeTemplateId(outcome) ?? "");
@@ -292,11 +298,14 @@ export class BotPipeline {
           ep = resolved.episode;
         }
         built = await this.buildReply(outcome, lang, loaded.pendingIssue, supportSummary);
-        // Câu chuyển người thật cũng dịch nhiều lần không đạt (hiếm): khách vẫn phải được báo là đã chuyển người thật. Lối cuối cùng là bản gốc
-        // tiếng Anh của câu đó (không bao giờ tiếng Việt cho khách không dùng tiếng Việt), có ghi vết.
+        // Câu chuyển người thật cũng dịch nhiều lần không đạt (hiếm): khách vẫn phải được báo là đã chuyển người thật. Câu khẩn: bản dịch
+        // sẵn / dịch tại chỗ; không có bản dịch hợp lệ thì lối cuối là bản gốc tiếng Anh (không bao giờ tiếng Việt cho khách không dùng
+        // tiếng Việt), có ghi vết. Khối tóm tắt (đã dịch, nếu có) vẫn đi kèm.
         if (built.blocked || !built.texts.length || (lang !== "vi" && built.texts.some(looksVietnamese))) {
-          result.trace.notes.push(`câu chuyển người thật không dịch được sang ${lang}: gửi bản gốc tiếng Anh (${(built.blocked ?? "").slice(0, 120)})`);
-          built = await this.buildReply(outcome, "en", loaded.pendingIssue, supportSummary);
+          const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english", vars: { SUPPORT_SUMMARY: (await supportSummary?.()) ?? "" } });
+          result.trace.notes.push(`câu chuyển người thật không dịch được sang ${lang} (${(built.blocked ?? "").slice(0, 120)}): dùng ${esc.source === "fallback" ? "bản gốc tiếng Anh" : "bản dịch của câu khẩn"}`);
+          if (esc.source === "fallback") await this.urgentFallback(batch.userId, ESCALATE_TEMPLATE_ID, lang, now);
+          built = { texts: [esc.text!], lang: esc.lang, mode: `urgent_${esc.source}` };
         }
       }
       // Dấu vết các khối của workflow cho quản trị viên xem lại ở mục "Vì sao bot trả lời thế này"
@@ -316,18 +325,21 @@ export class BotPipeline {
         const o = applyOfftopic(anti, now);
         await conv.saveAntispam(batch.userId, o.state);
         antiEvent = { level: o.level, blockMs: o.blockMs };
-        // ngoại lệ do code xử lý: luôn tiếng Anh, không qua AI (core/fixed-messages.ts)
+        // Câu khẩn: bản dịch sẵn / dịch tại chỗ sang ngôn ngữ của khách. Không có bản dịch hợp lệ: không gửi câu, bậc chặn vẫn áp dụng
+        const warn = await urgent(o.templateId, lang, { fallback: "none" });
         replies.length = 0;
-        replies.push(...extraReplies, fixedEnglish(this.d.live.index, o.templateId));
-        await conv.addEvent({ userId: batch.userId, type: o.blockMs ? "antispam_block" : "antispam_warning", payload: { level: o.level, block_minutes: o.blockMs / 60_000, offtopic: masked.slice(0, 120) } }, now);
+        replies.push(...extraReplies, ...(warn.text ? [warn.text] : []));
+        await conv.addEvent({ userId: batch.userId, type: o.blockMs ? "antispam_block" : "antispam_warning", payload: { level: o.level, block_minutes: o.blockMs / 60_000, offtopic: masked.slice(0, 120), lang: warn.lang, source: warn.source } }, now);
+        if (warn.source === "none") await this.urgentFallback(batch.userId, o.templateId, lang, now);
       } else if (anti && !isAdmin) {
         await conv.saveAntispam(batch.userId, { ...anti, last_seen: now });
       }
 
       // Lưới an toàn cuối cùng cho MỌI câu sắp gửi (kể cả cảnh báo ảnh chứa key, cảnh báo chống spam dựng sau lớp chặn ở trên):
-      // khách không dùng tiếng Việt không nhận chữ tiếng Việt. Thay bằng câu chuyển người thật cố định bằng tiếng Anh.
+      // khách không dùng tiếng Việt không nhận chữ tiếng Việt. Thay bằng câu chuyển người thật (câu khẩn, ngôn ngữ của khách).
       if (!isAdmin && lang !== "vi" && replies.some(looksVietnamese)) {
-        const safe = (await resolver.forTemplate(ESCALATE_TEMPLATE_ID, "en")).text;
+        const esc = await urgent(ESCALATE_TEMPLATE_ID, lang, { fallback: "english" });
+        const safe = esc.text!;
         for (let i = 0; i < replies.length; i++) {
           if (!looksVietnamese(replies[i]!)) continue;
           this.log("warn", "lưới an toàn ngôn ngữ: thay câu trả lời còn tiếng Việt", { userId: batch.userId, lang });
@@ -435,6 +447,15 @@ export class BotPipeline {
     await this.d.conv.addEvent({ userId: active.user_id, episodeId: active.id, type: "step_outcome", payload: { ref, outcome, via: "understand" } }, now);
   }
 
+  /**
+   * Câu khẩn không có bản dịch hợp lệ (chưa dịch sẵn và AI không dịch được lúc đó): ghi vết để theo dõi, và xếp việc dịch sẵn
+   * cho ngôn ngữ này để lần sau gửi được bằng ngôn ngữ của khách.
+   */
+  private async urgentFallback(userId: number, templateId: string, lang: string, now: Date) {
+    await this.d.conv.addEvent({ userId, type: "urgent_fallback", payload: { template_id: templateId, lang } }, now).catch(() => undefined);
+    if (usableLlm(this.d.llm)) await this.d.ops.enqueueJob("prewarm-urgent-translations", { langs: [lang] }, { dedupeKey: `prewarm:${lang}:${now.toISOString().slice(0, 13)}` }).catch(() => undefined);
+  }
+
   /** Lượt xử lý hỏng giữa chừng: khách chỉ nhận câu báo mất kết nối cố định (NETWORK_DISCONNECTED_EN), nên phải để lại ticket + quyết định cho người thật theo dõi. */
   private async recordFailure(batch: InboundBatch, e: unknown) {
     const { conv, ops } = this.d;
@@ -453,12 +474,17 @@ export class BotPipeline {
 
   // ------------------------------------------------------------------------------------------------------------
   /** FP-0. Không sao chép/lưu khoá; chỉ ghi `security-alert-key-leak`; báo owner; log "[REDACTED - ...]". */
-  private async handleKeyLeak(batch: InboundBatch, items: InboundBatch["items"], user: UserRow, pattern: "A" | "B" | "C", isAdmin: boolean, started: number): Promise<PipelineResult> {
+  private async handleKeyLeak(batch: InboundBatch, items: InboundBatch["items"], user: UserRow, pattern: "A" | "B" | "C", isAdmin: boolean, started: number, settings: Settings): Promise<PipelineResult> {
     const { conv, resolver } = this.d;
     const now = this.now();
-    const lang = "en"; // câu cảnh báo cố định bằng tiếng Anh (nguyên văn theo AGENTS.md)
-    const alert = { text: fixedEnglish(this.d.live.index, SECURITY_TEMPLATE_ID) }; // ngoại lệ do code xử lý: chạy cả khi mất LLM
-    await this.send(batch.chatId, alert.text, `fp0:${items[0]!.updateId}`);
+    // Ngôn ngữ nhận diện trên phần chữ còn lại SAU KHI BỎ bí mật (từ seed BIP39 là tiếng Anh, sẽ kéo ngôn ngữ về "en"); không còn
+    // chữ nào thì dùng ngôn ngữ đã nhớ. Không cập nhật ngôn ngữ đã nhớ từ tin có bí mật.
+    const lang = resolveLanguage(maskSensitive(withoutSecrets(items.map((i) => i.text ?? "").join("\n"))), user.language).lang;
+    // Câu khẩn: bản dịch sẵn / dịch tại chỗ. Lời gọi dịch chỉ nhận câu mẫu, KHÔNG BAO GIỜ nhận tin có bí mật của khách (N8).
+    // Không có bản dịch hợp lệ: gửi bản gốc tiếng Anh (khách phải biết ngay mình vừa lộ ví).
+    const alert: UrgentText = await resolver.forUrgent(SECURITY_TEMPLATE_ID, lang, { live: true, fallback: "english", timeoutMs: settings["translation.urgent_timeout_ms"] });
+    const alertText = alert.text!;
+    await this.send(batch.chatId, alertText, `fp0:${items[0]!.updateId}`);
 
     if (!isAdmin) {
       const mid = await conv.addMessage({ at: now, episodeId: null, userId: batch.userId, direction: "in", text: REDACTED_LOG_TEXT, language: user.language });
@@ -466,8 +492,9 @@ export class BotPipeline {
       const ep = await conv.openEpisode({ userId: batch.userId, issue: "security-alert-key-leak", topicGroup: "Security" }, now);
       await conv.updateEpisode(ep.id, { issue: "security-alert-key-leak", status: "security_alerted", last_bot_action: "fast/FP-0", last_activity_at: now, closed_at: now });
       await this.linkMessage(mid, ep.id);
-      await conv.addMessage({ at: now, episodeId: ep.id, userId: batch.userId, direction: "out", text: alert.text, tier: 0, templateId: SECURITY_TEMPLATE_ID, latencyMs: Date.now() - started });
-      await conv.addEvent({ userId: batch.userId, episodeId: ep.id, type: "security_alert", payload: { pattern } }, now); // chỉ ghi tên pattern, KHÔNG ghi dữ liệu
+      await conv.addMessage({ at: now, episodeId: ep.id, userId: batch.userId, direction: "out", text: alertText, language: alert.lang, tier: 0, templateId: SECURITY_TEMPLATE_ID, latencyMs: Date.now() - started });
+      await conv.addEvent({ userId: batch.userId, episodeId: ep.id, type: "security_alert", payload: { pattern, lang: alert.lang, source: alert.source } }, now); // chỉ ghi tên pattern, KHÔNG ghi dữ liệu
+      if (alert.source === "fallback") await this.urgentFallback(batch.userId, SECURITY_TEMPLATE_ID, lang, now);
       await conv.setFlag(batch.userId, "security_alerted", true);
       await conv.addDecision({ at: now, messageId: mid, episodeId: ep.id, userId: batch.userId, kind: "SECURITY", tier: 0, templateId: SECURITY_TEMPLATE_ID, via: `FP-0:${pattern}`, reason: "phát hiện key/seed trong tin nhắn", kbVersion: this.d.live.version });
     }
@@ -486,7 +513,7 @@ export class BotPipeline {
         this.log("warn", "không gửi được thông báo FP-0 cho owner", { err: (e as Error).message });
       }
     }
-    return { status: "ok", replies: [alert.text], decisionKind: "SECURITY", templateId: SECURITY_TEMPLATE_ID, tier: 0 };
+    return { status: "ok", replies: [alertText], decisionKind: "SECURITY", templateId: SECURITY_TEMPLATE_ID, tier: 0 };
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -517,8 +544,11 @@ export class BotPipeline {
       }
       case "OFFTOPIC":
         return { texts: [], lang }; // câu cảnh báo do nhánh anti-spam dựng
-      case "UNAVAILABLE":
-        return { texts: [NETWORK_DISCONNECTED_EN], lang: "en", mode: "fixed_en", note: outcome.reason };
+      case "UNAVAILABLE": {
+        // Câu khẩn: chỉ bản dịch sẵn (AI đang mất kết nối hoặc khách hết ngân sách token: không dịch tại chỗ); không có thì câu gốc tiếng Anh
+        const r = await resolver.forUrgent(NETWORK_DISCONNECTED_ID, lang, { live: false, fallback: "english" });
+        return { texts: [r.text!], lang: r.lang, mode: `urgent_${r.source}`, note: outcome.reason };
+      }
       case "CLARIFY": {
         // câu hỏi lại đã được người duyệt viết (tiếng Anh) trong mục hỏi đáp: dịch trung thành như mọi câu đã duyệt
         const r = await this.d.resolver.dynamic(outcome.question, lang, "en");

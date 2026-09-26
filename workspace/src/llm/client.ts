@@ -402,7 +402,7 @@ ${wrap("summary", c.summary)}` : "",
   }
 
   /** SKILL translate-answer: dịch đoạn tri thức / template sang ngôn ngữ của khách. Bản dịch chưa đáng tin: bên gọi phải qua `translationProblems`. */
-  async translate(req: { text: string; lang: string; from?: string; problems?: string[] }): Promise<string> {
+  async translate(req: { text: string; lang: string; from?: string; problems?: string[]; timeoutMs?: number }): Promise<string> {
     const p = protectTerms(req.text);
     const skill = (await this.skills())["translate-answer"];
     const res = await this.chain.generateJson({
@@ -417,6 +417,7 @@ ${wrap("summary", c.summary)}` : "",
       ].filter(Boolean).join("\n\n") }],
       schema: TranslateSchema,
       maxTokens: 1800,
+      timeoutMs: req.timeoutMs,
     });
     const restored = restoreTerms(res.data.text, p.tokens);
     if (!sameProtectedSet(req.text, restored)) throw new Error("bản dịch làm thay đổi URL hoặc handle");

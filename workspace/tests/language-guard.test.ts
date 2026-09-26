@@ -442,19 +442,19 @@ describe("rà soát: các đường gửi khác nhau đều không để lọt t
     expect(reply).toContain("@interlink_technicalsupport");
   });
   it("lưới an toàn cuối: cảnh báo ảnh chứa key đi đường riêng (không qua lớp chặn thứ nhất) vẫn không được có tiếng Việt cho khách khác", async () => {
-    const resolver = w.pipeline["d"].resolver as unknown as { forTemplate: (id: string, lang: string, vars?: Record<string, string>) => Promise<unknown> };
-    const original = resolver.forTemplate.bind(resolver);
-    resolver.forTemplate = async (id, lang, vars) => (id === IMAGE_COVER_SECRET_ID ? { text: VI_TEXT, lang, translated: false } : original(id, lang, vars)); // giả lập kho hỏng
+    const resolver = w.pipeline["d"].resolver as unknown as { forUrgent: (id: string, lang: string, opts: unknown) => Promise<unknown> };
+    const original = resolver.forUrgent.bind(resolver);
+    resolver.forUrgent = async (id, lang, opts) => (id === IMAGE_COVER_SECRET_ID ? { text: VI_TEXT, lang, source: "cache" } : original(id, lang, opts)); // giả lập bản dịch sẵn hỏng
     try {
       w.channel.images.set("leak-1", { has_secret: true, screen_type: "app_screen" });
       await w.sayPhoto(8201, "leak-1");
       const replies = w.channel.textsTo(8201);
       expect(replies.length).toBeGreaterThan(0);
       expect(replies.some(looksVietnamese)).toBe(false);
-      expect(replies[0]).toContain("@interlink_technicalsupport"); // bị thay bằng câu chuyển người thật cố định bằng tiếng Anh
+      expect(replies[0]).toContain("@interlink_technicalsupport"); // bị thay bằng câu chuyển người thật (câu khẩn, ngôn ngữ của khách)
       expect(replies[0]).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
     } finally {
-      resolver.forTemplate = original;
+      resolver.forUrgent = original;
     }
   });
 });

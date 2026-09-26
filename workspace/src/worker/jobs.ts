@@ -12,6 +12,10 @@ import type { ConvRepo } from "../db/repo-conv";
 import type { KbRepo } from "../db/repo-kb";
 import type { OpsRepo } from "../db/repo-ops";
 import type { KbService } from "../kb/service";
+import type { LiveContent } from "../kb/live-content";
+import type { ResponseResolver } from "../bot/resolver";
+import { URGENT_TEMPLATE_IDS } from "../core/fixed-messages";
+import { prewarmLanguages } from "../core/settings";
 import { htmlToText, pageTitle, paragraphs } from "./html";
 import { localDate, mondayOf } from "./schedule";
 
@@ -43,6 +47,9 @@ export interface JobContext {
   now: () => Date;
   fetchImpl: typeof fetch;
   log: (level: "info" | "warn" | "error", msg: string, extra?: unknown) => void;
+  /** Dịch sẵn câu khẩn (job prewarm-urgent-translations). Không có = job bỏ qua. */
+  resolver?: ResponseResolver;
+  live?: LiveContent;
 }
 
 export type JobHandler = (ctx: JobContext, payload: Record<string, unknown>) => Promise<unknown>;
@@ -210,6 +217,20 @@ export const HANDLERS: Record<string, JobHandler> = {
     const { summary, droppedFacts } = cleanSummary(out, messages.filter((m) => m.role === "user").map((m) => m.text), prev) // nguồn của "giá trị khách nêu" chỉ là lời khách, không phải câu bot;
     await ctx.conv.saveSummary(id, { ...summary }, msgs[msgs.length - 1]!.id);
     return { episodeId: id, upTo: msgs[msgs.length - 1]!.id, facts: summary.exact_facts.length, droppedFacts };
+  },
+
+  /**
+   * Dịch sẵn nhóm câu khẩn (cảnh báo bảo mật, chống spam, báo mất kết nối, câu chuyển nhân viên) sang các ngôn ngữ khách dùng,
+   * để các câu này gửi được NGAY bằng ngôn ngữ của khách, kể cả khi AI mất kết nối. Bản dịch hợp lệ đã có thì bỏ qua (chỉ đọc DB),
+   * nên chạy định kỳ rẻ; mẫu đổi nội dung (hash khác) thì tự dịch lại. Payload `langs`: chỉ dịch các ngôn ngữ này (ngôn ngữ mới gặp).
+   */
+  async "prewarm-urgent-translations"(ctx, p) {
+    if (!ctx.resolver || !usableLlm(ctx.llm)) return { skipped: "chưa cấu hình LLM" };
+    await ctx.live?.ensureFresh();
+    const s = await ctx.settings.get();
+    const wanted = Array.isArray(p.langs) ? p.langs.map(String) : [...prewarmLanguages(s), ...(await ctx.conv.knownLanguages())];
+    const langs = [...new Set(wanted.filter((l) => /^[a-z]{2}$/.test(l) && l !== "en"))];
+    return { langs: langs.length, ...(await ctx.resolver.prewarmUrgent(URGENT_TEMPLATE_IDS, langs)) };
   },
 
   /** Xoá ảnh quá thời hạn lưu (báo cáo cũ: 8.884/11.004 ảnh > 30 ngày vẫn còn). */

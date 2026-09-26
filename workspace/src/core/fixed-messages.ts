@@ -1,22 +1,25 @@
 /**
- * Câu cố định gửi khách KHÔNG qua AI, luôn bằng tiếng Anh, ghi sẵn trong mã nguồn để vẫn gửi được khi mất kết nối LLM.
+ * "Câu khẩn": câu phải gửi được NGAY, kể cả khi AI chậm hoặc mất kết nối — cảnh báo lộ seed/private key, cảnh báo ảnh chứa
+ * bí mật, chống spam, báo mất kết nối, câu chuyển nhân viên (docs: huong-dan-memory v3 mục 8; quyết định owner QĐ1, QĐ3).
  *
- * Quy tắc (docs/KIEN_TRUC_KIEN_THUC.md, "Mọi câu trả lời đều qua AI"): nội dung lấy từ kho KHÔNG BAO GIỜ được gửi thẳng
- * cho khách — phải qua SKILL AI đánh giá trong lượt đó rồi dịch sang ngôn ngữ của khách. Mất kết nối LLM ở bất kỳ bước nào
- * thì gửi NETWORK_DISCONNECTED_EN. Chỉ hai ngoại lệ do code xử lý (chạy cả khi mất LLM, luôn tiếng Anh):
- *   - cảnh báo bảo mật khi khách gửi seed phrase / private key (FP-0, luật SECURITY_RULE);
- *   - cảnh báo / chặn chống spam.
+ * Gửi bằng NGÔN NGỮ CỦA KHÁCH qua đường dịch nhanh (`ResponseResolver.forUrgent`): bước AI duy nhất là dịch, làm trước (job
+ * `prewarm-urgent-translations` lưu bản dịch sẵn) hoặc tại chỗ với thời gian chờ ngắn. Không qua understand / select / verify.
+ * Lời gọi dịch chỉ nhận câu mẫu đã duyệt, không bao giờ nhận tin của khách hay bí mật của khách (N8).
  *
  * Bản mặc định dưới đây là bản CHÉP NGUYÊN VĂN mẫu đã duyệt trong content/templates/system.md (test
- * tests/fixed-messages.test.ts bắt lệch). Lúc chạy ưu tiên bản tiếng Anh đang publish của mẫu (sửa qua duyệt hai người);
- * mẫu không đọc được thì dùng bản mặc định này.
+ * tests/fixed-messages.test.ts bắt lệch). Lúc chạy ưu tiên bản tiếng Anh đang publish của mẫu; mẫu chưa có trong kho
+ * (DB cũ chưa seed mẫu mới) thì dùng bản mặc định này.
  */
 import type { TemplateIndex } from "./template-index";
 
 export const NETWORK_DISCONNECTED_EN =
   "⚠️ Network disconnected: our support system cannot connect to its AI service right now, so your message could not be processed. Please try again in a few minutes. If the issue persists, please contact @interlink_technicalsupport.";
 
+export const NETWORK_DISCONNECTED_ID = "network-disconnected";
+
 export const DEFAULT_FIXED_EN: Record<string, string> = {
+  [NETWORK_DISCONNECTED_ID]: NETWORK_DISCONNECTED_EN,
+  "image-cover-secret": "⚠️ Please cover sensitive information (seed phrase, private key, password) before sending screenshots. NEVER share these with anyone.",
   "fp-0-security-alert": `⚠️ SECURITY ALERT
 
 You may have shared your private key or seed phrase. This is EXTREMELY DANGEROUS.
@@ -35,6 +38,21 @@ The real InterLink team NEVER asks for seed phrase or private key. Official supp
   "antispam-6": "🔴 You have been blocked for 1 hour due to spam activity. Next violation: 24-hour block.",
   "antispam-7plus": "⛔ Your access has been restricted for 24 hours due to repeated spam. For urgent InterLink support, contact @interlink_technicalsupport directly.",
 };
+
+/** Nhóm câu khẩn: được dịch sẵn sang mọi ngôn ngữ khách đã dùng (job prewarm-urgent-translations). */
+export const URGENT_TEMPLATE_IDS = [
+  "fp-0-security-alert",
+  "image-cover-secret",
+  "antispam-1",
+  "antispam-2",
+  "antispam-3",
+  "antispam-4",
+  "antispam-5",
+  "antispam-6",
+  "antispam-7plus",
+  NETWORK_DISCONNECTED_ID,
+  "fp-12-escalate",
+] as const;
 
 /** Bản tiếng Anh của một câu cố định: bản đang publish nếu đọc được, không thì bản mặc định trong mã nguồn. */
 export function fixedEnglish(index: TemplateIndex | undefined, id: string): string {

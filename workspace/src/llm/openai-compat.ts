@@ -48,7 +48,7 @@ export class OpenAICompatProvider implements LlmProvider {
             { role: "user", content: userContent },
           ],
         }),
-        signal: AbortSignal.timeout(cfg.timeoutMs ?? 30_000),
+        signal: AbortSignal.timeout(req.timeoutMs ?? cfg.timeoutMs ?? 30_000),
       });
     } catch {
       throw new ProviderUnavailableError("connection error");

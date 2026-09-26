@@ -83,6 +83,24 @@ export function detectKeyLeak(text: string): KeyLeakPattern | null {
 }
 
 /**
+ * Tin nhắn sau khi BỎ HẲN mọi đoạn mà `detectKeyLeak` coi là bí mật (lệnh /wallet kèm khoá, khoá hex/WIF, dãy từ seed) — chỉ
+ * dùng để nhận diện ngôn ngữ của phần chữ còn lại cho câu cảnh báo. `maskSensitive` chỉ che dãy >= 10 từ BIP39 liền nhau nên
+ * không đủ: dãy 12/24 từ mà detectKeyLeak bắt theo luật gốc vẫn là tiếng Anh và kéo ngôn ngữ về "en".
+ */
+export function withoutSecrets(text: string): string {
+  const g = (re: RegExp) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+  let out = text;
+  for (const re of [A_WALLET_WORDS, A_WALLET_CMD_HEX, A_WALLET_HEX_LONG, B_HEX_64, B_WIF]) out = out.replace(g(re), " ");
+  out = out.replace(new RegExp(`\b0x${HEX}{40,}\b`, "g"), " ");
+  const total = out.split(/\s+/).filter(Boolean).length;
+  const runs = seedRuns(out)
+    .filter((r) => maxBipRun(r.tokens) >= 10 || isSeedRun(r, total))
+    .sort((a, b) => b.start - a.start);
+  for (const r of runs) out = out.slice(0, r.start) + " " + out.slice(r.end);
+  return out.replace(/\s+/g, " ").trim();
+}
+
+/**
  * Che thông tin nhạy cảm để lưu DB / gửi LLM / hiển thị cho admin.
  * Không phải cơ chế bảo vệ duy nhất (xem detectKeyLeak) mà là lớp cuối trước khi dữ liệu rời bộ nhớ.
  */

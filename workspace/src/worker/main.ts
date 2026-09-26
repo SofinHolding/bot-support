@@ -8,7 +8,7 @@ import { runDueJobs, scheduleDue } from "./runner";
 export function jobContext(svc: Services): JobContext {
   return {
     db: svc.db, conv: svc.conv, kb: svc.kb, ops: svc.ops, settings: svc.settings, kbService: svc.kbService, channel: svc.channel, llm: svc.llm, media: svc.media,
-    ownerId: svc.cfg.ownerId, adminWebUrl: svc.cfg.PUBLIC_ADMIN_URL, now: () => new Date(), fetchImpl: fetch, log: svc.log,
+    ownerId: svc.cfg.ownerId, adminWebUrl: svc.cfg.PUBLIC_ADMIN_URL, now: () => new Date(), fetchImpl: fetch, log: svc.log, resolver: svc.resolver, live: svc.live,
   };
 }
 
