@@ -59,26 +59,24 @@ const IntakeDraftSchema = z.object({
     .nullable()
     .default(null),
 });
-const VaultDraftSchema = z.object({
-  notes: z
-    .array(
-      z.object({
-        title: z.string().min(1).max(200),
-        category: z.string().min(1).max(60),
-        tags: z.array(z.string().min(1).max(60)).max(10).default([]),
-        lang_source: z.enum(["vi", "en", "mixed"]),
-        version_group: z.string().regex(SLUG_RE).max(80),
-        related: z.array(z.string().max(80)).max(5).default([]),
-        summary: z.string().min(1).max(600),
-        keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
-        canonical_title: z.string().min(1).max(200),
-        canonical_summary: z.string().min(1).max(800),
-        canonical_keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
-        sections: z.array(z.object({ heading: z.string().max(200).default(""), body: z.string().min(1).max(8000) })).min(1).max(30),
-        units: z.array(z.string().max(20)).min(1).max(200),
-      }),
-    )
-    .max(80),
+/** Một note do SKILL knowledge-ingest soạn — Admin Web dùng lại để kiểm note gộp mà admin gửi về sau khi xem trước. */
+export const VaultDraftNoteSchema = z.object({
+  title: z.string().min(1).max(200),
+  category: z.string().min(1).max(60),
+  tags: z.array(z.string().min(1).max(60)).max(10).default([]),
+  lang_source: z.enum(["vi", "en", "mixed"]),
+  version_group: z.string().regex(SLUG_RE).max(80),
+  related: z.array(z.string().max(80)).max(5).default([]),
+  summary: z.string().min(1).max(600),
+  keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
+  canonical_title: z.string().min(1).max(200),
+  canonical_summary: z.string().min(1).max(800),
+  canonical_keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
+  sections: z.array(z.object({ heading: z.string().max(200).default(""), body: z.string().min(1).max(8000) })).min(1).max(30),
+  units: z.array(z.string().max(20)).min(1).max(200),
+});
+export const VaultDraftSchema = z.object({
+  notes: z.array(VaultDraftNoteSchema).max(80),
   unmatched: z.array(z.object({ unit: z.string().max(20), topic: z.string().max(300), suggested_category: z.string().max(60).default("") })).max(200).default([]),
 });
 const VaultCompareSchema = z.object({

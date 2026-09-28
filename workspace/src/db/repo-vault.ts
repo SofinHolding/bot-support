@@ -62,7 +62,8 @@ export interface VaultChunkHit {
 
 export type ConflictType = "in_file" | "tie" | "version";
 export type ConflictStatus = "open" | "sent" | "deciding" | "resolved";
-export type ConflictDecision = "a" | "b" | "c" | "d" | "old" | "merge" | "drop_all";
+/** "a".."z" = giữ phương án có nhãn đó; "old" = giữ bản cũ; "merge" = gộp / nhập lại; "drop_all" = bỏ các phương án mới */
+export type ConflictDecision = string;
 
 /** Một bên trong xung đột. label: A, B, C… cho note mới; "O" cho note cũ đang dùng. */
 export interface ConflictCandidate {
@@ -344,7 +345,9 @@ export function vaultRepo(db: Db) {
     /** Người bấm đầu tiên thắng: chỉ ghi khi xung đột còn mở. null = đã có người quyết định trước. */
     async claimDecision(id: number, decision: ConflictDecision, payload: Record<string, unknown> | null, by: string, at: Date): Promise<ConflictRow | null> {
       const r = await db.query(
-        `UPDATE ingest_conflicts SET status = 'deciding', decision = $2, decision_payload = $3::jsonb, decided_by = $4, decided_at = $5
+        // ảnh chụp danh sách ứng viên lúc bấm: note đổ vào sau đó không bị quyết định thay (xem vault/decide.ts)
+        `UPDATE ingest_conflicts SET status = 'deciding', decision = $2, decided_by = $4, decided_at = $5,
+           decision_payload = COALESCE($3::jsonb, '{}'::jsonb) || jsonb_build_object('candidateIds', (SELECT COALESCE(jsonb_agg(c->>'noteId'), '[]'::jsonb) FROM jsonb_array_elements(candidates) c))
          WHERE id = $1 AND status IN ('open', 'sent') RETURNING *`,
         [id, decision, payload ? JSON.stringify(payload) : null, by, iso(at)],
       );

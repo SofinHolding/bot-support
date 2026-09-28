@@ -584,3 +584,11 @@ details > summary { cursor: pointer; }
 .intake-dropzone.dragover { border-color: var(--primary); background: var(--panel-2); }
 .intake-dropzone.busy { cursor: wait; opacity: 0.7; }
 .intake-dropzone b { color: var(--ink); }
+
+/* Vault: xung đột dữ liệu — các phương án đặt cạnh nhau, nội dung đang dùng có viền riêng */
+.vault-cands { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 10px 0; }
+.vault-cand { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 10px 12px; min-width: 0; }
+.vault-cand.old { border-color: var(--primary); }
+.vault-cand .tpl-answer { margin-top: 6px; }
+.vault-report > div { margin-top: 6px; }
+.vault-report ul { margin: 4px 0 0 18px; padding: 0; }

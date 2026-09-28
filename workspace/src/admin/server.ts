@@ -35,6 +35,7 @@ import { GUIDE_SLUG } from "../core/guide";
 import { GatewayConfigError, listGatewayModels, runningInDocker, testGateway } from "../llm/gateway-config";
 import { KbError, type Actor } from "../kb/service";
 import { localDate } from "../worker/schedule";
+import { registerVaultRoutes } from "./vault-routes";
 
 const RANK: Record<AdminRole, number> = { viewer: 1, admin: 2, owner: 3 };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -506,6 +507,9 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     await audit(req, "kb.overlap_review", "kb", null, { pairs: b.pairs.length });
     return { results };
   });
+
+  // ---- Luồng nạp mới: tải file -> raw-data/ -> vault Obsidian -> xung đột -> vector (docs/adr/0005) ----
+  registerVaultRoutes(app, svc, { need, actor, audit, now });
 
   // ---- Trợ lý "Nạp nội dung mới": văn bản tự do -> loại + cấu trúc (SKILL intake-draft) -> bản nháp thật + khung xung đột ----
   /**

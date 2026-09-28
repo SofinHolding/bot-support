@@ -20,6 +20,7 @@ import { htmlToText, pageTitle, paragraphs } from "./html";
 import type { VaultRepo } from "../db/repo-vault";
 import { runIngest, type VaultJobDeps } from "../vault/ingest";
 import { runIndex } from "../vault/indexer";
+import { applyDecision } from "../vault/decide";
 import type { Embedder } from "../core/embedding";
 import { VaultStore } from "../vault/store";
 import { localDate, mondayOf } from "./schedule";
@@ -100,6 +101,11 @@ export const HANDLERS: Record<string, JobHandler> = {
   /** File admin tải lên (raw-data/) -> note trong vault, phát hiện xung đột (src/vault/ingest.ts). */
   async "vault-ingest"(ctx, payload) {
     return runIngest(vaultDeps(ctx), Number(payload.batchId));
+  },
+
+  /** Áp dụng quyết định của admin cho một xung đột khi nạp (src/vault/decide.ts), bằng code. */
+  async "vault-decide"(ctx, payload) {
+    return applyDecision(vaultDeps(ctx), Number(payload.conflictId));
   },
 
   /** Hàng đợi index của vault -> chunk + tsvector + vector (src/vault/indexer.ts). Còn việc thì tự xếp lượt tiếp. */

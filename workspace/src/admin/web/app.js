@@ -1373,19 +1373,26 @@
   }
 
   // ---------------------------------------------------------------- 6. Kho tri thức
-  const KB_TABS = [["Nội dung", "/kb"], ["Thêm nội dung", "/kb/add"], ["Chờ xử lý", "/kb/pending"], ["Hướng dẫn AI làm việc", "/kb/guide"], ["SKILL AI", "/kb/skills"]];
+  const KB_TABS = [["Nội dung", "/kb"], ["Thêm nội dung", "/kb/add"], ["Xung đột dữ liệu", "/kb/conflicts"], ["Chờ xử lý", "/kb/pending"], ["Hướng dẫn AI làm việc", "/kb/guide"], ["SKILL AI", "/kb/skills"]];
   const GUIDE_SLUG = "agent-guide";
   const KIND_BADGE = { templates: ["template", "info"], knowledge: ["tri thức", "muted"], guide: ["hướng dẫn AI", "warn"] };
   const docKindBadge = (k) => badge((KIND_BADGE[k] || [k, "muted"])[0], (KIND_BADGE[k] || [k, "muted"])[1]);
 
   function viewKb({ parts, query }) {
     const [sub, arg] = parts;
-    const active = sub === "add" || sub === "intake" ? "/kb/add" : sub === "pending" || sub === "edit" ? "/kb/pending" : sub === "guide" || (sub === "doc" && arg === GUIDE_SLUG) ? "/kb/guide" : sub === "skills" ? "/kb/skills" : "/kb";
+    const active = sub === "add" || sub === "intake" ? "/kb/add" : sub === "conflicts" ? "/kb/conflicts" : sub === "pending" || sub === "edit" ? "/kb/pending" : sub === "guide" || (sub === "doc" && arg === GUIDE_SLUG) ? "/kb/guide" : sub === "skills" ? "/kb/skills" : "/kb";
     const tabs = h("nav", { class: "tabs" }, KB_TABS.map(([label, path]) => h("a", { href: `#${path}`, class: path === active ? "active" : null }, label)));
+    // số xung đột đang chờ admin chọn, hiện ngay trên tab
+    get("/api/vault/summary").then((s) => {
+      const a = tabs.querySelector('a[href="#/kb/conflicts"]');
+      if (a && s.openConflicts) a.append(" ", badge(String(s.openConflicts), "warn"));
+    }, () => undefined);
     let body;
     if (sub === "guide") body = kbGuide();
     else if (sub === "skills") body = kbSkills();
-    else if (sub === "add") body = kbIntakeNew(query);
+    // Thêm nội dung = tải file vào vault (docs/adr/0005); "?target=" là sửa một nội dung cũ đã publish, vẫn qua trợ lý cũ
+    else if (sub === "add") body = query.get("target") ? kbIntakeNew(query) : kbVaultAdd();
+    else if (sub === "conflicts") body = kbVaultConflicts();
     else if (sub === "intake" && arg) body = kbIntakeReview(arg);
     else if (sub === "pending") body = kbPending();
     else if (sub === "unit") body = kbUnit(query.get("key") || "");
@@ -1975,6 +1982,198 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
     });
   }
 
+
+  // ---------------------------------------------------------------- Vault: tải file -> note Obsidian -> xung đột -> vector
+  const BATCH_STATUS = { queued: ["đang chờ", "muted"], running: ["đang chuyển đổi", "info"], done: ["xong", "ok"], failed: ["lỗi", "err"] };
+  const CONFLICT_TYPE = { in_file: "Mâu thuẫn ngay trong file vừa nạp", tie: "Mâu thuẫn với nội dung đang dùng (cùng mốc thời gian)", version: "Mâu thuẫn giữa nội dung mới và nội dung đang dùng" };
+
+  /** Báo cáo một lượt nạp bằng lời thường (bất biến 8: không mã code, không id). */
+  function batchReport(r) {
+    if (!r) return null;
+    const list = (items) => h("ul", { class: "small" }, items.map((x) => h("li", null, x)));
+    const parts = [
+      h("div", null, `Tệp có ${r.units} đoạn nội dung.`),
+      r.confirmed.length ? h("div", null, h("b", null, `Dùng được ngay: ${r.confirmed.length} mục`), list(r.confirmed.map((n) => n.title))) : null,
+      r.pending.length ? h("div", null, h("b", null, `Đang chờ duyệt vì mâu thuẫn: ${r.pending.length} mục`), " — ", link("Xem xung đột", "/kb/conflicts"), list(r.pending.map((n) => n.title))) : null,
+      r.skipped.length ? h("div", null, h("b", null, `Bỏ qua vì trùng: ${r.skipped.length}`), list(r.skipped.map((s) => `${s.title}: ${s.reason}`))) : null,
+      r.unmatched.length ? h("div", null, h("b", null, `Không xếp được vào nhóm nào: ${r.unmatched.length}`), " — thêm nhóm vào taxonomy rồi nạp lại phần này", list(r.unmatched.map((u) => `${u.ref}: ${u.topic}${u.suggestedCategory ? ` (gợi ý nhóm mới "${u.suggestedCategory}")` : ""}`))) : null,
+      r.missedUnits.length ? h("div", null, h("b", null, `AI bỏ sót ${r.missedUnits.length} đoạn`), " — nạp lại riêng các đoạn này", list(r.missedUnits)) : null,
+      r.relatedUpdated ? h("div", { class: "muted small" }, `Đã nối liên kết cho ${r.relatedUpdated} mục đang dùng có nội dung liên quan.`) : null,
+    ];
+    return h("div", { class: "vault-report" }, parts);
+  }
+
+  function kbVaultAdd() {
+    return lazy(async (reload) => {
+      const { batches } = await get("/api/vault/batches");
+      const ACCEPT = ".txt,.md,.pdf,.doc,.docx,.xlsx";
+      const picker = h("input", { type: "file", accept: ACCEPT, multiple: true, style: "display:none" });
+      const label = h("div", { class: "intake-dropzone-label" }, h("b", null, "Kéo thả tệp vào đây"), h("div", { class: "small muted" }, "hoặc bấm để chọn — .txt, .md, .pdf, .doc, .docx, .xlsx (tối đa 15 MB mỗi tệp)"));
+      const zone = h("div", { class: "intake-dropzone", tabindex: "0", role: "button" }, label, picker);
+      const uploadAll = async (files) => {
+        const list = [...(files || [])];
+        if (!list.length) return;
+        zone.classList.add("busy");
+        let ok = 0;
+        for (const f of list) {
+          if (f.size > 15_000_000) {
+            toast(`Tệp "${f.name}" vượt quá 15 MB: tách thành tệp nhỏ hơn`);
+            continue;
+          }
+          clear(label);
+          label.append(h("div", { class: "small" }, `Đang tải "${f.name}"...`));
+          try {
+            await uploadFile("/api/vault/upload", f);
+            ok++;
+          } catch (e) {
+            reportError(e);
+          }
+        }
+        zone.classList.remove("busy");
+        if (ok) toast(`Đã nhận ${ok} tệp. Hệ thống đang chuyển đổi, kết quả hiện ở bảng bên dưới.`, "ok");
+        reload();
+      };
+      zone.addEventListener("click", () => picker.click());
+      zone.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          picker.click();
+        }
+      });
+      picker.addEventListener("change", () => {
+        uploadAll(picker.files);
+        picker.value = "";
+      });
+      ["dragenter", "dragover"].forEach((ev) => zone.addEventListener(ev, (e) => (e.preventDefault(), zone.classList.add("dragover"))));
+      ["dragleave", "drop"].forEach((ev) => zone.addEventListener(ev, (e) => (e.preventDefault(), zone.classList.remove("dragover"))));
+      zone.addEventListener("drop", (e) => uploadAll(e.dataTransfer && e.dataTransfer.files));
+
+      const rows = batches.map((b) => {
+        const st = BATCH_STATUS[b.status] || [b.status, "muted"];
+        const retry = b.status === "failed" && can("admin") ? btn("Chạy lại", { small: true, on: { click: (ev) => run(ev.currentTarget, async () => { await post(`/api/vault/batches/${b.id}/retry`); reload(); }, "Đã xếp chạy lại") } }) : null;
+        return h(
+          "div",
+          { class: "row-card" },
+          h("div", { class: "row-top" }, h("b", null, b.fileName), " ", badge(st[0], st[1]), h("span", { class: "muted small" }, ` · tải lúc ${fmtDate(b.createdAt)}${b.createdBy ? ` bởi ${b.createdBy}` : ""}`), retry),
+          b.error ? notice("err", b.error) : null,
+          b.status === "done" ? batchReport(b.report) : null,
+        );
+      });
+      // còn lượt đang chạy: tự làm mới sau vài giây (chỉ khi trang vẫn đang mở)
+      if (batches.some((b) => b.status === "queued" || b.status === "running")) {
+        const mark = h("span");
+        setTimeout(() => {
+          if (mark.isConnected) reload();
+        }, 5000);
+        rows.push(mark);
+      }
+      return h(
+        "div",
+        null,
+        h("div", { class: "page-head" }, h("h2", null, "Thêm nội dung")),
+        notice(
+          "info",
+          "Tải tệp lên: hệ thống lưu tệp gốc, tự tách thành từng mục tri thức, so với nội dung đang dùng. Mục không mâu thuẫn được dùng ngay sau khi đánh chỉ mục (vài phút). Mục mâu thuẫn KHÔNG được dùng cho tới khi bạn chọn ở tab Xung đột dữ liệu; khách vẫn nhận nội dung cũ trong lúc chờ.",
+        ),
+        can("admin") ? h("div", { class: "card" }, zone) : notice("warn", "Chỉ admin/owner được tải tệp lên."),
+        h("h3", null, "Các lượt nạp gần đây"),
+        rows.length ? h("div", { class: "card" }, rows) : emptyBox("Chưa có lượt nạp nào"),
+      );
+    });
+  }
+
+  function kbVaultConflicts() {
+    let status = "open";
+    return lazy(async (reload) => {
+      const { conflicts } = await get("/api/vault/conflicts", { status });
+      const filter = h("select", { on: { change: (e) => ((status = e.target.value), reload()) } }, [["open", "Đang chờ chọn"], ["resolved", "Đã xử lý"]].map(([v, l]) => h("option", { value: v, selected: v === status ? "selected" : null }, l)));
+      const cards = conflicts.map((c) => conflictCard(c, reload));
+      return h(
+        "div",
+        null,
+        h("div", { class: "page-head" }, h("h2", null, "Xung đột dữ liệu"), filter),
+        notice("info", "Nội dung mới mâu thuẫn với nhau hoặc với nội dung đang dùng. Chọn phương án đúng; hệ thống không tự chọn thay bạn. Chưa chọn thì nội dung mới không được dùng để trả lời khách."),
+        cards.length ? h("div", null, cards) : emptyBox(status === "open" ? "Không có xung đột nào đang chờ" : "Chưa có xung đột nào được xử lý"),
+      );
+    });
+  }
+
+  function conflictCard(c, reload) {
+    const topic = (c.candidates.find((x) => !x.old) || c.candidates[0] || {}).title || "Nội dung";
+    const cand = (x) =>
+      h(
+        "div",
+        { class: `vault-cand${x.old ? " old" : ""}` },
+        h("div", { class: "row-top" }, h("b", null, x.old ? "Nội dung đang dùng" : `Phương án ${x.label}`), " ", x.old ? badge("khách đang nhận", "info") : null),
+        h("div", { class: "small muted" }, `${x.sourceFile || "?"}${x.sourceRefs && x.sourceRefs.length ? ` — ${x.sourceRefs.join("; ")}` : ""} · nạp lúc ${fmtDate(x.ingestedAt)}`),
+        h("div", { class: "tpl-answer" }, x.excerpt),
+      );
+    const decide = (decision, note) => post(`/api/vault/conflicts/${c.id}/decide`, { decision, ...(note ? { note } : {}) });
+    const actions = h("div", { class: "actions" });
+    const mergeBox = h("div");
+    if (c.status === "open" || c.status === "sent") {
+      if (can("admin")) {
+        for (const x of c.candidates.filter((y) => !y.old))
+          actions.append(btn(`Giữ phương án ${x.label}`, { kind: "primary", small: true, on: { click: (ev) => run(ev.currentTarget, async () => { await decide(x.label.toLowerCase()); reload(); }, `Đã chọn phương án ${x.label}`) } }));
+        if (c.candidates.some((y) => y.old)) actions.append(btn("Giữ nội dung đang dùng", { small: true, on: { click: (ev) => run(ev.currentTarget, async () => { await decide("old"); reload(); }, "Đã giữ nội dung đang dùng") } }));
+        actions.append(
+          btn("Gộp / nhập lại", {
+            small: true,
+            on: {
+              click: () => {
+                clear(mergeBox);
+                const ta = h("textarea", { class: "editor", rows: "6", "aria-label": "Nội dung đúng" });
+                const preview = h("div");
+                const previewBtn = btn("Xem trước", {
+                  small: true,
+                  on: {
+                    click: (ev) =>
+                      run(ev.currentTarget, async () => {
+                        const r = await post(`/api/vault/conflicts/${c.id}/merge-preview`, { text: ta.value });
+                        clear(preview);
+                        preview.append(
+                          h("div", { class: "small muted" }, "Nội dung sẽ được dùng (khách nhận nguyên văn phần này, dịch sang ngôn ngữ của khách):"),
+                          h("div", { class: "tpl-answer" }, h("b", null, r.note.title), "\n\n", r.body),
+                          h("div", { class: "actions" }, btn("Xác nhận gộp", { kind: "primary", small: true, on: { click: (e2) => run(e2.currentTarget, async () => { await decide("merge", r.note); reload(); }, "Đã gộp, nội dung mới sẽ được dùng sau khi đánh chỉ mục") } })),
+                        );
+                      }),
+                  },
+                });
+                mergeBox.append(field("Nội dung đúng", ta, "Viết đầy đủ câu trả lời đúng cho chủ đề này. AI soạn lại thành mục tri thức để bạn xem trước, chưa có gì thay đổi cho tới khi bấm Xác nhận."), h("div", { class: "actions" }, previewBtn), preview);
+              },
+            },
+          }),
+        );
+        actions.append(
+          btn("Bỏ các phương án mới", {
+            small: true,
+            on: {
+              click: (ev) => {
+                if (!confirm("Bỏ toàn bộ các phương án mới của chủ đề này? Nội dung đang dùng (nếu có) giữ nguyên.")) return;
+                run(ev.currentTarget, async () => { await decide("drop_all"); reload(); }, "Đã bỏ các phương án mới");
+              },
+            },
+          }),
+        );
+      }
+    }
+    const state =
+      c.status === "deciding"
+        ? notice("info", `Đang áp dụng quyết định của ${c.decidedBy || "?"}...`)
+        : c.status === "resolved"
+          ? notice("ok", `Đã xử lý bởi ${c.decidedBy || "?"} lúc ${fmtDate(c.decidedAt)}: ${c.decision === "old" ? "giữ nội dung đang dùng" : c.decision === "merge" ? "gộp / nhập lại" : c.decision === "drop_all" ? "bỏ các phương án mới" : `giữ phương án ${String(c.decision).toUpperCase()}`}.`)
+          : null;
+    return h(
+      "div",
+      { class: "card" },
+      h("div", { class: "row-top" }, h("b", null, topic), " ", badge(CONFLICT_TYPE[c.type] || c.type, "warn"), h("span", { class: "muted small" }, ` · phát hiện lúc ${fmtDate(c.createdAt)}${c.remindCount ? ` · đã nhắc ${c.remindCount} lần` : ""}`)),
+      c.reasons.length ? h("ul", null, c.reasons.map((r) => h("li", null, r))) : null,
+      h("div", { class: "vault-cands" }, c.candidates.map(cand)),
+      state,
+      actions,
+      mergeBox,
+    );
+  }
 
   function kbIntakeReview(idStr) {
     return lazy(async () => {
