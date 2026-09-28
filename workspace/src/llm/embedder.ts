@@ -1,4 +1,4 @@
-import type { Embedder } from "../core/embedding";
+import type { EmbedOptions, Embedder } from "../core/embedding";
 import { HashEmbedder } from "../core/embedding";
 import { ProviderUnavailableError } from "./types";
 
@@ -9,13 +9,15 @@ const RETRIES = 2;
 /** Embedding qua endpoint tương thích OpenAI `/embeddings` (OpenAI, Voyage, TEI/bge-m3, Ollama...). */
 export class HttpEmbedder implements Embedder {
   readonly version: string;
-  constructor(private readonly cfg: { url: string; apiKey?: string; model: string; dimensions?: number; fetchImpl?: typeof fetch }) {
+  constructor(private readonly cfg: { url: string; apiKey?: string; model: string; dimensions?: number; taskType?: boolean; fetchImpl?: typeof fetch }) {
     // số chiều nằm trong định danh: cùng model nhưng khác số chiều là hai không gian vector khác nhau
     this.version = `http:${cfg.model}${cfg.dimensions ? `@${cfg.dimensions}` : ""}`;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], opts?: EmbedOptions): Promise<number[][]> {
     const f = this.cfg.fetchImpl ?? fetch;
+    // task_type chỉ gửi khi dịch vụ nhận tham số này (cấu hình embedding.task_type); gateway chỉ tương thích OpenAI thì bỏ qua
+    const task = this.cfg.taskType && opts?.taskType ? { task_type: opts.taskType } : {};
     const out: number[][] = [];
     for (let i = 0; i < texts.length; i += BATCH) {
       const batch = texts.slice(i, i + BATCH);
@@ -28,7 +30,7 @@ export class HttpEmbedder implements Embedder {
           res = await f(`${this.cfg.url.replace(/\/$/, "")}/embeddings`, {
             method: "POST",
             headers: { "content-type": "application/json", ...(this.cfg.apiKey ? { authorization: `Bearer ${this.cfg.apiKey}` } : {}) },
-            body: JSON.stringify({ model: this.cfg.model, input: batch, ...(this.cfg.dimensions ? { dimensions: this.cfg.dimensions } : {}) }),
+            body: JSON.stringify({ model: this.cfg.model, input: batch, ...(this.cfg.dimensions ? { dimensions: this.cfg.dimensions } : {}), ...task }),
             signal: AbortSignal.timeout(30_000),
           });
         } catch {
@@ -59,7 +61,7 @@ export type EmbeddingProvider = "local" | "external";
 export interface EmbeddingSelection {
   provider: EmbeddingProvider;
   /** null = chưa cấu hình URL/model API ngoài (chỉ dùng được cục bộ) */
-  external: { url: string; apiKey?: string; model: string; dimensions?: number } | null;
+  external: { url: string; apiKey?: string; model: string; dimensions?: number; taskType?: boolean } | null;
 }
 
 /**
@@ -95,10 +97,10 @@ export class SelectedEmbedder implements Embedder {
   private resolveExternal(sel: EmbeddingSelection): Embedder | null {
     const cfg = sel.external;
     if (!cfg) return (this.external = null);
-    const key = `${cfg.url}|${cfg.model}|${cfg.dimensions ?? ""}|${cfg.apiKey ? "k" : ""}`;
+    const key = `${cfg.url}|${cfg.model}|${cfg.dimensions ?? ""}|${cfg.apiKey ? "k" : ""}|${cfg.taskType ? "t" : ""}`;
     if (key !== this.externalKey) {
       this.externalKey = key;
-      this.external = new HttpEmbedder({ url: cfg.url, apiKey: cfg.apiKey, model: cfg.model, dimensions: cfg.dimensions, fetchImpl: this.opts.fetchImpl });
+      this.external = new HttpEmbedder({ url: cfg.url, apiKey: cfg.apiKey, model: cfg.model, dimensions: cfg.dimensions, taskType: cfg.taskType, fetchImpl: this.opts.fetchImpl });
     }
     return this.external;
   }
@@ -118,11 +120,11 @@ export class SelectedEmbedder implements Embedder {
     return (this.lastActive = ext ?? this.local);
   }
 
-  async embedTagged(texts: string[]): Promise<{ vectors: number[][]; model: string }> {
+  async embedTagged(texts: string[], opts?: EmbedOptions): Promise<{ vectors: number[][]; model: string }> {
     const e = await this.active();
-    if (e === this.local) return { vectors: await this.local.embed(texts), model: this.local.version };
+    if (e === this.local) return { vectors: await this.local.embed(texts, opts), model: this.local.version };
     try {
-      const vectors = await e.embed(texts);
+      const vectors = await e.embed(texts, opts);
       return { vectors, model: e.version };
     } catch (err) {
       const msg = (err as Error).message;
@@ -133,12 +135,12 @@ export class SelectedEmbedder implements Embedder {
       }
       await this.switching; // các lời gọi đang bay cùng lỗi chờ chung một lần chuyển
       this.lastActive = this.local;
-      return { vectors: await this.local.embed(texts), model: this.local.version };
+      return { vectors: await this.local.embed(texts, opts), model: this.local.version };
     }
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
-    return (await this.embedTagged(texts)).vectors;
+  async embed(texts: string[], opts?: EmbedOptions): Promise<number[][]> {
+    return (await this.embedTagged(texts, opts)).vectors;
   }
 }
 

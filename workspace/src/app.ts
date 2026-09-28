@@ -1,6 +1,6 @@
 /** Khởi tạo các dịch vụ dùng chung cho cả ba khối (bot, admin, worker). */
 import { loadPredicates } from "./core/predicates";
-import type { LlmPort } from "./core/ports";
+import type { KnowledgePort, LlmPort } from "./core/ports";
 import { SettingsService } from "./core/settings";
 import type { Embedder } from "./core/embedding";
 import { BotPipeline } from "./bot/pipeline";
@@ -15,6 +15,7 @@ import { kbRepo } from "./db/repo-kb";
 import { opsRepo } from "./db/repo-ops";
 import { vaultRepo, type VaultRepo } from "./db/repo-vault";
 import { PgKnowledge } from "./kb/knowledge-search";
+import { CompositeKnowledge, VaultKnowledge } from "./vault/search";
 import { LiveContent } from "./kb/live-content";
 import { seedContent } from "./kb/seed";
 import { KbService } from "./kb/service";
@@ -48,7 +49,7 @@ export interface Services {
   channel: Channel;
   telegram?: TelegramClient;
   resolver: ResponseResolver;
-  knowledge: PgKnowledge;
+  knowledge: KnowledgePort;
   media: MediaStore;
   pipeline: BotPipeline;
   log: LogFn;
@@ -135,7 +136,8 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   await live.rebuild();
 
   const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
-  const knowledge = new PgKnowledge(kb, embedder);
+  // Tài liệu cũ đã publish + note trong vault (docs/adr/0005), gộp RRF
+  const knowledge = new CompositeKnowledge(new PgKnowledge(kb, embedder), new VaultKnowledge(vault, embedder));
   const media = new MediaStore(cfg.MEDIA_DIR);
   const pipeline = new BotPipeline({ db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge, media, ownerId: cfg.ownerId, adminWebUrl: cfg.PUBLIC_ADMIN_URL, log });
 

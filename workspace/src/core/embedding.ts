@@ -1,21 +1,30 @@
 import { normalize } from "./text";
 
+/**
+ * Vai trò của đoạn chữ khi embed (tham số `task_type` của gemini-embedding-001). Chỉ gửi kèm khi dịch vụ hỗ trợ (cấu hình
+ * `embedding.task_type`); vai trò do LUỒNG gọi quyết định (src/vault/embed-roles.ts), không bao giờ đoán theo nội dung chữ.
+ */
+export type EmbedTaskType = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY" | "SEMANTIC_SIMILARITY";
+export interface EmbedOptions {
+  taskType?: EmbedTaskType;
+}
+
 export interface Embedder {
   /** Định danh phiên bản (ghi cùng vector để biết khi nào phải re-index / hiệu chỉnh lại ngưỡng). */
   readonly version: string;
-  embed(texts: string[]): Promise<number[][]>;
+  embed(texts: string[], opts?: EmbedOptions): Promise<number[][]>;
   /**
    * Như embed nhưng trả kèm model THẬT SỰ đã tạo vector. Với embedder có dự phòng, model có thể khác `version` đọc trước đó
    * (API ngoài vừa lỗi -> vector do model cục bộ tạo). Vector của hai model không so sánh được nên bên gọi phải dùng `model` này.
    */
-  embedTagged?(texts: string[]): Promise<{ vectors: number[][]; model: string }>;
+  embedTagged?(texts: string[], opts?: EmbedOptions): Promise<{ vectors: number[][]; model: string }>;
   /** Embedder sẽ được dùng NGAY BÂY GIỜ theo lựa chọn của người vận hành (không gọi mạng). Không có = chính nó. */
   active?(): Promise<Embedder>;
 }
 
-export async function embedTagged(e: Embedder, texts: string[]): Promise<{ vectors: number[][]; model: string }> {
-  if (e.embedTagged) return e.embedTagged(texts);
-  return { vectors: await e.embed(texts), model: e.version };
+export async function embedTagged(e: Embedder, texts: string[], opts?: EmbedOptions): Promise<{ vectors: number[][]; model: string }> {
+  if (e.embedTagged) return e.embedTagged(texts, opts);
+  return { vectors: await e.embed(texts, opts), model: e.version };
 }
 
 /** Model đang được chọn để đánh chỉ mục / tìm kiếm (kho chỉ được đánh chỉ mục cho ĐÚNG model này). */

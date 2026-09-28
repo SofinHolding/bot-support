@@ -19,6 +19,8 @@ import { prewarmLanguages } from "../core/settings";
 import { htmlToText, pageTitle, paragraphs } from "./html";
 import type { VaultRepo } from "../db/repo-vault";
 import { runIngest, type VaultJobDeps } from "../vault/ingest";
+import { runIndex } from "../vault/indexer";
+import type { Embedder } from "../core/embedding";
 import { VaultStore } from "../vault/store";
 import { localDate, mondayOf } from "./schedule";
 
@@ -54,7 +56,7 @@ export interface JobContext {
   resolver?: ResponseResolver;
   live?: LiveContent;
   /** Vault Obsidian (docs/adr/0005). Không có = các job vault-* báo lỗi cấu hình. */
-  vault?: { root: string; rawDir: string; repo: VaultRepo };
+  vault?: { root: string; rawDir: string; repo: VaultRepo; embedder: Embedder };
 }
 
 /** Dựng phụ thuộc cho một job vault: mỗi job một VaultStore mới (đọc lại index.json từ đĩa). */
@@ -100,6 +102,16 @@ export const HANDLERS: Record<string, JobHandler> = {
     return runIngest(vaultDeps(ctx), Number(payload.batchId));
   },
 
+  /** Hàng đợi index của vault -> chunk + tsvector + vector (src/vault/indexer.ts). Còn việc thì tự xếp lượt tiếp. */
+  async "vault-index"(ctx) {
+    if (!ctx.vault) throw new Error("chưa cấu hình vault (VAULT_DIR)");
+    const d = vaultDeps(ctx);
+    const r = await runIndex({ store: d.store, repo: ctx.vault.repo, embedder: ctx.vault.embedder, log: ctx.log });
+    if (r.remaining > 0) await ctx.ops.enqueueJob("vault-index", {}, { dedupeKey: "vault-index:more" });
+    return r;
+  },
+
+  // đổi model embed: note trong vault được embed bù theo model mới ở lượt vault-index kế tiếp (cron 5 phút)
   async "reindex-embeddings"(ctx) {
     return ctx.kbService.reindexChunks();
   },

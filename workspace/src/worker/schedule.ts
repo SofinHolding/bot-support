@@ -85,6 +85,7 @@ const BKK = "Asia/Bangkok";
 export const CRONS: CronDef[] = [
   { name: "maintenance", spec: { kind: "every", minutes: 10 }, replaces: "Heartbeat: dọn context bỏ dở (episode dormant/abandoned), hàng đợi kẹt" },
   { name: "reindex-embeddings", spec: { kind: "every", minutes: 10 }, replaces: "(mới) embed lại chunk tri thức khi đổi embedding model hoặc khi dịch vụ embedding từng lỗi lúc publish" },
+  { name: "vault-index", spec: { kind: "every", minutes: 5 }, replaces: "(mới) chạy bù hàng đợi index của vault Obsidian và embed bù chunk thiếu vector" },
   { name: "outbox-flush", spec: { kind: "every", minutes: 1 }, replaces: "delivery-queue/failed (1.083 tin lỗi không ai gửi lại)" },
   { name: "usage-aggregate", spec: { kind: "hourly", minute: 5 }, replaces: "cron usage-aggregator-daily `5 * * * *` UTC" },
   { name: "escalation-alert", spec: { kind: "daily", at: "23:59", tz: BKK }, replaces: "cron daily-escalate-threshold-alert 23:59 Asia/Bangkok" },
