@@ -8,6 +8,9 @@ x-app: &app
   environment:
     DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
     MEDIA_DIR: /app/data/media
+    # vault Obsidian + tệp thô admin tải lên (docs/adr/0005): admin ghi raw-data, worker ghi vault; bot chỉ đọc DB
+    VAULT_DIR: /app/data/vault
+    RAW_DATA_DIR: /app/data/raw-data
   # 9router chạy trên máy chủ (cổng 20128): container gọi qua host.docker.internal (Docker Desktop tự có; trên Linux nhờ dòng extra_hosts này).
   extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -19,6 +22,8 @@ x-app: &app
   restart: unless-stopped
   volumes:
     - media:/app/data/media
+    - vault:/app/data/vault
+    - raw-data:/app/data/raw-data
 
 services:
   db:
@@ -82,4 +87,6 @@ services:
 volumes:
   pgdata:
   media:
+  vault:
+  raw-data:
   embedding-models:

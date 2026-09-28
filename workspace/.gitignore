@@ -17,3 +17,10 @@ Thumbs.db
 # scratch / generated, not source
 .diagrams/
 .staging/
+
+# vault Obsidian và tệp thô tải lên lúc chạy dev (VAULT_DIR/RAW_DATA_DIR mặc định, docs/adr/0005); giữ cấu hình Obsidian và gói skill gốc
+knowledge/*
+!knowledge/.obsidian/
+knowledge/.obsidian/workspace.json
+raw-data/*
+!raw-data/*.skill

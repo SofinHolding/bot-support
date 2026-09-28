@@ -13,7 +13,7 @@ Nguyên tắc chung của hệ thống, cần nắm trước khi đọc:
 ## 1. Kho tri thức
 
 Nơi **duy nhất** quản lý nội dung của bot. Bạn chỉ đưa nội dung vào; hệ thống tự phân tích, tự sắp xếp, tự so với dữ liệu đang
-có và chỉ hỏi bạn những chỗ cần quyết. Không cần biết Markdown, YAML, "template" hay "knowledge". Có năm tab.
+có và chỉ hỏi bạn những chỗ cần quyết. Không cần biết Markdown, YAML, "template" hay "knowledge". Có sáu tab.
 
 ### 1.1 Nội dung
 
@@ -35,22 +35,41 @@ Tin hệ thống (cảnh báo bảo mật, chống spam…) do code gửi, nội
 
 ### 1.2 Thêm nội dung
 
-1. Dán văn bản tự do hoặc kéo-thả tệp (.txt, .pdf, .doc, .docx, .xlsx): câu trả lời hỗ trợ, ghi chú, FAQ, tài liệu…
-2. Bấm **Phân tích & tạo bản nháp**. Hệ thống:
-   - tự quyết là câu trả lời hay tài liệu tham khảo, tự xếp chủ đề;
-   - tự tạo các cách hỏi, bỏ từ khoá một từ (loại gây trả lời nhầm);
-   - tự so với nội dung đang có: trùng, bổ sung, khác phạm vi, mâu thuẫn, bot sẽ trả lời nhầm…;
-   - chạy 6 bước kiểm tra: cấu trúc, an toàn (seed phrase, script, link lạ), trùng và mâu thuẫn, bản dịch, hồi quy trên bộ câu
-     hỏi mẫu, chạy lại tin nhắn thật 14 ngày qua.
-3. Màn hình kết quả hiện **nội dung của bản nháp** (mới / thay đổi / giữ nguyên) và các **khung cần bạn quyết**. Mỗi khung là
-   một nội dung đang có bị trùng hoặc mâu thuẫn; mở khung để xem gợi ý của AI và chọn cách xử lý.
-4. Bản nháp có **lỗi chặn** thì chưa publish được. Xung đột dữ liệu phải xử lý xong trước khi áp dụng: hai nội dung dễ lẫn phải
-   được phân biệt, nội dung giành câu hỏi của tài liệu phải được ghi nhận có chủ ý...
-5. Bấm **Publish tất cả**. Bot dùng ngay; nội dung có luật bảo mật cần người thứ hai duyệt (mục 3).
+1. Kéo-thả hoặc chọn một hay nhiều tệp (.txt, .md, .pdf, .doc, .docx, .xlsx; tối đa 15 MB mỗi tệp). Excel cũ (.xls) thì lưu lại
+   thành .xlsx trước.
+2. Hệ thống lưu nguyên tệp gốc vào thư mục `raw-data/` rồi tự xử lý ở nền (vài phút, tuỳ độ dài):
+   - tách tệp thành từng đoạn (mỗi dòng Excel, mỗi mục có tiêu đề, hoặc từng đoạn văn);
+   - AI soạn mỗi ý thành một **mục tri thức** riêng trong kho Obsidian (`knowledge/`), có tóm tắt, các cách khách hay hỏi và bản
+     tiếng Anh chuẩn hoá để tìm kiếm. Nội dung trả lời giữ nguyên ngôn ngữ và số liệu của tệp gốc;
+   - so từng mục với mục cùng chủ đề trong cùng tệp và với nội dung đang dùng: **trùng ý** thì bỏ qua, **chi tiết hơn** thì giữ cả
+     hai và nối liên kết, **mâu thuẫn** thì chặn lại chờ bạn chọn (mục 1.3).
+3. Bảng **Các lượt nạp gần đây** cho biết kết quả từng tệp: bao nhiêu mục dùng được ngay, bao nhiêu mục chờ duyệt vì mâu thuẫn,
+   mục bị bỏ vì trùng, đoạn không xếp được vào nhóm nào, đoạn AI bỏ sót. Lượt lỗi (vd chưa cấu hình AI) có nút **Chạy lại**.
+4. Mục dùng được ngay được đánh chỉ mục tìm kiếm tự động (vài phút) rồi bot bắt đầu dùng. Không cần bấm Publish.
 
-Không tạo được "Hướng dẫn AI làm việc" qua đường này.
+Nhóm (category) của mục tri thức lấy từ `knowledge/_meta/taxonomy.md`. AI không tự tạo nhóm mới: đoạn không khớp nhóm nào được
+báo lại để bạn thêm nhóm vào file đó rồi nạp lại phần này. "Hướng dẫn AI làm việc" không bao giờ được tạo hay sửa qua đường này.
 
-### 1.3 Chờ xử lý
+Nút **Sửa nội dung** ở một nội dung cũ (mục 1.1) vẫn dùng trợ lý sửa và luồng bản nháp → publish như trước.
+
+### 1.3 Xung đột dữ liệu
+
+Nội dung mới mâu thuẫn với nhau (hai dòng trong cùng tệp ghi khác nhau) hoặc với nội dung đang dùng (bản mới ghi phí 1.5%, bản
+đang dùng ghi 2%). **Mọi mâu thuẫn đều bị chặn**: nội dung mới chưa được dùng để trả lời; nếu đang có bản cũ thì khách vẫn nhận
+bản cũ. AI không so được một cặp thì cặp đó cũng bị chặn. Hệ thống không bao giờ tự chọn thay bạn.
+
+Mỗi xung đột hiện các phương án cạnh nhau (tệp nguồn, vị trí dòng/mục, thời điểm nạp, nội dung) và lý do khác nhau. Chọn một:
+
+- **Giữ phương án A / B…**: phương án đó được dùng; các phương án còn lại và bản cũ được đưa vào lưu trữ (`_archive/`).
+- **Giữ nội dung đang dùng**: bản cũ giữ nguyên; các phương án mới vào lưu trữ.
+- **Gộp / nhập lại**: viết nội dung đúng, bấm **Xem trước** để AI soạn thành mục tri thức, đọc lại rồi **Xác nhận gộp**. Mục gộp
+  thay cho tất cả phương án và bản cũ.
+- **Bỏ các phương án mới**: hỏi lại một lần rồi mới bỏ; bản cũ giữ nguyên.
+
+Xung đột cũng được gửi qua Telegram cho admin/owner kèm các nút như trên (Gộp chuyển sang Admin Web). Người bấm đầu tiên quyết;
+người bấm sau nhận "đã được xử lý bởi …". Chưa ai chọn thì 24 giờ sau hệ thống nhắc lại. Tab hiện số xung đột đang chờ.
+
+### 1.4 Chờ xử lý
 
 - Các bản nháp chưa publish: đạt / chưa đạt kiểm tra, đang chờ người thứ hai duyệt. Mở một bản để xem nội dung, báo cáo, thử hỏi
   bot trên bản nháp, rồi Publish.
@@ -58,7 +77,7 @@ Không tạo được "Hướng dẫn AI làm việc" qua đường này.
   không publish.
 - **Kiểm tra bot có trả lời nhầm không** (toàn kho): liệt kê các cặp nội dung bot có thể lẫn, AI phân loại từng cặp.
 
-### 1.4 Hướng dẫn AI làm việc
+### 1.5 Hướng dẫn AI làm việc
 
 Một tài liệu duy nhất, sáu mục bắt buộc (Giới thiệu, Nhiệm vụ, Cách giao tiếp, Mục tiêu, Yêu cầu và giới hạn, Quy trình). Đây là cách người vận hành nói cho AI biết doanh nghiệp là ai, phục vụ ai, được làm gì và không được làm gì.
 
@@ -67,13 +86,13 @@ Một tài liệu duy nhất, sáu mục bắt buộc (Giới thiệu, Nhiệm v
 - Đây là tài liệu duy nhất còn soạn trực tiếp; **Publish cần một quản trị viên khác duyệt** (xem mục 3) khi cài đặt "Cần người thứ hai duyệt" đang bật.
 - Nếu chưa có hoặc đọc lỗi, AI vẫn chạy với luật cố định của hệ thống.
 
-### 1.5 SKILL AI
+### 1.6 SKILL AI
 
 Mỗi bước AI làm (hiểu câu hỏi, chọn câu trả lời, kiểm duyệt, dịch câu hỏi, dịch câu trả lời, phân tích nội dung mới, so sánh cặp nội dung…) có một **SKILL**: file chỉ dẫn gồm frontmatter, mục `## Requirements` (các yêu cầu R1, R2…) và `## Output`. Tab này hiển thị toàn bộ SKILL đang dùng; sửa và gửi duyệt. Hệ thống kiểm tra cấu trúc trước khi nhận. **Về bản mặc định** quay lại file gốc của dự án.
 
 Lưu ý: SKILL thay đổi cách AI làm việc, nhưng các kiểm tra bằng code (số liệu, link, ngôn ngữ, chỉ được chọn trong danh sách) vẫn áp dụng dù SKILL viết gì.
 
-### 1.6 Bot dùng nội dung thế nào
+### 1.7 Bot dùng nội dung thế nào
 
 - **Mọi câu trả lời lấy từ kho đều qua AI đánh giá** trong chính lượt đó rồi được dịch sang ngôn ngữ của khách. Khớp chắc
   chắn bằng cụm từ thì AI xác nhận; còn lại AI chọn trong các nội dung gần nghĩa nhất. Không nội dung nào đúng thì chuyển nhân viên.

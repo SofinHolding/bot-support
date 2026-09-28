@@ -16,6 +16,7 @@ Hướng dẫn cho agent làm việc trong repo này. Đọc trước khi đề 
   - `routing-check.ts`: "hỏi thử bot".
   - `pair-decisions.ts`: quyết định theo cặp, gắn hash nội dung.
   - `migrate-items.ts`, `review-import.ts`: chuyển dữ liệu cũ, áp quyết định của khách.
+- `src/vault/`: nạp tri thức qua vault Obsidian (docs/adr/0005). Tệp tải lên -> `raw-data/` -> job `vault-ingest` (SKILL `knowledge-ingest` + `knowledge-conflict`) -> note trong `knowledge/` -> `vault-index` (chunk + tsvector + vector) -> `search.ts` (RRF, gộp với tài liệu cũ). Xung đột: `decide.ts` (áp quyết định bằng code), `telegram-flow.ts` (nút duyệt cho admin). Chỉ worker ghi vào vault.
 - `src/bot/`: pipeline Telegram, episode (gồm `pending_clarify`: hỏi lại khách 1 lần).
 - `src/admin/`: API Fastify (`server.ts`) + SPA vanilla (`web/app.js`; CSP chặt, không `innerHTML`).
 - `src/db/migrations/`: SQL tăng dần. Không sửa migration đã phát hành, chỉ thêm file mới.

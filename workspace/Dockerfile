@@ -16,7 +16,7 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY content ./content
 # không chạy bằng root
-RUN mkdir -p /app/data/media && chown -R node:node /app
+RUN mkdir -p /app/data/media /app/data/vault /app/data/raw-data && chown -R node:node /app
 USER node
 EXPOSE 3000 3001
 CMD ["node", "dist/bot.js"]
