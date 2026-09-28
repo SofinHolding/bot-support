@@ -5,7 +5,8 @@ import { isMain } from "../entry";
 import { createServices, type Services } from "../app";
 import { loadConfig } from "../config";
 import { Coalescer } from "./coalescer";
-import { parseUpdate, type TgUpdate } from "./telegram";
+import { parseCallback, parseUpdate, type TgUpdate } from "./telegram";
+import { handleConflictCallback } from "../vault/telegram-flow";
 
 const safeEq = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
@@ -27,6 +28,12 @@ export async function startBot(svc: Services) {
   );
   /** true = đã xử lý xong (hoặc không cần xử lý); false = update này còn dang dở ở lượt khác, Telegram cần gửi lại sau. */
   const ingest = async (u: TgUpdate): Promise<boolean> => {
+    // admin bấm nút duyệt xung đột dữ liệu (vault): không đi vào pipeline trả lời khách
+    const press = parseCallback(u);
+    if (press) {
+      await handleConflictCallback({ repo: svc.vault, ops: svc.ops, channel: svc.channel, adminWebUrl: cfg.PUBLIC_ADMIN_URL, now: () => new Date(), log, enqueue: (t, p, o) => svc.ops.enqueueJob(t, p, o) }, press).catch((e: Error) => log("error", "xử lý nút xung đột lỗi", { err: e.message }));
+      return true;
+    }
     const b = parseUpdate(u, bot);
     if (!b) return true;
     const res = (await coalescer.push(b)) as { status?: string } | undefined;

@@ -1,5 +1,5 @@
 /** Adapter Telegram Bot API (fetch thuần, không phụ thuộc thư viện). */
-import type { Channel, InboundBatch, InboundItem, MessageEntity } from "./types";
+import type { CallbackPress, Channel, InboundBatch, InboundItem, InlineButton, MessageEntity } from "./types";
 
 export class TelegramError extends Error {
   constructor(message: string, readonly code: number, readonly retryAfter?: number) {
@@ -35,10 +35,23 @@ export interface TgMessage {
   animation?: unknown;
 }
 
+export interface TgCallbackQuery {
+  id: string;
+  from: TgUser;
+  message?: { message_id: number; chat: { id: number } };
+  data?: string;
+}
+
 export interface TgUpdate {
   update_id: number;
   message?: TgMessage;
+  callback_query?: TgCallbackQuery;
 }
+
+/** Tin nhắn thường + lần bấm nút (duyệt xung đột dữ liệu qua Telegram). */
+const ALLOWED_UPDATES = ["message", "callback_query"];
+
+const keyboard = (rows: InlineButton[][]) => ({ inline_keyboard: rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) });
 
 const MAX = 4096;
 
@@ -74,6 +87,24 @@ export class TelegramClient implements Channel {
     return { messageId: first };
   }
 
+  async sendButtons(chatId: number, text: string, rows: InlineButton[][]): Promise<{ messageId?: number }> {
+    const r = await this.api<{ message_id: number }>("sendMessage", { chat_id: chatId, text: text.slice(0, MAX), reply_markup: keyboard(rows) });
+    return { messageId: r.message_id };
+  }
+
+  async editMessage(chatId: number, messageId: number, text: string, rows: InlineButton[][] = []): Promise<void> {
+    try {
+      await this.api("editMessageText", { chat_id: chatId, message_id: messageId, text: text.slice(0, MAX), reply_markup: keyboard(rows) });
+    } catch (e) {
+      // sửa với đúng nội dung cũ -> Telegram báo "message is not modified": coi là xong
+      if (!(e instanceof TelegramError && /not modified/i.test(e.message))) throw e;
+    }
+  }
+
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    await this.api("answerCallbackQuery", { callback_query_id: callbackId, ...(text ? { text: text.slice(0, 200) } : {}) });
+  }
+
   async typing(chatId: number): Promise<void> {
     await this.api("sendChatAction", { chat_id: chatId, action: "typing" });
   }
@@ -94,14 +125,21 @@ export class TelegramClient implements Channel {
     return this.api<TgUser>("getMe");
   }
   setWebhook(url: string, secret: string) {
-    return this.api<boolean>("setWebhook", { url, secret_token: secret, allowed_updates: ["message"], drop_pending_updates: false });
+    return this.api<boolean>("setWebhook", { url, secret_token: secret, allowed_updates: ALLOWED_UPDATES, drop_pending_updates: false });
   }
   deleteWebhook() {
     return this.api<boolean>("deleteWebhook", { drop_pending_updates: false });
   }
   getUpdates(offset: number, timeoutSec: number) {
-    return this.api<TgUpdate[]>("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message"] }, (timeoutSec + 10) * 1000);
+    return this.api<TgUpdate[]>("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ALLOWED_UPDATES }, (timeoutSec + 10) * 1000);
   }
+}
+
+export function parseCallback(u: TgUpdate): CallbackPress | null {
+  const q = u.callback_query;
+  if (!q || !q.data || q.from.is_bot) return null;
+  const name = [q.from.first_name, q.from.last_name].filter(Boolean).join(" ") || q.from.username || null;
+  return { id: q.id, fromId: q.from.id, fromName: name, chatId: q.message?.chat.id ?? null, messageId: q.message?.message_id ?? null, data: q.data };
 }
 
 /** Chuyển update Telegram thành InboundBatch (một tin). Trả null nếu không phải tin nhắn cần xử lý. */

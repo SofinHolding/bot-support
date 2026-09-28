@@ -33,6 +33,27 @@ export interface Channel {
   downloadImage(fileId: string): Promise<{ mime: string; base64: string }>;
   /** Báo "đang soạn" (tuỳ chọn). Telegram hiển thị ~5 giây mỗi lần gọi. */
   typing?(chatId: number): Promise<void>;
+  /** Tin cho ADMIN kèm nút bấm (inline keyboard). `data` của nút: 1-64 byte (xem vault/telegram-flow.ts). */
+  sendButtons?(chatId: number, text: string, rows: InlineButton[][]): Promise<{ messageId?: number }>;
+  /** Sửa tin đã gửi; `rows` rỗng = bỏ hết nút. */
+  editMessage?(chatId: number, messageId: number, text: string, rows?: InlineButton[][]): Promise<void>;
+  /** Trả lời lần bấm nút (bắt buộc, nếu không nút bị treo ở trạng thái đang tải). */
+  answerCallback?(callbackId: string, text?: string): Promise<void>;
+}
+
+export interface InlineButton {
+  text: string;
+  data: string;
+}
+
+/** Một lần admin bấm nút dưới tin của bot. */
+export interface CallbackPress {
+  id: string;
+  fromId: number;
+  fromName: string | null;
+  chatId: number | null;
+  messageId: number | null;
+  data: string;
 }
 
 export interface PipelineResult {

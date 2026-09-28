@@ -21,6 +21,7 @@ import type { VaultRepo } from "../db/repo-vault";
 import { runIngest, type VaultJobDeps } from "../vault/ingest";
 import { runIndex } from "../vault/indexer";
 import { applyDecision } from "../vault/decide";
+import { markMessagesDecided, notifyConflicts, type TelegramFlowDeps } from "../vault/telegram-flow";
 import type { Embedder } from "../core/embedding";
 import { VaultStore } from "../vault/store";
 import { localDate, mondayOf } from "./schedule";
@@ -59,6 +60,11 @@ export interface JobContext {
   /** Vault Obsidian (docs/adr/0005). Không có = các job vault-* báo lỗi cấu hình. */
   vault?: { root: string; rawDir: string; repo: VaultRepo; embedder: Embedder };
 }
+
+const telegramDeps = (ctx: JobContext): TelegramFlowDeps => {
+  if (!ctx.vault) throw new Error("chưa cấu hình vault (VAULT_DIR/RAW_DATA_DIR)");
+  return { repo: ctx.vault.repo, ops: ctx.ops, channel: ctx.channel, adminWebUrl: ctx.adminWebUrl, now: ctx.now, log: ctx.log, enqueue: (t, p, o) => ctx.ops.enqueueJob(t, p, o) };
+};
 
 /** Dựng phụ thuộc cho một job vault: mỗi job một VaultStore mới (đọc lại index.json từ đĩa). */
 export function vaultDeps(ctx: JobContext): VaultJobDeps {
@@ -105,7 +111,16 @@ export const HANDLERS: Record<string, JobHandler> = {
 
   /** Áp dụng quyết định của admin cho một xung đột khi nạp (src/vault/decide.ts), bằng code. */
   async "vault-decide"(ctx, payload) {
-    return applyDecision(vaultDeps(ctx), Number(payload.conflictId));
+    const r = await applyDecision(vaultDeps(ctx), Number(payload.conflictId));
+    // quyết định từ Admin Web: tin Telegram đang có nút của xung đột này được sửa (bỏ nút, ghi ai chọn gì)
+    const c = await ctx.vault!.repo.getConflict(r.conflictId);
+    if (c) await markMessagesDecided(telegramDeps(ctx), c);
+    return r;
+  },
+
+  /** Gửi xung đột mới cho admin qua Telegram (nút bấm) và nhắc lại xung đột quá 24 giờ chưa ai chọn. */
+  async "vault-conflict-notify"(ctx) {
+    return notifyConflicts(telegramDeps(ctx));
   },
 
   /** Hàng đợi index của vault -> chunk + tsvector + vector (src/vault/indexer.ts). Còn việc thì tự xếp lượt tiếp. */
