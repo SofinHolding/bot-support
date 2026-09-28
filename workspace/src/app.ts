@@ -13,6 +13,7 @@ import { migrate, openDb, type Db } from "./db/db";
 import { convRepo } from "./db/repo-conv";
 import { kbRepo } from "./db/repo-kb";
 import { opsRepo } from "./db/repo-ops";
+import { vaultRepo, type VaultRepo } from "./db/repo-vault";
 import { PgKnowledge } from "./kb/knowledge-search";
 import { LiveContent } from "./kb/live-content";
 import { seedContent } from "./kb/seed";
@@ -35,6 +36,7 @@ export interface Services {
   conv: ReturnType<typeof convRepo>;
   kb: ReturnType<typeof kbRepo>;
   ops: ReturnType<typeof opsRepo>;
+  vault: VaultRepo;
   settings: SettingsService;
   embedder: Embedder;
   embedding: EmbeddingConfig;
@@ -70,6 +72,7 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   const conv = convRepo(db);
   const kb = kbRepo(db);
   const ops = opsRepo(db);
+  const vault = vaultRepo(db);
   // Embedding: người vận hành CHỌN đúng một model (Admin Web → Cấu hình → Embedding): API ngoài (vd gemini-embedding-001) hoặc
   // cục bộ trong .env (TEI/bge-m3). Không dự phòng ngầm. API lỗi hẳn -> tự chuyển hẳn sang cục bộ, khoá lựa chọn API, đánh chỉ mục
   // lại toàn bộ nội dung đã publish bằng model cục bộ (worker), ghi audit; admin kiểm tra rồi mở khoá thủ công mới chọn lại API.
@@ -140,5 +143,5 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
     clearInterval(gatewayTimer);
     await db.close();
   };
-  return { cfg, db, conv, kb, ops, settings, embedder, embedding, skills, live, kbService, llm, gateway, channel, telegram, resolver, knowledge, media, pipeline, log, close };
+  return { cfg, db, conv, kb, ops, vault, settings, embedder, embedding, skills, live, kbService, llm, gateway, channel, telegram, resolver, knowledge, media, pipeline, log, close };
 }

@@ -17,6 +17,9 @@ import type { ResponseResolver } from "../bot/resolver";
 import { URGENT_TEMPLATE_IDS } from "../core/fixed-messages";
 import { prewarmLanguages } from "../core/settings";
 import { htmlToText, pageTitle, paragraphs } from "./html";
+import type { VaultRepo } from "../db/repo-vault";
+import { runIngest, type VaultJobDeps } from "../vault/ingest";
+import { VaultStore } from "../vault/store";
 import { localDate, mondayOf } from "./schedule";
 
 export const BANGKOK = "Asia/Bangkok";
@@ -50,6 +53,17 @@ export interface JobContext {
   /** Dịch sẵn câu khẩn (job prewarm-urgent-translations). Không có = job bỏ qua. */
   resolver?: ResponseResolver;
   live?: LiveContent;
+  /** Vault Obsidian (docs/adr/0005). Không có = các job vault-* báo lỗi cấu hình. */
+  vault?: { root: string; rawDir: string; repo: VaultRepo };
+}
+
+/** Dựng phụ thuộc cho một job vault: mỗi job một VaultStore mới (đọc lại index.json từ đĩa). */
+export function vaultDeps(ctx: JobContext): VaultJobDeps {
+  if (!ctx.vault) throw new Error("chưa cấu hình vault (VAULT_DIR/RAW_DATA_DIR)");
+  return {
+    store: VaultStore.open(ctx.vault.root, ctx.vault.repo), repo: ctx.vault.repo, llm: ctx.llm, rawDir: ctx.vault.rawDir, now: ctx.now, log: ctx.log,
+    enqueue: (type, payload, opts) => ctx.ops.enqueueJob(type, payload, opts),
+  };
 }
 
 export type JobHandler = (ctx: JobContext, payload: Record<string, unknown>) => Promise<unknown>;
@@ -79,6 +93,11 @@ export const HANDLERS: Record<string, JobHandler> = {
     const requeued = await ctx.ops.requeueStuckJobs(15);
     await ctx.ops.purgeExpiredAuth(now);
     return { dormant, closed, requeued };
+  },
+
+  /** File admin tải lên (raw-data/) -> note trong vault, phát hiện xung đột (src/vault/ingest.ts). */
+  async "vault-ingest"(ctx, payload) {
+    return runIngest(vaultDeps(ctx), Number(payload.batchId));
   },
 
   async "reindex-embeddings"(ctx) {

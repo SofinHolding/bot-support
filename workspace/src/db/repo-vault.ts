@@ -204,10 +204,10 @@ export function vaultRepo(db: Db) {
       );
       return r.rows.map((x) => ({ versionGroup: String(x.version_group), category: String(x.category), canonicalTitle: String(x.ct ?? "") }));
     },
-    async noteIdsTaken(ids: string[]): Promise<Set<string>> {
-      if (!ids.length) return new Set();
-      const r = await db.query("SELECT id FROM vault_notes WHERE id = ANY($1::text[])", [ids]);
-      return new Set(r.rows.map((x) => String(x.id)));
+    /** Id đã dùng có dạng `<prefix>-<số>` (id note = `<version_group>-<nnn>`, không bao giờ dùng lại id cũ). */
+    async idsWithPrefix(prefix: string): Promise<string[]> {
+      const r = await db.query("SELECT id FROM vault_notes WHERE id LIKE $1", [`${prefix.replace(/[%_\\]/g, "\\$&")}-%`]);
+      return r.rows.map((x) => String(x.id));
     },
     async countNotes(): Promise<Record<string, number>> {
       const r = await db.query("SELECT status, count(*)::int AS n FROM vault_notes GROUP BY status");
