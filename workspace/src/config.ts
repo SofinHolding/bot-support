@@ -44,6 +44,9 @@ const Env = z.object({
 
   MEDIA_DIR: z.string().default("./data/media"),
   CONTENT_DIR: z.string().default("content"),
+  // Vault Obsidian (note tri thức đã chuẩn hoá) và thư mục lưu file thô admin tải lên (docs/adr/0005)
+  VAULT_DIR: z.string().default("knowledge"),
+  RAW_DATA_DIR: z.string().default("raw-data"),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
