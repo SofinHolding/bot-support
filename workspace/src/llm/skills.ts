@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
-export const SKILL_NAMES = ["understand", "select-answer", "verify-answer", "translate-query", "translate-answer", "review-eval", "summarize-episode", "verify-handoff", "review-overlap", "intake-draft"] as const;
+export const SKILL_NAMES = ["understand", "select-answer", "verify-answer", "translate-query", "translate-answer", "review-eval", "summarize-episode", "verify-handoff", "review-overlap", "intake-draft", "knowledge-ingest", "knowledge-conflict"] as const;
 export type SkillName = (typeof SKILL_NAMES)[number];
 
 export interface Skill {

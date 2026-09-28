@@ -231,6 +231,8 @@ describe("router: tầng 2, 3 và các đường lỗi", () => {
     verifyHandoff: async () => ({ ok: true }),
     reviewOverlap: async () => ({ verdict: "distinct" as const }),
     draftIntake: async () => ({ kind: "templates", slug: "fake-intake-doc", title: "Fake", templates: [{ id: "fake-intake-tpl", group: "Test", keywords: ["k"], examples: ["e"], answer_en: "a" }], knowledge: null }),
+    draftVaultNotes: async () => ({ notes: [], unmatched: [] }),
+    compareVaultNotes: async () => ({ results: [] }),
     reviewEval: async () => [],
     classify: async () => (action === "template" ? { action: "template", template_id: id! } : ({ action } as never)),
     grounded: async () => ({ answerable: false, answer: "", cited: [] }),

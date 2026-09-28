@@ -163,6 +163,48 @@ export interface IntakeDraftResult {
   knowledge: { lang: string; sections: { heading: string; body: string }[] } | null;
 }
 
+/**
+ * SKILL knowledge-ingest (vault, docs/adr/0005): đơn vị nguồn đã đánh số -> các TRƯỜNG của note atomic. Code gán id, trạng thái,
+ * thời điểm nạp, dựng file note và quyết định dữ liệu nào được dùng (src/vault/ingest.ts).
+ */
+export interface VaultDraftRequest {
+  sourceFile: string;
+  /** taxonomy đã render (category, tag chuẩn, ngôn ngữ canonical) */
+  taxonomy: string;
+  existingGroups: { versionGroup: string; category: string; canonicalTitle: string }[];
+  units: { id: string; ref: string; text: string }[];
+  /** Admin nhập lại nội dung đúng cho một chủ đề đang xung đột (Gộp): skill trả đúng một note thuộc chủ đề này. */
+  fixedVersionGroup?: string;
+}
+export interface VaultDraftNote {
+  title: string;
+  category: string;
+  tags: string[];
+  lang_source: "vi" | "en" | "mixed";
+  version_group: string;
+  related: string[];
+  summary: string;
+  keywords: string[];
+  canonical_title: string;
+  canonical_summary: string;
+  canonical_keywords: string[];
+  sections: { heading: string; body: string }[];
+  units: string[];
+}
+export interface VaultDraftResult {
+  notes: VaultDraftNote[];
+  unmatched: { unit: string; topic: string; suggested_category: string }[];
+}
+
+/** SKILL knowledge-conflict: phân loại từng cặp note cùng chủ đề theo ý nghĩa. Cặp thiếu kết quả bị code coi là mâu thuẫn. */
+export interface VaultCompareRequest {
+  pairs: { id: string; left: { canonicalSummary: string; excerpt: string }; right: { canonicalSummary: string; excerpt: string } }[];
+}
+export type VaultCompareVerdict = "same_meaning" | "scope_difference" | "contradiction";
+export interface VaultCompareResult {
+  results: { pair: string; verdict: VaultCompareVerdict; reason: string }[];
+}
+
 export interface GroundedChunk {
   id: string;
   heading: string;
@@ -227,6 +269,10 @@ export interface LlmPort {
   reviewOverlap(req: ReviewOverlapRequest): Promise<OverlapVerdict>;
   /** SKILL intake-draft: trợ lý "Nạp nội dung mới" (Admin Web). Không dùng trong luồng trả lời khách. */
   draftIntake(req: IntakeDraftRequest): Promise<IntakeDraftResult>;
+  /** SKILL knowledge-ingest: nạp file vào vault (worker). Không dùng trong luồng trả lời khách. */
+  draftVaultNotes(req: VaultDraftRequest): Promise<VaultDraftResult>;
+  /** SKILL knowledge-conflict: so sánh ý nghĩa các cặp note cùng chủ đề khi nạp (worker). Không dùng trong luồng trả lời khách. */
+  compareVaultNotes(req: VaultCompareRequest): Promise<VaultCompareResult>;
 }
 
 /** LLM dùng được ngay bây giờ (đã cấu hình), hoặc undefined => chế độ template thuần. */

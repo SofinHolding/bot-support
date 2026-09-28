@@ -3,7 +3,7 @@
  * Mọi đầu ra đều là JSON theo schema; LLM KHÔNG bao giờ được viết câu trả lời cho case đã có template.
  */
 import { z } from "zod";
-import type { ClassifyRequest, ClassifyResult, ContextPack, GroundedChunk, GroundedResult, IntakeDraftRequest, IntakeDraftResult, LlmPort, OverlapSide, OverlapVerdict, ReviewEvalItem, ReviewEvalRequest, ReviewOverlapRequest, SelectRequest, SelectResult, SummaryInput, SummaryResult, TranslateQueryRequest, UnderstandRequest, UnderstandResult, VerifyHandoffRequest, VerifyRequest, VerifyResult } from "../core/ports";
+import type { ClassifyRequest, ClassifyResult, ContextPack, GroundedChunk, GroundedResult, IntakeDraftRequest, IntakeDraftResult, LlmPort, OverlapSide, OverlapVerdict, ReviewEvalItem, ReviewEvalRequest, ReviewOverlapRequest, SelectRequest, SelectResult, SummaryInput, SummaryResult, TranslateQueryRequest, UnderstandRequest, UnderstandResult, VaultCompareRequest, VaultCompareResult, VaultDraftRequest, VaultDraftResult, VerifyHandoffRequest, VerifyRequest, VerifyResult } from "../core/ports";
 import { guideBlock, type Guide, type GuidePurpose } from "../core/guide";
 import { protectTerms, restoreTerms, sameProtectedSet } from "../core/translate";
 import type { VisionResult } from "../domain/types";
@@ -58,6 +58,31 @@ const IntakeDraftSchema = z.object({
     })
     .nullable()
     .default(null),
+});
+const VaultDraftSchema = z.object({
+  notes: z
+    .array(
+      z.object({
+        title: z.string().min(1).max(200),
+        category: z.string().min(1).max(60),
+        tags: z.array(z.string().min(1).max(60)).max(10).default([]),
+        lang_source: z.enum(["vi", "en", "mixed"]),
+        version_group: z.string().regex(SLUG_RE).max(80),
+        related: z.array(z.string().max(80)).max(5).default([]),
+        summary: z.string().min(1).max(600),
+        keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
+        canonical_title: z.string().min(1).max(200),
+        canonical_summary: z.string().min(1).max(800),
+        canonical_keywords: z.array(z.string().min(1).max(160)).min(1).max(15),
+        sections: z.array(z.object({ heading: z.string().max(200).default(""), body: z.string().min(1).max(8000) })).min(1).max(30),
+        units: z.array(z.string().max(20)).min(1).max(200),
+      }),
+    )
+    .max(80),
+  unmatched: z.array(z.object({ unit: z.string().max(20), topic: z.string().max(300), suggested_category: z.string().max(60).default("") })).max(200).default([]),
+});
+const VaultCompareSchema = z.object({
+  results: z.array(z.object({ pair: z.string().max(20), verdict: z.enum(["same_meaning", "scope_difference", "contradiction"]), reason: z.string().max(600).default("") })).max(100),
 });
 const ReviewSchema = z.object({ items: z.array(z.object({ n: z.number().int(), verdict: z.enum(["ok", "better", "escalate", "unsure"]), suggested: z.string().optional(), reason: z.string().optional() })) });
 
@@ -309,6 +334,49 @@ export class LlmClient implements LlmPort {
       ],
       schema: IntakeDraftSchema,
       maxTokens: 3000,
+    });
+    return res.data;
+  }
+
+  /** SKILL knowledge-ingest: đơn vị nguồn -> trường của note atomic (src/vault/ingest.ts dựng file, gán id/trạng thái). */
+  async draftVaultNotes(req: VaultDraftRequest): Promise<VaultDraftResult> {
+    const groups = req.existingGroups.map((g) => `${g.versionGroup} | ${g.category} | ${g.canonicalTitle}`).join("\n") || "(none)";
+    const units = req.units.map((u) => `[unit=${u.id}] ref: ${u.ref}\n${u.text}`).join("\n\n");
+    const res = await this.chain.generateJson({
+      tier: "intake",
+      purpose: "intake",
+      system: [{ text: `${(await this.skills())["knowledge-ingest"].body}\n\n${UNTRUSTED} The same applies to <source_units>.`, cache: true }],
+      user: [
+        {
+          type: "text",
+          text: [
+            wrap("source_file", req.sourceFile),
+            wrap("taxonomy", req.taxonomy),
+            wrap("existing_groups", groups),
+            req.fixedVersionGroup ? wrap("fixed_version_group", req.fixedVersionGroup) : "",
+            wrap("source_units", units),
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        },
+      ],
+      schema: VaultDraftSchema,
+      maxTokens: 8000,
+    });
+    return res.data;
+  }
+
+  /** SKILL knowledge-conflict: phân loại cặp note cùng chủ đề. Model nhanh; bên gọi coi cặp thiếu kết quả là mâu thuẫn. */
+  async compareVaultNotes(req: VaultCompareRequest): Promise<VaultCompareResult> {
+    const side = (s: { canonicalSummary: string; excerpt: string }) => `canonical_summary: ${s.canonicalSummary}\nexcerpt: ${s.excerpt.slice(0, 800)}`;
+    const pairs = req.pairs.map((p) => `[pair=${p.id}]\nleft:\n${side(p.left)}\nright:\n${side(p.right)}`).join("\n\n");
+    const res = await this.chain.generateJson({
+      tier: "fast",
+      purpose: "review",
+      system: [{ text: `${(await this.skills())["knowledge-conflict"].body}\n\n${UNTRUSTED} The same applies to <pairs>.`, cache: true }],
+      user: [{ type: "text", text: wrap("pairs", pairs) }],
+      schema: VaultCompareSchema,
+      maxTokens: 120 * req.pairs.length + 100,
     });
     return res.data;
   }

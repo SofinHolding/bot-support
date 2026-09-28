@@ -2,6 +2,7 @@ import { HashEmbedder } from "../src/core/embedding";
 import { loadPredicates } from "../src/core/predicates";
 import type { LlmPort } from "../src/core/ports";
 import { SettingsService } from "../src/core/settings";
+import { normalize } from "../src/core/text";
 import type { VisionResult } from "../src/domain/types";
 import { BotPipeline } from "../src/bot/pipeline";
 import { ResponseResolver } from "../src/bot/resolver";
@@ -52,6 +53,20 @@ export function fakeLlm(over: Partial<LlmPort> = {}): LlmPort {
       templates: r.kindHint === "knowledge" ? [] : [{ id: "fake-intake-tpl", group: "Test", keywords: ["fake intake phrase"], examples: ["fake intake phrase", "this is a fake intake example"], answer_en: r.rawText.slice(0, 200) || "Fake answer." }],
       knowledge: r.kindHint === "knowledge" ? { lang: "en", sections: [{ heading: "Fake section", body: r.rawText.slice(0, 200) || "Fake body long enough to pass validation checks here." }] } : null,
     }),
+    // Nạp vault giả: mỗi đơn vị nguồn một note, chủ đề = dòng đầu đã chuẩn hoá; test cần kịch bản riêng thì ghi đè
+    draftVaultNotes: async (r) => ({
+      notes: r.units.map((u) => {
+        const first = u.text.split(/\r?\n/)[0] ?? "";
+        const group = r.fixedVersionGroup ?? (normalize(first).split(" ").slice(0, 5).join("-") || u.id.toLowerCase());
+        return {
+          title: first.slice(0, 120) || u.id, category: "general", tags: [], lang_source: "vi" as const, version_group: group, related: [],
+          summary: u.text.slice(0, 200), keywords: [u.text.slice(0, 60)], canonical_title: group, canonical_summary: u.text.slice(0, 300), canonical_keywords: [group],
+          sections: [{ heading: "", body: u.text }], units: [u.id],
+        };
+      }),
+      unmatched: [],
+    }),
+    compareVaultNotes: async (r) => ({ results: r.pairs.map((p) => ({ pair: p.id, verdict: p.left.canonicalSummary === p.right.canonicalSummary ? ("same_meaning" as const) : ("scope_difference" as const), reason: "fake" })) }),
     reviewEval: async (r) => r.cases.map((c) => ({ n: c.n, verdict: "ok" as const })),
     classify: async () => ({ action: "escalate" }),
     grounded: async () => ({ answerable: false, answer: "", cited: [] }),
