@@ -12,14 +12,12 @@
 import type { AdminTextReply, CallbackPress, Channel, InlineButton } from "../bot/types";
 import { usableLlm, type LlmPort, type VaultDraftNote } from "../core/ports";
 import type { OpsRepo } from "../db/repo-ops";
-import type { ConflictRow, VaultRepo } from "../db/repo-vault";
-import { decisionLabel } from "./decide";
+import type { ConflictRow, MergePromptRow, VaultRepo } from "../db/repo-vault";
+import { claimAndCommitDecision, decisionLabel } from "./decide";
 import { renderTaxonomyForPrompt } from "./ingest";
 import { sectionsToBody } from "./note";
 import { TYPE_LABEL } from "./notification-file";
-import { vaultPaths } from "./paths";
-import { defaultTaxonomyMd, parseTaxonomy } from "./taxonomy";
-import { existsSync, readFileSync } from "node:fs";
+import { loadTaxonomy } from "./taxonomy";
 
 const MAX_MESSAGE = 4096;
 const SIDE_CHARS = 600;
@@ -132,11 +130,6 @@ const ACT = /^c(\d{1,12}):([a-z]|o|m|x|x1|back)$/;
 const MERGE_CB = /^cm(\d{1,12}):(ok|cancel)$/;
 const MIN_MERGE_CHARS = 10;
 
-function taxonomyOf(vaultDir: string) {
-  const p = vaultPaths(vaultDir).taxonomy;
-  return parseTaxonomy(existsSync(p) ? readFileSync(p, "utf8") : defaultTaxonomyMd());
-}
-
 /** Bắt đầu "Gộp / nhập lại": gửi tin ép trả lời, ghi lại để khớp khi admin gõ chữ. Không hỗ trợ force-reply -> báo dùng Admin Web. */
 async function startMergePrompt(d: TelegramFlowDeps, c: ConflictRow, chatId: number, adminId: number) {
   const webLink = `${d.adminWebUrl.replace(/\/$/, "")}/#/kb/conflicts`;
@@ -151,10 +144,25 @@ async function startMergePrompt(d: TelegramFlowDeps, c: ConflictRow, chatId: num
   await d.repo.createMergePrompt(c.id, chatId, adminId, r.messageId);
 }
 
-/** Admin vừa trả lời tin "Gộp / nhập lại". false = tin này không khớp prompt nào (không phải của luồng vault). */
+/**
+ * Admin vừa trả lời tin "Gộp / nhập lại". false = tin này không khớp prompt nào (không phải của luồng vault) — CHỈ khi
+ * chính `mergePromptByReply` không tìm thấy gì; một khi đã xác định đúng là tin trả lời cho luồng này, mọi lỗi sau đó
+ * (kể cả lỗi DB tạm thời) đều được xử lý TẠI ĐÂY và luôn trả `true`, để main.ts không bao giờ đẩy nhầm tin của admin
+ * sang pipeline trả lời khách (trước đây một lỗi DB thoáng qua có thể làm việc đó xảy ra).
+ */
 export async function handleMergeTextReply(d: TelegramFlowDeps, r: AdminTextReply): Promise<boolean> {
   const prompt = await d.repo.mergePromptByReply(r.chatId, r.replyToMessageId);
   if (!prompt) return false;
+  try {
+    return await processMergeTextReply(d, r, prompt);
+  } catch (e) {
+    d.log("error", "vault merge (Telegram): lỗi không lường trước, đã chặn không rơi vào pipeline khách", { conflictId: prompt.conflictId, err: (e as Error).message });
+    await d.channel.send(r.chatId, "Có lỗi khi xử lý nội dung bạn vừa gửi. Thử trả lời lại đúng tin trên, hoặc dùng Admin Web.").catch(() => undefined);
+    return true;
+  }
+}
+
+async function processMergeTextReply(d: TelegramFlowDeps, r: AdminTextReply, prompt: MergePromptRow): Promise<boolean> {
   const admin = await requireAdmin(d, r.fromId);
   if (!admin) return true; // im lặng: tin trả lời không phải từ admin/owner, không phải của luồng này
   const send = (t: string) => d.channel.send(r.chatId, t).catch(() => undefined);
@@ -176,7 +184,7 @@ export async function handleMergeTextReply(d: TelegramFlowDeps, r: AdminTextRepl
   }
   let note: VaultDraftNote;
   try {
-    const tax = taxonomyOf(d.vaultDir ?? "knowledge");
+    const tax = loadTaxonomy(d.vaultDir ?? "knowledge");
     const draft = await llm.draftVaultNotes({
       sourceFile: "admin (gộp xung đột qua Telegram)", taxonomy: renderTaxonomyForPrompt(tax), existingGroups: await d.repo.activeGroups(), fixedVersionGroup: c.versionGroup,
       units: [{ id: "U1", ref: `Admin nhập lại qua Telegram cho xung đột #${c.id}`, text: r.text }],
@@ -226,20 +234,17 @@ export async function handleMergeConfirmCallback(d: TelegramFlowDeps, p: Callbac
     return true;
   }
   const by = `${admin.name ?? p.fromName ?? "admin"}#${p.fromId}`;
-  const claimed = await d.repo.claimDecision(prompt.conflictId, "merge", { note: prompt.draftNote }, by, d.now());
-  if (!claimed) {
-    const cur = await d.repo.getConflict(prompt.conflictId);
+  const result = await claimAndCommitDecision(d, prompt.conflictId, "merge", { note: prompt.draftNote }, by, d.now(), "telegram-merge");
+  if (!result.claimed) {
     await d.repo.resolveMergePrompt(promptId, "cancelled");
-    await edit(`Xung đột #${prompt.conflictId} đã được xử lý bởi ${cur?.decidedBy ?? "người khác"} trước khi bạn xác nhận.`);
-    await answer(`Đã được xử lý bởi ${cur?.decidedBy ?? "người khác"}.`);
+    await edit(`Xung đột #${prompt.conflictId} đã được xử lý bởi ${result.decidedBy ?? "người khác"} trước khi bạn xác nhận.`);
+    await answer(`Đã được xử lý bởi ${result.decidedBy ?? "người khác"}.`);
     return true;
   }
-  await d.enqueue("vault-decide", { conflictId: prompt.conflictId }, { dedupeKey: `vault-decide:${prompt.conflictId}` });
-  await d.ops.audit(by, "vault.decide", String(prompt.conflictId), { via: "telegram-merge" }, { decision: "merge" });
   await d.repo.resolveMergePrompt(promptId, "done");
   await edit("✅ Đã gộp. Nội dung sẽ dùng được sau khi đánh chỉ mục (vài phút).");
   await answer("Đã ghi nhận: Gộp / nhập lại.");
-  await markMessagesDecided(d, claimed);
+  await markMessagesDecided(d, result.claimed);
   return true;
 }
 
@@ -291,15 +296,12 @@ export async function handleConflictCallback(d: TelegramFlowDeps, p: CallbackPre
     return true;
   }
   const by = `${admin.name ?? p.fromName ?? "admin"}#${p.fromId}`;
-  const claimed = await d.repo.claimDecision(id, decision, null, by, d.now());
-  if (!claimed) {
-    const cur = await d.repo.getConflict(id);
-    await answer(`Đã được xử lý bởi ${cur?.decidedBy ?? "người khác"}.`);
+  const result = await claimAndCommitDecision(d, id, decision, null, by, d.now(), "telegram");
+  if (!result.claimed) {
+    await answer(`Đã được xử lý bởi ${result.decidedBy ?? "người khác"}.`);
     return true;
   }
-  await d.enqueue("vault-decide", { conflictId: id }, { dedupeKey: `vault-decide:${id}` });
-  await d.ops.audit(by, "vault.decide", String(id), { candidates: c.candidates.map((x) => x.noteId) }, { decision, via: "telegram" });
   await answer(`Đã ghi nhận: ${decisionLabel(decision)}.`);
-  await markMessagesDecided(d, claimed);
+  await markMessagesDecided(d, result.claimed);
   return true;
 }

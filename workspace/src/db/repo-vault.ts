@@ -1,5 +1,6 @@
 /** Truy cập các bảng của vault (migrations/011): lượt nạp, bản sao note, chunk + vector, xung đột khi nạp. */
 import { toPgVector } from "../core/embedding";
+import { SERVABLE } from "../vault/note";
 import { iso, num, type Db } from "./db";
 
 export type BatchStatus = "queued" | "running" | "done" | "failed";
@@ -200,8 +201,8 @@ export function vaultRepo(db: Db) {
     async activeGroups(limit = 400): Promise<{ versionGroup: string; category: string; canonicalTitle: string }[]> {
       const r = await db.query(
         `SELECT DISTINCT ON (version_group) version_group, category, meta->>'canonical_title' AS ct
-         FROM vault_notes WHERE status IN ('confirmed', 'provisional') ORDER BY version_group, ingested_at DESC LIMIT $1`,
-        [limit],
+         FROM vault_notes WHERE status = ANY($1::text[]) ORDER BY version_group, ingested_at DESC LIMIT $2`,
+        [SERVABLE, limit],
       );
       return r.rows.map((x) => ({ versionGroup: String(x.version_group), category: String(x.category), canonicalTitle: String(x.ct ?? "") }));
     },
@@ -279,8 +280,8 @@ export function vaultRepo(db: Db) {
       if (!tsQuery) return [];
       const r = await db.query(
         `SELECT chunk_id, note_id, heading, text, lang_source, ts_rank(tsv, to_tsquery('simple', $1))::float8 AS score
-         FROM vault_chunks WHERE status IN ('confirmed', 'provisional') AND tsv @@ to_tsquery('simple', $1) ORDER BY score DESC, chunk_id LIMIT $2`,
-        [tsQuery, limit],
+         FROM vault_chunks WHERE status = ANY($3::text[]) AND tsv @@ to_tsquery('simple', $1) ORDER BY score DESC, chunk_id LIMIT $2`,
+        [tsQuery, limit, SERVABLE],
       );
       return r.rows.map((x) => ({ chunkId: String(x.chunk_id), noteId: String(x.note_id), heading: String(x.heading), text: String(x.text), langSource: String(x.lang_source), score: num(x.score) }));
     },
@@ -288,16 +289,16 @@ export function vaultRepo(db: Db) {
       const r = await db.query(
         `SELECT c.chunk_id, c.note_id, c.heading, c.text, c.lang_source, (1 - (e.embedding <=> $1::vector))::float8 AS score
          FROM vault_chunk_vectors e JOIN vault_chunks c ON c.chunk_id = e.chunk_id
-         WHERE e.model = $2 AND c.status IN ('confirmed', 'provisional') ORDER BY e.embedding <=> $1::vector LIMIT $3`,
-        [toPgVector(v), model, limit],
+         WHERE e.model = $2 AND c.status = ANY($4::text[]) ORDER BY e.embedding <=> $1::vector LIMIT $3`,
+        [toPgVector(v), model, limit, SERVABLE],
       );
       return r.rows.map((x) => ({ chunkId: String(x.chunk_id), noteId: String(x.note_id), heading: String(x.heading), text: String(x.text), langSource: String(x.lang_source), score: num(x.score) }));
     },
     async chunksByIds(ids: string[]): Promise<VaultChunkHit[]> {
       if (!ids.length) return [];
       const r = await db.query(
-        "SELECT chunk_id, note_id, heading, text, lang_source FROM vault_chunks WHERE chunk_id = ANY($1::text[]) AND status IN ('confirmed', 'provisional')",
-        [ids],
+        "SELECT chunk_id, note_id, heading, text, lang_source FROM vault_chunks WHERE chunk_id = ANY($1::text[]) AND status = ANY($2::text[])",
+        [ids, SERVABLE],
       );
       return r.rows.map((x) => ({ chunkId: String(x.chunk_id), noteId: String(x.note_id), heading: String(x.heading), text: String(x.text), langSource: String(x.lang_source), score: 1 }));
     },
@@ -305,8 +306,8 @@ export function vaultRepo(db: Db) {
       if (!noteIds.length) return [];
       const r = await db.query(
         `SELECT DISTINCT ON (note_id) chunk_id, note_id, heading, text, lang_source FROM vault_chunks
-         WHERE note_id = ANY($1::text[]) AND status IN ('confirmed', 'provisional') ORDER BY note_id, seq`,
-        [noteIds],
+         WHERE note_id = ANY($1::text[]) AND status = ANY($2::text[]) ORDER BY note_id, seq`,
+        [noteIds, SERVABLE],
       );
       return r.rows.map((x) => ({ chunkId: String(x.chunk_id), noteId: String(x.note_id), heading: String(x.heading), text: String(x.text), langSource: String(x.lang_source), score: 0 }));
     },

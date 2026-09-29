@@ -120,4 +120,35 @@ describe("áp dụng quyết định xung đột (Notion mục 6)", () => {
     const again = await repo.getConflict(r.reopened!);
     expect(again!.candidates.map((x) => [x.label, x.noteId, !!x.old])).toEqual([["A", "phi-004", false], ["O", "phi-002", true]]);
   });
+
+  it("ứng viên đổ vào GIỮA LÚC applyDecision đang chạy (sau lần đọc đầu, trước lúc kết luận): vẫn được mở lại, không bị coi là đã xử lý xong", async () => {
+    const c = await setup();
+    expect(await repo.claimDecision(c.id, "a", null, "admin#1", new Date())).not.toBeNull();
+
+    // Mô phỏng job vault-ingest khác chạy chen vào đúng khoảng applyDecision đã đọc xung đột lần đầu nhưng chưa kết luận:
+    // lần gọi getConflict ĐẦU TIÊN trả về ảnh chụp cũ (đúng những gì decide.ts thấy khi mới vào hàm), rồi mới chạy race.
+    let raced = false;
+    const raceRepo: VaultRepo = {
+      ...repo,
+      getConflict: async (id: number) => {
+        const row = await repo.getConflict(id);
+        if (!raced && id === c.id) {
+          raced = true;
+          writeFileSync(join(rawDir, "late-race.txt"), "x");
+          await runIngest(deps(llm((u) => [draft(u[0]!, "Fee is 9%.")]), "2026-09-28T00:45:00Z"), await repo.createBatch("late-race.txt", "late-race.txt", null));
+        }
+        return row;
+      },
+    };
+    const r = await applyDecision({ ...deps(llm(() => []), "2026-09-28T01:00:00Z"), repo: raceRepo }, c.id);
+    expect(raced).toBe(true);
+
+    // Trước khi sửa: report.reopened là null, xung đột bị đóng, note đến muộn kẹt vĩnh viễn ở awaiting_approval.
+    expect(r.reopened).not.toBeNull();
+    const again = await repo.getConflict(r.reopened!);
+    expect(again!.candidates.map((x) => x.label)).toContain("A");
+    expect((await repo.getConflict(c.id))?.status).toBe("resolved");
+    // Xung đột gốc vẫn ghi "đã xử lý" bình thường cho quyết định "a" — chỉ ứng viên đến muộn mới cần mở lại riêng.
+    expect(await status("phi-002")).toBe("confirmed");
+  });
 });

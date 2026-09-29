@@ -1,6 +1,11 @@
 /**
  * Ghi note vào vault và giữ ba nơi luôn khớp nhau: file note (đúng thư mục theo trạng thái), `_meta/index.json`, bảng
  * `vault_notes` (bot/admin đọc). Chỉ worker dùng lớp này (một nơi ghi). Gọi `flush()` sau cùng để ghi index.json một lần.
+ *
+ * GIẢ ĐỊNH: chỉ một tiến trình worker chạy tại một thời điểm (xem chú thích ở service `worker` trong docker-compose.yml).
+ * `index.json` đọc cả file vào bộ nhớ và `flush()` ghi đè cả file, không khoá/gộp — nếu chạy nhiều worker song song và có
+ * hai job cùng đụng vào vault, bản ghi sau có thể mất dữ liệu của bản trước dù bảng `vault_notes` (nguồn bot đọc để trả
+ * lời) vẫn đúng. Muốn scale worker phải thêm khoá (vd advisory lock Postgres theo tên vault) trước khi mở `VaultStore`.
  */
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import type { VaultRepo } from "../db/repo-vault";

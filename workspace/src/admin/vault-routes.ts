@@ -3,7 +3,7 @@
  * xung đột. Admin KHÔNG ghi vào vault: chỉ lưu file thô và xếp job (worker là nơi ghi duy nhất). Quyết định xung đột được
  * khoá nguyên tử ở DB (người bấm đầu tiên thắng) rồi xếp job vault-decide.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -14,10 +14,10 @@ import type { ConflictRow } from "../db/repo-vault";
 import { MAX_UPLOAD_BYTES } from "../kb/doc-extract";
 import { KbError, type Actor } from "../kb/service";
 import { VaultDraftNoteSchema } from "../llm/client";
+import { claimAndCommitDecision } from "../vault/decide";
 import { renderTaxonomyForPrompt } from "../vault/ingest";
 import { sectionsToBody } from "../vault/note";
-import { vaultPaths } from "../vault/paths";
-import { parseTaxonomy, defaultTaxonomyMd } from "../vault/taxonomy";
+import { loadTaxonomy } from "../vault/taxonomy";
 
 const ALLOWED_EXT = new Set(["txt", "md", "pdf", "doc", "docx", "xlsx"]);
 
@@ -50,10 +50,7 @@ export function registerVaultRoutes(
   const { need, actor, audit, now } = h;
   const repo = svc.vault;
   const rawDir = svc.cfg.RAW_DATA_DIR;
-  const taxonomyText = () => {
-    const p = vaultPaths(svc.cfg.VAULT_DIR).taxonomy;
-    return parseTaxonomy(existsSync(p) ? readFileSync(p, "utf8") : defaultTaxonomyMd());
-  };
+  const taxonomyText = () => loadTaxonomy(svc.cfg.VAULT_DIR);
 
   /** Tải MỘT file lên (giao diện gửi từng file). Lưu nguyên file vào raw-data/, tạo lượt nạp, xếp job chuyển đổi. */
   app.post("/api/vault/upload", { preHandler: need("admin") }, async (req) => {
@@ -144,13 +141,8 @@ export function registerVaultRoutes(
       if (!b.note) throw new KbError("thiếu nội dung gộp: bấm \"Xem trước\" rồi xác nhận");
       if (b.note.version_group !== c.versionGroup) throw new KbError("nội dung gộp không thuộc chủ đề của xung đột này: soạn lại bằng \"Xem trước\"");
     }
-    const claimed = await repo.claimDecision(id, b.decision, b.decision === "merge" ? { note: b.note } : null, actor(req).label, now());
-    if (!claimed) {
-      const cur = await repo.getConflict(id);
-      return reply.code(409).send({ error: `Xung đột này đã được xử lý bởi ${cur?.decidedBy ?? "người khác"}.` });
-    }
-    await svc.ops.enqueueJob("vault-decide", { conflictId: id }, { dedupeKey: `vault-decide:${id}` });
-    await audit(req, "vault.decide", String(id), { candidates: c.candidates.map((x) => x.noteId) }, { decision: b.decision });
-    return { ok: true, conflict: conflictView(claimed) };
+    const result = await claimAndCommitDecision({ repo, ops: svc.ops, enqueue: (t, p, o) => svc.ops.enqueueJob(t, p, o) }, id, b.decision, b.decision === "merge" ? { note: b.note } : null, actor(req).label, now(), "admin-web");
+    if (!result.claimed) return reply.code(409).send({ error: `Xung đột này đã được xử lý bởi ${result.decidedBy ?? "người khác"}.` });
+    return { ok: true, conflict: conflictView(result.claimed) };
   });
 }

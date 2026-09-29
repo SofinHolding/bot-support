@@ -83,6 +83,10 @@ services:
   worker:
     <<: *app
     command: ["node", "dist/worker.js"]
+    # Đúng 1 replica: các job đụng vào vault (vault-ingest/vault-index/vault-decide) ghi _meta/index.json bằng cách đọc cả
+    # file, sửa trong bộ nhớ rồi ghi đè (src/vault/store.ts), không có khoá/gộp giữa các tiến trình. Chạy ≥2 worker song
+    # song có thể làm một job ghi đè mất kết quả của job kia. Muốn scale worker thì phải thêm khoá (vd advisory lock theo
+    # vault) trước.
 
 volumes:
   pgdata:

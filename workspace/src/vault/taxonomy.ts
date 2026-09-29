@@ -2,7 +2,9 @@
  * `_meta/taxonomy.md`: bộ category/tag chuẩn và ngôn ngữ canonical (references/taxonomy-setup.md của skill).
  * Skill KHÔNG tự tạo category mới: đơn vị không khớp category nào được trả về `unmatched` để admin quyết định.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { ITEM_TOPICS } from "../core/items";
+import { vaultPaths } from "./paths";
 
 export interface Taxonomy {
   canonicalLang: string;
@@ -48,4 +50,14 @@ export function parseTaxonomy(md: string): Taxonomy {
     } else if (section.startsWith("tag") && tagCat) (out.tags[tagCat] ??= []).push(v);
   }
   return out;
+}
+
+/**
+ * Đọc `_meta/taxonomy.md` của vault; chưa có file (vault chưa qua `ensureVault`, vd trước lượt nạp đầu tiên) thì dùng bản
+ * mặc định trong bộ nhớ, không tạo file. Dùng ở các nơi CHỈ ĐỌC taxonomy để kiểm/gợi ý (Admin Web, luồng Telegram) — nơi
+ * đang chắc chắn vault đã tồn tại (worker vault-ingest) đọc thẳng `store.paths.taxonomy` vì luôn có file thật.
+ */
+export function loadTaxonomy(vaultDir: string): Taxonomy {
+  const p = vaultPaths(vaultDir).taxonomy;
+  return parseTaxonomy(existsSync(p) ? readFileSync(p, "utf8") : defaultTaxonomyMd());
 }

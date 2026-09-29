@@ -53,12 +53,19 @@ export function renderTaxonomyForPrompt(t: Taxonomy): string {
 const excerptOf = (body: string) => (body.length > EXCERPT ? `${body.slice(0, EXCERPT).trimEnd()}…` : body);
 const labelOf = (i: number) => String.fromCharCode(65 + i);
 
-/** Id note = `<version_group>-<nnn>`, số tiếp theo chưa dùng (không bao giờ dùng lại id cũ). */
-async function nextId(repo: VaultRepo, group: string, reserved: Set<string>): Promise<string> {
-  const taken = new Set([...(await repo.idsWithPrefix(group)), ...reserved]);
+/**
+ * Id note = `<version_group>-<nnn>`, số tiếp theo chưa dùng (không bao giờ dùng lại id cũ). `cache`: id đã dùng theo từng
+ * group, hỏi DB đúng một lần cho mỗi group dù một lượt nạp có nhiều note cùng chủ đề (trước đây hỏi lại mỗi note).
+ */
+async function nextId(repo: VaultRepo, group: string, reserved: Set<string>, cache: Map<string, Set<string>>): Promise<string> {
+  let taken = cache.get(group);
+  if (!taken) {
+    taken = new Set(await repo.idsWithPrefix(group));
+    cache.set(group, taken);
+  }
   for (let n = 1; ; n++) {
     const id = `${group}-${String(n).padStart(3, "0")}`;
-    if (!taken.has(id)) return id;
+    if (!taken.has(id) && !reserved.has(id)) return id;
   }
 }
 
@@ -128,11 +135,12 @@ async function ingest(d: VaultJobDeps, llm: LlmPort, batchId: number, fileName: 
 
   // 3. Dựng note nháp: code gán id, thời điểm nạp, nguồn
   const reserved = new Set<string>();
+  const idCache = new Map<string, Set<string>>();
   const fresh: VaultNote[] = [];
   const draftRelated = new Map<string, string[]>();
   for (const x of drafts) {
     const group = x.d.version_group;
-    const id = await nextId(repo, group, reserved);
+    const id = await nextId(repo, group, reserved, idCache);
     if (!NOTE_ID_RE.test(id)) continue;
     reserved.add(id);
     const meta: NoteMeta = {

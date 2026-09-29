@@ -206,6 +206,18 @@ describe("Gộp / nhập lại qua Telegram (force-reply)", () => {
     expect(await reply(2, 123456, "câu bất kỳ")).toBe(false);
   });
 
+  it("lỗi DB thoáng qua khi đang xử lý tin trả lời: báo lỗi cho admin, vẫn trả về true (không rơi vào pipeline khách)", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    const promptId = ch.forceReplies[0]!.messageId;
+    // repo.getConflict lỗi ngay sau khi đã xác định đúng là tin trả lời cho prompt này — trước khi sửa, lỗi này bị .catch
+    // ở bot/main.ts nuốt mất và biến thành `handled=false`, khiến tin của admin bị đẩy tiếp vào pipeline trả lời khách.
+    const brokenRepo: VaultRepo = { ...repo, getConflict: async () => { throw new Error("connection terminated"); } };
+    const handled = await handleMergeTextReply({ ...deps(), repo: brokenRepo }, { fromId: 2, fromName: null, chatId: 2, messageId: 9999, replyToMessageId: promptId, text: "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch." });
+    expect(handled).toBe(true);
+    expect(ch.textsTo(2).at(-1)).toContain("lỗi");
+  });
+
   it("người đã bị hạ quyền trả lời tin của mình: bị bỏ qua âm thầm", async () => {
     const c = await conflict();
     await press(2, `c${c.id}:m`);
