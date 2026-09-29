@@ -1197,7 +1197,11 @@ export class KbService {
     await this.d.kb.deleteDocument(slug);
     await this.d.kb.syncConflicts(slug, []); // tài liệu không còn: mọi xung đột đang mở chạm tới nó cũng hết
     await this.d.ops.audit(actor.label, "kb.delete_document", slug, null, { kind: doc.kind, versions: versions.length, wasLive });
-    if (wasLive) await this.d.live.rebuild();
+    if (wasLive) {
+      // Như publish/rollback: tăng kb_version để CÁC TIẾN TRÌNH KHÁC (bot, worker) tự nạp lại, không chỉ tiến trình này.
+      await this.d.ops.bumpKbVersion(actor.label);
+      await this.d.live.rebuild();
+    }
   }
 
   /** Kích hoạt một phiên bản: ghi template/chunk, đánh dấu published, tăng kb_version để bot nạp lại. */

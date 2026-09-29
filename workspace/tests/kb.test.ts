@@ -148,8 +148,11 @@ describe("Draft -> kiểm tra -> Publish", () => {
     await w.kbService.publish(v1.version.id, admin);
     await w.say(9301, "xoá đã publish phrase");
     expect(w.channel.textsTo(9301).at(-1)).toBe("This is a test answer");
+    const kbVersionBefore = await w.ops.kbVersion();
     await w.kbService.deleteDocument("test-del-live", admin);
     expect(await w.kb.getDocument("test-del-live")).toBeUndefined();
+    // như publish/rollback: kb_version phải tăng để TIẾN TRÌNH KHÁC (bot, worker chạy container riêng) cũng tự nạp lại
+    expect(await w.ops.kbVersion()).toBeGreaterThan(kbVersionBefore);
     await w.say(9302, "xoá đã publish phrase");
     expect(w.channel.textsTo(9302).at(-1)).not.toBe("This is a test answer"); // template không còn nữa -> không khớp được nữa
 
