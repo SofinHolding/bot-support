@@ -9,17 +9,24 @@ import { opsRepo, type OpsRepo } from "../src/db/repo-ops";
 import { vaultRepo, type VaultRepo } from "../src/db/repo-vault";
 import { runIngest } from "../src/vault/ingest";
 import { VaultStore } from "../src/vault/store";
-import { conflictMessage, handleConflictCallback, notifyConflicts, REMIND_AFTER_MS, type TelegramFlowDeps } from "../src/vault/telegram-flow";
+import { conflictMessage, handleConflictCallback, handleMergeConfirmCallback, handleMergeTextReply, notifyConflicts, REMIND_AFTER_MS, type TelegramFlowDeps } from "../src/vault/telegram-flow";
 import { FakeChannel, fakeLlm } from "./helpers";
+import { mkdtempSync as mkTempDir } from "node:fs";
 
 class TgChannel extends FakeChannel {
   buttons: { chatId: number; text: string; rows: InlineButton[][]; messageId: number }[] = [];
   edits: { chatId: number; messageId: number; text: string; rows: InlineButton[][] }[] = [];
   answers: { id: string; text?: string }[] = [];
+  forceReplies: { chatId: number; text: string; messageId: number }[] = [];
   private seq = 5000;
   async sendButtons(chatId: number, text: string, rows: InlineButton[][]) {
     const messageId = this.seq++;
     this.buttons.push({ chatId, text, rows, messageId });
+    return { messageId };
+  }
+  async sendForceReply(chatId: number, text: string) {
+    const messageId = this.seq++;
+    this.forceReplies.push({ chatId, text, messageId });
     return { messageId };
   }
   async editMessage(chatId: number, messageId: number, text: string, rows: InlineButton[][] = []) {
@@ -51,7 +58,10 @@ beforeEach(async () => {
 });
 afterEach(async () => db.close());
 
-const deps = (): TelegramFlowDeps => ({ repo, ops, channel: ch, adminWebUrl: "https://admin.example.test", now: () => now, log: () => undefined, enqueue: async (t) => (enqueued.push(t), true) });
+const vaultDir = mkTempDir(join(tmpdir(), "vault-taxonomy-"));
+const deps = (over: Partial<TelegramFlowDeps> = {}): TelegramFlowDeps => ({
+  repo, ops, channel: ch, adminWebUrl: "https://admin.example.test", now: () => now, log: () => undefined, enqueue: async (t) => (enqueued.push(t), true), llm: fakeLlm(), vaultDir, ...over,
+});
 
 async function conflict(excerpt = "Hoàn tiền trong 3-5 ngày làm việc.") {
   const root = mkdtempSync(join(tmpdir(), "vault-"));
@@ -142,8 +152,9 @@ describe("admin bấm nút", () => {
     expect((await repo.getConflict(c.id))?.decision).toBe("drop_all");
   });
 
-  it("Gộp / nhập lại chuyển sang Admin Web", async () => {
+  it("Gộp / nhập lại: kênh không hỗ trợ force-reply thì chỉ dẫn sang Admin Web", async () => {
     const c = await conflict();
+    (ch as unknown as { sendForceReply?: unknown }).sendForceReply = undefined;
     await press(2, `c${c.id}:m`);
     expect(ch.textsTo(2).at(-1)).toContain("https://admin.example.test/#/kb/conflicts");
     expect((await repo.getConflict(c.id))?.status).toBe("open");
@@ -151,5 +162,98 @@ describe("admin bấm nút", () => {
 
   it("mã nút lạ không phải của xung đột: không xử lý", async () => {
     expect(await press(2, "something-else")).toBe(false);
+  });
+});
+
+describe("Gộp / nhập lại qua Telegram (force-reply)", () => {
+  const reply = (fromId: number, replyToMessageId: number, text: string, chatId = fromId) => handleMergeTextReply(deps(), { fromId, fromName: null, chatId, messageId: 9999, replyToMessageId, text });
+  const confirm = (fromId: number, data: string) => handleMergeConfirmCallback(deps(), { id: `cb${Math.random()}`, fromId, fromName: null, chatId: fromId, messageId: 6000, data });
+
+  it("bấm Gộp / nhập lại: gửi force-reply, chưa ghi gì", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    expect(ch.forceReplies).toHaveLength(1);
+    expect(ch.forceReplies[0]!.chatId).toBe(2);
+    expect(ch.forceReplies[0]!.text).toContain(`#${c.id}`);
+    expect((await repo.getConflict(c.id))?.status).toBe("open");
+  });
+
+  it("trả lời quá ngắn: nhắc gõ lại, vẫn chờ đúng tin đó (không tạo prompt mới)", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    const promptId = ch.forceReplies[0]!.messageId;
+    expect(await reply(2, promptId, "ok")).toBe(true);
+    expect(ch.textsTo(2).at(-1)).toContain("quá ngắn");
+    expect(ch.buttons).toHaveLength(0); // chưa gọi AI, chưa có bản xem trước
+    // trả lời lại đúng tin cũ vẫn khớp được
+    expect(await reply(2, promptId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.")).toBe(true);
+    expect(ch.buttons).toHaveLength(1);
+  });
+
+  it("trả lời đủ dài: AI soạn note đúng chủ đề xung đột, gửi bản xem trước kèm nút, CHƯA ghi vào vault", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    const promptId = ch.forceReplies[0]!.messageId;
+    await reply(2, promptId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.");
+    expect(ch.buttons).toHaveLength(1);
+    expect(ch.buttons[0]!.text).toContain("Xem trước");
+    expect(ch.buttons[0]!.rows.flat().map((b) => b.data)[0]).toMatch(/^cm\d+:ok$/);
+    const row = (await repo.getConflict(c.id))!;
+    expect(row.status).toBe("open"); // chưa claim, chưa quyết định
+  });
+
+  it("tin trả lời không khớp prompt nào (không phải của luồng vault): trả về false, không đụng gì", async () => {
+    expect(await reply(2, 123456, "câu bất kỳ")).toBe(false);
+  });
+
+  it("người đã bị hạ quyền trả lời tin của mình: bị bỏ qua âm thầm", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    const promptId = ch.forceReplies[0]!.messageId;
+    await ops.upsertAdmin(2, "viewer", "Hà"); // mất quyền admin giữa lúc đang chờ trả lời
+    expect(await reply(2, promptId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.")).toBe(true);
+    expect(ch.buttons).toHaveLength(0);
+    expect(ch.textsTo(2)).toEqual([]);
+  });
+
+  it("Xác nhận: ghi quyết định merge, xếp vault-decide, sửa bản xem trước và tin xung đột gốc", async () => {
+    const c = await conflict();
+    await notifyConflicts(deps());
+    ch.buttons = [];
+    await press(2, `c${c.id}:m`);
+    await reply(2, ch.forceReplies[0]!.messageId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.");
+    const promptId = Number(/^cm(\d+):ok$/.exec(ch.buttons[0]!.rows.flat()[0]!.data)![1]);
+
+    await confirm(2, `cm${promptId}:ok`);
+    expect(enqueued).toEqual(["vault-decide"]);
+    const row = (await repo.getConflict(c.id))!;
+    expect(row).toMatchObject({ status: "deciding", decision: "merge", decidedBy: "Hà#2" });
+    expect(row.decisionPayload?.note).toMatchObject({ version_group: c.versionGroup });
+    expect(ch.edits.some((e) => e.text.includes("✅ Đã gộp"))).toBe(true);
+    expect(ch.edits.some((e) => e.text.includes("✅ Hà#2 đã chọn: Gộp / nhập lại"))).toBe(true);
+  });
+
+  it("Huỷ: không ghi quyết định, prompt kết thúc", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    await reply(2, ch.forceReplies[0]!.messageId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.");
+    const promptId = Number(/^cm(\d+):/.exec(ch.buttons[0]!.rows.flat()[0]!.data)![1]);
+    await confirm(2, `cm${promptId}:cancel`);
+    expect((await repo.getConflict(c.id))?.status).toBe("open");
+    expect(ch.edits.some((e) => e.text.includes("Đã huỷ"))).toBe(true);
+    // bấm xác nhận sau khi đã huỷ: báo hết hạn, không ghi gì
+    await confirm(2, `cm${promptId}:ok`);
+    expect(enqueued).toEqual([]);
+  });
+
+  it("người khác đã quyết định xung đột trước khi admin xác nhận bản gộp: báo và không ghi đè", async () => {
+    const c = await conflict();
+    await press(2, `c${c.id}:m`);
+    await reply(2, ch.forceReplies[0]!.messageId, "Hoàn tiền trong 4 ngày làm việc cho mọi giao dịch.");
+    const promptId = Number(/^cm(\d+):/.exec(ch.buttons[0]!.rows.flat()[0]!.data)![1]);
+    await press(1, `c${c.id}:a`); // owner chọn A trước
+    await confirm(2, `cm${promptId}:ok`);
+    expect(enqueued).toEqual(["vault-decide"]); // đúng 1 lần, từ quyết định của owner
+    expect((await repo.getConflict(c.id))?.decidedBy).toBe("Chủ#1");
   });
 });

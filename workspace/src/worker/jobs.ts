@@ -63,7 +63,7 @@ export interface JobContext {
 
 const telegramDeps = (ctx: JobContext): TelegramFlowDeps => {
   if (!ctx.vault) throw new Error("chưa cấu hình vault (VAULT_DIR/RAW_DATA_DIR)");
-  return { repo: ctx.vault.repo, ops: ctx.ops, channel: ctx.channel, adminWebUrl: ctx.adminWebUrl, now: ctx.now, log: ctx.log, enqueue: (t, p, o) => ctx.ops.enqueueJob(t, p, o) };
+  return { repo: ctx.vault.repo, ops: ctx.ops, channel: ctx.channel, adminWebUrl: ctx.adminWebUrl, now: ctx.now, log: ctx.log, enqueue: (t, p, o) => ctx.ops.enqueueJob(t, p, o), llm: ctx.llm, vaultDir: ctx.vault.root };
 };
 
 /** Dựng phụ thuộc cho một job vault: mỗi job một VaultStore mới (đọc lại index.json từ đĩa). */

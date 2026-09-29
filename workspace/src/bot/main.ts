@@ -5,8 +5,8 @@ import { isMain } from "../entry";
 import { createServices, type Services } from "../app";
 import { loadConfig } from "../config";
 import { Coalescer } from "./coalescer";
-import { parseCallback, parseUpdate, type TgUpdate } from "./telegram";
-import { handleConflictCallback } from "../vault/telegram-flow";
+import { parseCallback, parseTextReply, parseUpdate, type TgUpdate } from "./telegram";
+import { handleConflictCallback, handleMergeConfirmCallback, handleMergeTextReply, type TelegramFlowDeps } from "../vault/telegram-flow";
 
 const safeEq = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
@@ -26,13 +26,25 @@ export async function startBot(svc: Services) {
     () => windowMs,
     (e) => log("error", "xử lý lượt lỗi", { err: (e as Error).message }),
   );
+  const vaultFlow: TelegramFlowDeps = { repo: svc.vault, ops: svc.ops, channel: svc.channel, adminWebUrl: cfg.PUBLIC_ADMIN_URL, now: () => new Date(), log, enqueue: (t, p, o) => svc.ops.enqueueJob(t, p, o), llm: svc.llm, vaultDir: cfg.VAULT_DIR };
+
   /** true = đã xử lý xong (hoặc không cần xử lý); false = update này còn dang dở ở lượt khác, Telegram cần gửi lại sau. */
   const ingest = async (u: TgUpdate): Promise<boolean> => {
-    // admin bấm nút duyệt xung đột dữ liệu (vault): không đi vào pipeline trả lời khách
+    // admin bấm nút duyệt xung đột dữ liệu, hoặc xác nhận/huỷ bản xem trước "Gộp / nhập lại" (vault): không vào pipeline khách
     const press = parseCallback(u);
     if (press) {
-      await handleConflictCallback({ repo: svc.vault, ops: svc.ops, channel: svc.channel, adminWebUrl: cfg.PUBLIC_ADMIN_URL, now: () => new Date(), log, enqueue: (t, p, o) => svc.ops.enqueueJob(t, p, o) }, press).catch((e: Error) => log("error", "xử lý nút xung đột lỗi", { err: e.message }));
+      try {
+        if (!(await handleConflictCallback(vaultFlow, press))) await handleMergeConfirmCallback(vaultFlow, press);
+      } catch (e) {
+        log("error", "xử lý nút xung đột lỗi", { err: (e as Error).message });
+      }
       return true;
+    }
+    // admin trả lời (reply) tin "Gộp / nhập lại" bằng chữ: không vào pipeline khách dù đúng là tin nhắn thường
+    const reply = parseTextReply(u);
+    if (reply) {
+      const handled = await handleMergeTextReply(vaultFlow, reply).catch((e: Error) => (log("error", "xử lý gộp/nhập lại lỗi", { err: e.message }), false));
+      if (handled) return true;
     }
     const b = parseUpdate(u, bot);
     if (!b) return true;

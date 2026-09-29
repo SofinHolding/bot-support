@@ -35,6 +35,8 @@ export interface Channel {
   typing?(chatId: number): Promise<void>;
   /** Tin cho ADMIN kèm nút bấm (inline keyboard). `data` của nút: 1-64 byte (xem vault/telegram-flow.ts). */
   sendButtons?(chatId: number, text: string, rows: InlineButton[][]): Promise<{ messageId?: number }>;
+  /** Tin hỏi lại ADMIN, ép trả lời (force reply): dùng để nhận nội dung "Gộp / nhập lại" bằng chữ thường, không phải nút. */
+  sendForceReply?(chatId: number, text: string): Promise<{ messageId?: number }>;
   /** Sửa tin đã gửi; `rows` rỗng = bỏ hết nút. */
   editMessage?(chatId: number, messageId: number, text: string, rows?: InlineButton[][]): Promise<void>;
   /** Trả lời lần bấm nút (bắt buộc, nếu không nút bị treo ở trạng thái đang tải). */
@@ -54,6 +56,18 @@ export interface CallbackPress {
   chatId: number | null;
   messageId: number | null;
   data: string;
+}
+
+/** Admin trả lời (reply) một tin cụ thể của bot bằng chữ thường — dùng để nhận nội dung "Gộp / nhập lại". */
+export interface AdminTextReply {
+  fromId: number;
+  fromName: string | null;
+  chatId: number;
+  /** id tin admin vừa gửi (để sửa/trả lời lại đúng chỗ nếu cần) */
+  messageId: number;
+  /** id tin của BOT mà admin đang trả lời — khoá để khớp với prompt đang chờ */
+  replyToMessageId: number;
+  text: string;
 }
 
 export interface PipelineResult {

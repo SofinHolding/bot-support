@@ -363,6 +363,60 @@ export function vaultRepo(db: Db) {
         [id, JSON.stringify(messages), iso(at), reminder],
       );
     },
+
+    // ---- Gộp / nhập lại qua Telegram (force-reply) ----
+    ...mergePromptRepo(db),
+  };
+}
+
+export type MergePromptStatus = "awaiting_text" | "awaiting_confirm" | "done" | "cancelled";
+
+export interface MergePromptRow {
+  id: number;
+  conflictId: number;
+  chatId: number;
+  adminId: number;
+  promptMessageId: number;
+  previewMessageId: number | null;
+  status: MergePromptStatus;
+  draftNote: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+const mapMergePrompt = (x: Record<string, unknown>): MergePromptRow => ({
+  id: num(x.id),
+  conflictId: num(x.conflict_id),
+  chatId: num(x.chat_id),
+  adminId: num(x.admin_id),
+  promptMessageId: num(x.prompt_message_id),
+  previewMessageId: x.preview_message_id === null || x.preview_message_id === undefined ? null : num(x.preview_message_id),
+  status: x.status as MergePromptStatus,
+  draftNote: (x.draft_note as Record<string, unknown> | null) ?? null,
+  createdAt: new Date(String(x.created_at)),
+});
+
+function mergePromptRepo(db: Db) {
+  return {
+    async createMergePrompt(conflictId: number, chatId: number, adminId: number, promptMessageId: number): Promise<number> {
+      const r = await db.query("INSERT INTO vault_merge_prompts (conflict_id, chat_id, admin_id, prompt_message_id) VALUES ($1,$2,$3,$4) RETURNING id", [conflictId, chatId, adminId, promptMessageId]);
+      return num(r.rows[0]!.id);
+    },
+    /** Khớp tin admin vừa trả lời với đúng prompt còn chờ chữ (mỗi chat + tin gốc chỉ một prompt). */
+    async mergePromptByReply(chatId: number, promptMessageId: number): Promise<MergePromptRow | null> {
+      const r = await db.query("SELECT * FROM vault_merge_prompts WHERE chat_id = $1 AND prompt_message_id = $2 AND status = 'awaiting_text'", [chatId, promptMessageId]);
+      return r.rows[0] ? mapMergePrompt(r.rows[0]) : null;
+    },
+    async getMergePrompt(id: number): Promise<MergePromptRow | null> {
+      const r = await db.query("SELECT * FROM vault_merge_prompts WHERE id = $1", [id]);
+      return r.rows[0] ? mapMergePrompt(r.rows[0]) : null;
+    },
+    /** AI đã soạn xong note từ chữ admin trả lời: chuyển sang chờ admin xác nhận trên bản xem trước. */
+    async setMergePromptDraft(id: number, previewMessageId: number, draftNote: Record<string, unknown>) {
+      await db.query("UPDATE vault_merge_prompts SET status = 'awaiting_confirm', preview_message_id = $2, draft_note = $3::jsonb WHERE id = $1", [id, previewMessageId, JSON.stringify(draftNote)]);
+    },
+    async resolveMergePrompt(id: number, status: "done" | "cancelled") {
+      await db.query("UPDATE vault_merge_prompts SET status = $2 WHERE id = $1", [id, status]);
+    },
   };
 }
 

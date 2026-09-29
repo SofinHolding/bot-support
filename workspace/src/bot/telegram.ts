@@ -1,5 +1,5 @@
 /** Adapter Telegram Bot API (fetch thuần, không phụ thuộc thư viện). */
-import type { CallbackPress, Channel, InboundBatch, InboundItem, InlineButton, MessageEntity } from "./types";
+import type { AdminTextReply, CallbackPress, Channel, InboundBatch, InboundItem, InlineButton, MessageEntity } from "./types";
 
 export class TelegramError extends Error {
   constructor(message: string, readonly code: number, readonly retryAfter?: number) {
@@ -26,7 +26,7 @@ export interface TgMessage {
   caption_entities?: { type: string; offset: number; length: number }[];
   photo?: { file_id: string; file_size?: number; width: number; height: number }[];
   sticker?: { emoji?: string };
-  reply_to_message?: { from?: TgUser };
+  reply_to_message?: { message_id: number; from?: TgUser };
   voice?: unknown;
   video?: unknown;
   video_note?: unknown;
@@ -92,6 +92,12 @@ export class TelegramClient implements Channel {
     return { messageId: r.message_id };
   }
 
+  /** force_reply + selective: Telegram mở sẵn ô trả lời đúng tin này cho người được hỏi. */
+  async sendForceReply(chatId: number, text: string): Promise<{ messageId?: number }> {
+    const r = await this.api<{ message_id: number }>("sendMessage", { chat_id: chatId, text: text.slice(0, MAX), reply_markup: { force_reply: true, selective: true } });
+    return { messageId: r.message_id };
+  }
+
   async editMessage(chatId: number, messageId: number, text: string, rows: InlineButton[][] = []): Promise<void> {
     try {
       await this.api("editMessageText", { chat_id: chatId, message_id: messageId, text: text.slice(0, MAX), reply_markup: keyboard(rows) });
@@ -140,6 +146,16 @@ export function parseCallback(u: TgUpdate): CallbackPress | null {
   if (!q || !q.data || q.from.is_bot) return null;
   const name = [q.from.first_name, q.from.last_name].filter(Boolean).join(" ") || q.from.username || null;
   return { id: q.id, fromId: q.from.id, fromName: name, chatId: q.message?.chat.id ?? null, messageId: q.message?.message_id ?? null, data: q.data };
+}
+
+/** Tin admin trả lời (reply) một tin cụ thể của bot — dùng khớp với prompt "Gộp / nhập lại" đang chờ chữ. */
+export function parseTextReply(u: TgUpdate): AdminTextReply | null {
+  const m = u.message;
+  const replyId = m?.reply_to_message?.message_id;
+  const text = m?.text?.trim();
+  if (!m || !m.from || m.from.is_bot || !replyId || !text) return null;
+  const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(" ") || m.from.username || null;
+  return { fromId: m.from.id, fromName: name, chatId: m.chat.id, messageId: m.message_id, replyToMessageId: replyId, text };
 }
 
 /** Chuyển update Telegram thành InboundBatch (một tin). Trả null nếu không phải tin nhắn cần xử lý. */
