@@ -95,8 +95,13 @@ export async function notifyConflicts(d: TelegramFlowDeps): Promise<{ sent: numb
     const { text, rows } = conflictMessage(c, d.adminWebUrl, reminder ? `🔔 Nhắc lại lần ${c.remindCount + 1} (chưa ai chọn)\n` : "");
     const messages: { chatId: number; messageId: number }[] = [];
     for (const chatId of chats) {
-      const r = await d.channel.sendButtons(chatId, text, rows);
-      if (r.messageId) messages.push({ chatId, messageId: r.messageId });
+      // Một admin gửi lỗi (vd chưa từng chat với bot: "chat not found") không được chặn tin tới các admin còn lại.
+      try {
+        const r = await d.channel.sendButtons(chatId, text, rows);
+        if (r.messageId) messages.push({ chatId, messageId: r.messageId });
+      } catch (e) {
+        d.log("warn", "vault-conflict-notify: không gửi được cho một admin", { chatId, err: (e as Error).message });
+      }
     }
     await d.repo.markConflictSent(c.id, messages, now, reminder);
     if (reminder) reminded++;

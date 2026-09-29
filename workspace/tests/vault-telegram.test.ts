@@ -96,6 +96,19 @@ describe("tin xung đột gửi admin", () => {
     expect(ch.edits.filter((e) => e.rows.length === 0)).toHaveLength(2);
     expect((await repo.getConflict(c.id))?.remindCount).toBe(1);
   });
+
+  it("một admin gửi lỗi (vd chưa từng chat với bot) không chặn tin tới admin còn lại", async () => {
+    const c = await conflict();
+    const failing = ch.sendButtons.bind(ch);
+    ch.sendButtons = async (chatId, text, rows) => {
+      if (chatId === 1) throw new Error("Bad Request: chat not found");
+      return failing(chatId, text, rows);
+    };
+    expect(await notifyConflicts(deps())).toEqual({ sent: 1, reminded: 0 });
+    expect(ch.buttons.map((b) => b.chatId)).toEqual([2]);
+    expect((await repo.getConflict(c.id))?.status).toBe("sent");
+    expect((await repo.getConflict(c.id))?.telegramMessages).toEqual([{ chatId: 2, messageId: expect.any(Number) }]);
+  });
 });
 
 describe("admin bấm nút", () => {
