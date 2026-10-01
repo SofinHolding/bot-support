@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Mất mạng và sập tiến trình",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "tg", "label": "Máy chủ Telegram" },
+    { "id": "bot", "label": "Bot nhận & xử lý" },
+    { "id": "gui", "label": "Gửi trả lời" },
+    { "id": "phuchoi", "label": "Tự phục hồi", "variant": "exception" }
+  ],
+  "mainPath": ["update", "receive", "claim", "process", "send", "customer"],
+  "nodes": [
+    { "id": "update", "lane": "tg", "col": 0, "type": "external", "label": "Update mới", "sublabel": "tin của khách", "width": 148 },
+    { "id": "ack", "lane": "tg", "col": 4, "type": "external", "label": "Telegram ghi nhận", "sublabel": "200 / offset tiến", "width": 148 },
+    { "id": "receive", "lane": "bot", "col": 1, "type": "backend", "label": "Webhook / polling", "sublabel": "kiểm secret · lỗi chờ 3s", "width": 148 },
+    { "id": "claim", "lane": "bot", "col": 2, "type": "database", "label": "Nhận quyền xử lý", "sublabel": "update đã xong → bỏ qua", "width": 148 },
+    { "id": "process", "lane": "bot", "col": 3, "type": "backend", "label": "Xử lý lượt", "sublabel": "ghi DB xong mới xác nhận", "width": 148 },
+    { "id": "send", "lane": "gui", "col": 4, "type": "backend", "label": "Gửi Telegram", "sublabel": "chữ thuần · tách 4096", "width": 148 },
+    { "id": "customer", "lane": "gui", "col": 5, "type": "frontend", "label": "Khách nhận", "sublabel": "đúng một lần", "width": 148 },
+    { "id": "redeliver", "lane": "phuchoi", "col": 1, "type": "messagebus", "label": "Telegram gửi lại", "sublabel": "không nhận được 200", "width": 148 },
+    { "id": "crash", "lane": "phuchoi", "col": 3, "type": "security", "label": "Tiến trình chết", "sublabel": "nhận lại sau 2 phút", "width": 148 },
+    { "id": "outbox", "lane": "phuchoi", "col": 4, "type": "database", "label": "Hàng đợi gửi lại", "sublabel": "giữ cả định dạng", "width": 148 },
+    { "id": "flush", "lane": "phuchoi", "col": 5, "type": "messagebus", "label": "Worker gửi lại", "sublabel": "mỗi phút · tối đa 5 lần", "width": 148 }
+  ],
+  "edges": [
+    { "id": "t-in", "from": "update", "to": "receive" },
+    { "id": "t-claim", "from": "receive", "to": "claim" },
+    { "id": "t-new", "from": "claim", "to": "process", "label": "update mới", "variant": "emphasis" },
+    { "id": "t-send", "from": "process", "to": "send", "variant": "emphasis" },
+    { "id": "t-deliver", "from": "send", "to": "customer", "label": "thành công", "variant": "emphasis" },
+    { "id": "t-ack", "from": "process", "to": "ack", "label": "xong lượt", "role": "branch" },
+    { "id": "t-crash", "from": "process", "to": "crash", "label": "chết giữa chừng", "variant": "security", "role": "error" },
+    { "id": "t-redeliver", "from": "crash", "to": "redeliver", "label": "không có 200", "variant": "dashed", "role": "branch" },
+    { "id": "t-retry", "from": "redeliver", "to": "receive", "variant": "dashed", "role": "return" },
+    { "id": "t-offline", "from": "send", "to": "outbox", "label": "mạng lỗi", "variant": "security", "role": "error" },
+    { "id": "t-flush", "from": "outbox", "to": "flush", "variant": "dashed", "role": "async" },
+    { "id": "t-late", "from": "flush", "to": "customer", "label": "gửi lại được", "variant": "dashed", "role": "return" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Không trả lời trùng",
+      "items": [
+        "Mỗi update chỉ được xử lý một lần; đang dở dưới 2 phút thì báo Telegram gửi lại sau",
+        "Polling chỉ tiến offset khi cả lô đã xử lý xong"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Gửi lại có giới hạn",
+      "items": [
+        "Chờ 30s, 60s, 120s… giữa các lần; quá 5 lần thì đánh dấu hỏng",
+        "Việc nền lỗi cũng thử lại luỹ thừa, hỏng hẳn hiện trên Admin Web"
+      ]
+    }
+  ]
+}

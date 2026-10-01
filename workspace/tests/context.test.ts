@@ -1,14 +1,12 @@
 /**
- * Ba lớp giữ mạch hội thoại: (1) ngữ cảnh nạp lại = sự kiện + giá trị do code trích + tóm tắt + vài tin mới nhất,
- * (2) câu hỏi được dịch/làm độc lập bằng SKILL translate-query để TÌM tri thức, (3) quy tắc tóm tắt cuộn có code kiểm chứng.
+ * Hai lớp giữ mạch hội thoại: (1) ngữ cảnh nạp lại = sự kiện + giá trị do code trích + tóm tắt + vài tin mới nhất,
+ * (2) quy tắc tóm tắt cuộn có code kiểm chứng. (Việc làm câu hỏi tiếp nối đứng độc lập để tìm tri thức nay nằm trong
+ * `understand()` của routeLlmFirst — SKILL translate-query độc lập cũ đã bỏ 2026-09-30, xem tests/core.test.ts.)
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildIndex, loadContentDir } from "../src/core/bundle";
 import { extractFacts, mergeFacts } from "../src/core/facts";
-import type { KnowledgeHit, LlmPort, UnderstandRequest } from "../src/core/ports";
-import { DEFAULT_ROUTER_SETTINGS, route, type RouterDeps } from "../src/core/router";
+import type { LlmPort, UnderstandRequest } from "../src/core/ports";
 import { cleanSummary, degradedSummary, readSummary, summaryForContext, SUMMARY_LIMITS } from "../src/core/summary";
-import { normalize } from "../src/core/text";
 import { HANDLERS, type JobContext } from "../src/worker/jobs";
 import { fakeLlm, makeWorld, type World } from "./helpers";
 
@@ -72,89 +70,6 @@ describe("core/summary: quy tắc tóm tắt có code kiểm chứng", () => {
     const long = degradedSummary(undefined, Array.from({ length: 30 }, (_, i) => ({ role: "user" as const, text: `message number ${i} ${"w".repeat(60)}` })));
     expect(long.user_reported.length).toBeLessThanOrEqual(SUMMARY_LIMITS.userReported);
     expect(long.user_reported).toContain("message number 29");
-  });
-});
-
-describe("router: SKILL translate-query cho câu hỏi tri thức", () => {
-  let base: RouterDeps;
-  beforeAll(async () => {
-    const bundle = loadContentDir("content");
-    base = { index: await buildIndex(bundle), evaluator: bundle.evaluator, settings: { ...DEFAULT_ROUTER_SETTINGS, knowledgeLang: "en", urlHostWhitelist: new Set(["x.com"]) } };
-  });
-  const text = "and what about the other one?";
-  const req = (over: Partial<{ text: string; lang: string; ctx: object }> = {}) => ({ text, norm: normalize(over.text ?? text), lang: "en", hasImage: false, isSticker: false, ctx: {}, ...over }) as never;
-  const pack = { profile: "", events: [], summary: "issue: ITL token; reported: asks what the ITL token is", recent: [{ role: "user" as const, text: "what is ITL?" }] };
-  const chunk = { chunkId: "7", docSlug: "whitepaper", heading: "$ITL", text: "$ITL is the main token.", url: "https://x.com/inter_link", lang: "en" };
-  type Seen = { standalone?: string; question?: string };
-  const llmWith = (query: (r: { text: string; from: string; to: string }) => string | Error, seen: Seen = {}, calls: { from: string; to: string }[] = []): LlmPort => ({
-    ...fakeLlm(),
-    classify: async () => ({ action: "knowledge" }),
-    translateQuery: async (r) => {
-      calls.push({ from: r.from, to: r.to });
-      const q = query(r);
-      if (q instanceof Error) throw q;
-      return { query: q };
-    },
-    grounded: async (r) => { seen.standalone = r.standalone; seen.question = r.question; return { answerable: true, answer: "never sent", cited: [r.chunks[0]!.id] }; },
-  });
-  const spy = (fn: (s: string, lang?: string) => KnowledgeHit[] = () => []) => {
-    const log: { q: string; lang?: string }[] = [];
-    return { log, search: async (s: string, _k: number, lang?: string) => { log.push({ q: s, lang }); return fn(s, lang); } };
-  };
-
-  it("câu hỏi nối tiếp: tìm bằng câu gốc VÀ câu đã dịch/làm độc lập; khách vẫn nhận NGUYÊN VĂN đoạn đã duyệt; LLM xác nhận thấy cả hai câu", async () => {
-    const knowledge = spy((s) => (s.includes("ITL token") ? [{ ...chunk, score: 0.8 }] : []));
-    const seen: Seen = {};
-    const r = await route(req({ ctx: { contextPack: pack } }), { ...base, knowledge, llm: llmWith(() => "What is the ITL token?", seen) });
-    expect(knowledge.log).toEqual([{ q: text, lang: "en" }, { q: "What is the ITL token?", lang: "en" }]);
-    expect(r.outcome).toMatchObject({ kind: "GROUNDED", mode: "extractive", sourceLang: "en", answer: "$ITL is the main token.\n\nhttps://x.com/inter_link" });
-    expect(seen).toEqual({ question: text, standalone: "What is the ITL token?" });
-    expect(r.trace.notes.join(" ")).toContain("SKILL translate-query");
-  });
-  it("khách hỏi khác ngôn ngữ kho: dịch sang ngôn ngữ kho (vi), mỗi truy vấn kèm đúng ngôn ngữ của nó; đoạn tiếng Việt -> sourceLang vi", async () => {
-    const korean = "ITLG 총 공급량은 얼마인가요?";
-    const viChunk = { ...chunk, chunkId: "9", heading: "Nguồn cung", text: "Tổng cung của ITLG được công bố trong whitepaper.", lang: "vi" };
-    const knowledge = spy((_s, lang) => (lang === "vi" ? [{ ...viChunk, score: 0.7 }] : []));
-    const calls: { from: string; to: string }[] = [];
-    const r = await route(req({ text: korean, lang: "ko" }), { ...base, settings: { ...base.settings, knowledgeLang: "vi" }, knowledge, llm: llmWith(() => "tổng cung của ITLG là bao nhiêu?", {}, calls) });
-    expect(calls).toEqual([{ from: "ko", to: "vi" }]);
-    expect(knowledge.log).toEqual([{ q: korean, lang: "ko" }, { q: "tổng cung của ITLG là bao nhiêu?", lang: "vi" }]);
-    expect(r.outcome).toMatchObject({ kind: "GROUNDED", sourceLang: "vi", sources: [{ chunkId: "9" }] });
-  });
-  it("câu dịch vi phạm kiểm tra bằng code (thêm số, mất tên sản phẩm, sai ngôn ngữ) bị bỏ, tìm bằng câu gốc", async () => {
-    const cases: [string, string, string][] = [
-      ["what is the ITLG supply", "tổng cung của ITLG là 999", "thêm con số"],
-      ["what is the ITLG supply", "tổng cung của token là bao nhiêu", "mất tên"],
-      ["what is the ITLG supply", "ITLG의 총 공급량은?", "chữ"],
-      ["how much is 500 ITL", "500 ITL là bao nhiêu", ""], // hợp lệ
-    ];
-    for (const [q, out, why] of cases) {
-      const knowledge = spy();
-      const r = await route(req({ text: q }), { ...base, settings: { ...base.settings, knowledgeLang: "vi" }, knowledge, llm: llmWith(() => out) });
-      if (why) {
-        expect(knowledge.log.map((x) => x.q)).toEqual([q]);
-        expect(r.trace.notes.join(" ")).toContain("bỏ câu dịch");
-      } else expect(knowledge.log.map((x) => x.q)).toEqual([q, out]);
-    }
-  });
-  it("LLM dịch lỗi -> vẫn tìm bằng câu gốc; câu dịch trùng câu gốc hoặc chứa dữ liệu nhạy cảm được xử lý an toàn", async () => {
-    const k1 = spy();
-    await route(req({ ctx: { contextPack: pack } }), { ...base, knowledge: k1, llm: llmWith(() => new Error("503")) });
-    expect(k1.log.map((x) => x.q)).toEqual([text]);
-    const k2 = spy();
-    await route(req({ ctx: { contextPack: pack } }), { ...base, knowledge: k2, llm: llmWith(() => `  ${text.toUpperCase()} `) });
-    expect(k2.log.map((x) => x.q)).toEqual([text]);
-    const k3 = spy();
-    await route(req({ text: "what is ITL token", ctx: { contextPack: pack } }), { ...base, knowledge: k3, llm: llmWith(() => "ITL token for a.b@example.com") });
-    expect(k3.log[1]!.q).toBe("ITL token for [EMAIL]");
-  });
-  it("không tốn token khi không cần: cùng ngôn ngữ với kho và không có ngữ cảnh -> không gọi SKILL; khác ngôn ngữ -> luôn gọi", async () => {
-    const calls: { from: string; to: string }[] = [];
-    const knowledge = spy();
-    await route(req({ text: "what is the ITL token" }), { ...base, knowledge, llm: llmWith((r) => r.text, {}, calls) });
-    expect(calls).toEqual([]);
-    await route(req({ text: "what is the ITL token" }), { ...base, settings: { ...base.settings, knowledgeLang: "vi" }, knowledge, llm: llmWith((r) => r.text, {}, calls) });
-    expect(calls).toEqual([{ from: "en", to: "vi" }]);
   });
 });
 

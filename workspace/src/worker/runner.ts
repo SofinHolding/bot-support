@@ -8,6 +8,9 @@ export async function scheduleDue(ctx: JobContext): Promise<string[]> {
   for (const c of CRONS) {
     const slot = dueSlot(c.spec, now);
     if (!slot) continue;
+    // `slot` không lặp lại theo thời gian thực, nên "đã từng xếp cho khung giờ này" (kể cả đã xong) là đủ để bỏ qua —
+    // không dựa vào dedupe_key còn hiệu lực hay không, vì complete/failJob xoá dedupe_key sau khi xong (xem repo-ops).
+    if (await ctx.ops.slotAlreadyQueued(c.name, slot)) continue;
     const ok = await ctx.ops.enqueueJob(c.name, { slot }, { dedupeKey: `${c.name}:${slot}`, maxAttempts: 5 });
     if (ok) created.push(c.name);
   }

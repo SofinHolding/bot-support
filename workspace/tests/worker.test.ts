@@ -56,6 +56,39 @@ describe("lịch", () => {
     expect(b).toEqual([]);
     await runDueJobs(ctx, 50);
   });
+
+  it("job đã chạy XONG trong đúng khung giờ đó rồi thì không bị xếp lại lần nữa (dedupe_key bị xoá sau khi complete)", async () => {
+    // Trước khi sửa: completeJob() xoá dedupe_key, nên nếu worker gọi lại scheduleDue trong lúc đồng hồ thực vẫn còn
+    // nằm trong CÙNG khung giờ (ví dụ mỗi 5 giây một nhịp, như production) thì job của khung giờ đó bị tạo lại liên
+    // tục cho tới khi sang khung giờ mới — với job chạy nhanh thì lãng phí, với job chạy lâu (vd prewarm-urgent-translations,
+    // 25-30 phút) thì gần như chạy không nghỉ, chiếm hết hạn mức gọi AI suốt nhiều giờ (phát hiện 2026-09-30).
+    let t = new Date("2026-09-21T10:05:00Z"); // đúng mốc dueSlot của usage-aggregate -> "h2026-09-21T10"
+    const c2: JobContext = { ...ctx, now: () => t };
+    const first = await scheduleDue(c2);
+    expect(first).toContain("usage-aggregate");
+    await runDueJobs(c2, 50); // job xong, dedupe_key bị xoá (repo-ops.completeJob)
+
+    t = new Date("2026-09-21T10:40:00Z"); // vẫn trong khung giờ 10h (chỉ đổi slot khi qua mốc :05 của giờ kế tiếp)
+    const second = await scheduleDue(c2);
+    expect(second).not.toContain("usage-aggregate");
+  });
+
+  it("prewarm câu khẩn (30 ngày): bỏ qua ngôn ngữ của khách đã im lặng lâu, chỉ dịch cho khách còn hoạt động gần đây", async () => {
+    // Phát hiện 2026-09-30: knownLanguages() không lọc theo thời gian nên chỉ tăng dần (34 ngôn ngữ), khiến job dịch
+    // sẵn ngày càng nặng, chiếm cổng LLM nhiều giờ mỗi lần chạy — làm chậm câu trả lời khách thật đang chạy song song.
+    const now = new Date("2026-09-30T00:00:00Z");
+    await w.conv.touchUser({ id: 700001, name: "Khách cũ" }, new Date("2026-01-01T00:00:00Z"));
+    await w.conv.setLanguage(700001, "th"); // im lặng > 30 ngày
+    await w.conv.touchUser({ id: 700002, name: "Khách mới" }, now);
+    await w.conv.setLanguage(700002, "id"); // vừa nhắn hôm nay
+
+    const all = await w.conv.knownLanguages();
+    const recent = await w.conv.knownLanguages(30);
+    expect(all).toContain("th");
+    expect(all).toContain("id");
+    expect(recent).not.toContain("th");
+    expect(recent).toContain("id");
+  });
 });
 
 describe("bảo trì và dọn dẹp (HEARTBEAT.md)", () => {

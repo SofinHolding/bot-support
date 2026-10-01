@@ -158,6 +158,19 @@ export function opsRepo(db: Db) {
       const r = await db.query("SELECT 1 FROM jobs WHERE type = $1 AND status IN ('queued', 'running') LIMIT 1", [type]);
       return r.rowCount > 0;
     },
+    /**
+     * Đã từng xếp job cho đúng khung giờ (slot) này chưa, KỂ CẢ đã xong (done/dead) — dùng riêng cho job theo lịch cron
+     * (`scheduleDue`), vì `completeJob`/`failJob` xoá `dedupe_key` sau khi xong nên bảng UNIQUE không còn chặn được việc
+     * xếp trùng. Với cron, `slot` (vd "h2026-09-30T02") không bao giờ lặp lại theo thời gian thực, nên chỉ cần kiểm tra
+     * đã có bản ghi nào của khung giờ đó chưa là đủ, không cần dựa vào dedupe_key còn hiệu lực hay không.
+     * Phát hiện 2026-09-30: thiếu kiểm tra này khiến job hourly chạy lâu (>20 phút) bị xếp lại liên tục ngay khi vừa
+     * xong (dedupe_key vừa được xoá, mà đồng hồ thực vẫn còn nằm trong khung giờ mà dueSlot() coi là "đang cần chạy"),
+     * lặp gần như không nghỉ suốt nhiều giờ.
+     */
+    async slotAlreadyQueued(type: string, slot: string): Promise<boolean> {
+      const r = await db.query("SELECT 1 FROM jobs WHERE type = $1 AND payload->>'slot' = $2 LIMIT 1", [type, slot]);
+      return r.rowCount > 0;
+    },
     // Xong (done/dead) thì trả lại dedupe_key: khoá này nghĩa là "mỗi lúc chỉ một việc như vậy đang chờ", không phải "chỉ một lần trong đời".
     // (Trước đây key UNIQUE không được trả lại nên vd "reindex:model-change" chỉ xếp được đúng một lần; các lần đổi model sau bị bỏ qua im lặng.)
     async completeJob(id: number) {

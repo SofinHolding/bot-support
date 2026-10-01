@@ -56,6 +56,8 @@ export interface JobContext {
   log: (level: "info" | "warn" | "error", msg: string, extra?: unknown) => void;
   /** Dịch sẵn câu khẩn (job prewarm-urgent-translations). Không có = job bỏ qua. */
   resolver?: ResponseResolver;
+  /** Resolver gọi cách quãng dành cho việc nền — ưu tiên dùng cho prewarm-urgent-translations nếu có, xem app.ts. */
+  resolverBackground?: ResponseResolver;
   live?: LiveContent;
   /** Vault Obsidian (docs/adr/0005). Không có = các job vault-* báo lỗi cấu hình. */
   vault?: { root: string; rawDir: string; repo: VaultRepo; embedder: Embedder };
@@ -277,12 +279,16 @@ export const HANDLERS: Record<string, JobHandler> = {
    * nên chạy định kỳ rẻ; mẫu đổi nội dung (hash khác) thì tự dịch lại. Payload `langs`: chỉ dịch các ngôn ngữ này (ngôn ngữ mới gặp).
    */
   async "prewarm-urgent-translations"(ctx, p) {
-    if (!ctx.resolver || !usableLlm(ctx.llm)) return { skipped: "chưa cấu hình LLM" };
+    const resolver = ctx.resolverBackground ?? ctx.resolver;
+    if (!resolver || !usableLlm(ctx.llm)) return { skipped: "chưa cấu hình LLM" };
     await ctx.live?.ensureFresh();
     const s = await ctx.settings.get();
-    const wanted = Array.isArray(p.langs) ? p.langs.map(String) : [...prewarmLanguages(s), ...(await ctx.conv.knownLanguages())];
+    // Chỉ dịch sẵn cho khách còn hoạt động gần đây (30 ngày) — không dịch cho mọi ngôn ngữ TỪNG thấy trong lịch sử, vốn
+    // chỉ tăng dần và làm job này ngày càng nặng (phát hiện 2026-09-30: 34 ngôn ngữ, job chạy 25-30 phút, chiếm cổng LLM
+    // liên tục làm chậm câu trả lời khách thật đang chạy song song).
+    const wanted = Array.isArray(p.langs) ? p.langs.map(String) : [...prewarmLanguages(s), ...(await ctx.conv.knownLanguages(30))];
     const langs = [...new Set(wanted.filter((l) => /^[a-z]{2}$/.test(l) && l !== "en"))];
-    return { langs: langs.length, ...(await ctx.resolver.prewarmUrgent(URGENT_TEMPLATE_IDS, langs)) };
+    return { langs: langs.length, ...(await resolver.prewarmUrgent(URGENT_TEMPLATE_IDS, langs)) };
   },
 
   /** Xoá ảnh quá thời hạn lưu (báo cáo cũ: 8.884/11.004 ảnh > 30 ngày vẫn còn). */

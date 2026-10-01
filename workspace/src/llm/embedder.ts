@@ -65,26 +65,25 @@ export interface EmbeddingSelection {
 }
 
 /**
- * Embedder theo LỰA CHỌN: đúng MỘT model cho toàn bộ kho lẫn câu hỏi. Không có dự phòng ngầm theo từng lời gọi —
- * vector của hai model không so sánh được, nên kho chỉ được đánh chỉ mục cho model đang chọn (kb_chunk_embeddings phân
- * vùng theo model; model kia có vector thì để nguyên, không dùng).
- * API ngoài lỗi hẳn (HttpEmbedder đã hết số lần thử lại) -> gọi `onExternalFailure` MỘT lần: nơi nối dây (app.ts) chuyển hẳn
- * lựa chọn sang cục bộ trong DB, KHOÁ lựa chọn API, xếp việc đánh chỉ mục lại toàn bộ nội dung đã publish và ghi audit;
- * lời gọi hiện tại được phục vụ bằng model cục bộ ngay (đúng không gian với bộ chỉ mục cục bộ). Quay lại API chỉ khi admin
- * kiểm tra và mở khoá thủ công trên Admin Web.
+ * Embedding theo LỰA CHỌN: đúng MỘT model cho toàn bộ kho lẫn câu hỏi. Không có dự phòng ngầm — chọn "API ngoài" thì
+ * MỌI lượt đều gọi API thật, lỗi thì báo lỗi thẳng (không âm thầm đổi sang model khác, không tự khoá/tự chuyển).
+ *
+ * Đổi 2026-09-30 theo yêu cầu rõ ràng của chủ dự án: trước đây có cơ chế tự chuyển sang model cục bộ + tự khoá khi API
+ * lỗi — đã bỏ hẳn. Đánh đổi đã trao đổi và được chấp nhận: cổng API ngoài đang dùng có tỷ lệ lỗi ngẫu nhiên thật
+ * ~25%/lượt (đo được cùng ngày); những lượt gặp đúng lúc lỗi giờ THẤT BẠI THẬT (ném lỗi lên trên) thay vì được cứu
+ * bằng model cục bộ. Nơi gọi (vd `vault/search.ts`) tự quyết định phải làm gì khi embed lỗi — ví dụ nhánh tìm kiếm
+ * chữ (tsvector) vẫn chạy được, chỉ mất phần tìm theo nghĩa cho đúng lượt đó.
+ * Chọn "cục bộ" vẫn dùng bình thường (không gọi mạng) — đây không phải "dự phòng", mà là lựa chọn tường minh của admin.
  */
 export class SelectedEmbedder implements Embedder {
   private external: Embedder | null = null;
   private externalKey = "";
   private lastActive: Embedder;
-  private switching: Promise<void> | null = null;
-  /** cấu hình API đã gây sự cố gần nhất: các lời gọi đang bay cùng lỗi không gọi hook lặp lại */
-  private failedKey = "";
 
   constructor(
     private readonly getSelection: () => Promise<EmbeddingSelection>,
     readonly local: Embedder,
-    private readonly opts: { onExternalFailure?: (error: string) => Promise<void>; fetchImpl?: typeof fetch; log?: (msg: string) => void } = {},
+    private readonly opts: { fetchImpl?: typeof fetch; log?: (msg: string) => void } = {},
   ) {
     this.lastActive = local;
   }
@@ -115,8 +114,6 @@ export class SelectedEmbedder implements Embedder {
   async active(): Promise<Embedder> {
     const sel = await this.getSelection().catch((): EmbeddingSelection => ({ provider: "local", external: null }));
     const ext = sel.provider === "external" ? this.resolveExternal(sel) : null;
-    // Đang ở cục bộ mà lựa chọn lại là API => admin đã mở khoá và chọn lại: sự cố kế tiếp phải khoá lại được
-    if (ext && this.lastActive === this.local) this.failedKey = "";
     return (this.lastActive = ext ?? this.local);
   }
 
@@ -127,15 +124,8 @@ export class SelectedEmbedder implements Embedder {
       const vectors = await e.embed(texts, opts);
       return { vectors, model: e.version };
     } catch (err) {
-      const msg = (err as Error).message;
-      if (this.failedKey !== this.externalKey) {
-        this.failedKey = this.externalKey;
-        this.opts.log?.(`embedding API (${e.version}) lỗi: ${msg} -> chuyển hẳn sang cục bộ (${this.local.version}) và khoá lựa chọn API`);
-        this.switching = (this.opts.onExternalFailure?.(msg) ?? Promise.resolve()).catch(() => undefined).finally(() => (this.switching = null));
-      }
-      await this.switching; // các lời gọi đang bay cùng lỗi chờ chung một lần chuyển
-      this.lastActive = this.local;
-      return { vectors: await this.local.embed(texts, opts), model: this.local.version };
+      this.opts.log?.(`embedding API (${e.version}) lỗi: ${(err as Error).message} -> không dự phòng, báo lỗi thẳng`);
+      throw err;
     }
   }
 

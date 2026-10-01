@@ -8,7 +8,6 @@ export interface Settings {
   "router.mode": "hybrid" | "llm_first"; // hybrid (theo sơ đồ workflow): FAST PATH khi khớp chắc chắn bằng luật/từ khoá — vẫn phải qua AI xác nhận —, còn lại đi AI/RAG. llm_first: mọi tin có chữ đi qua AI (hiểu -> tìm -> AI chọn -> dịch). Không có chế độ trả lời không qua AI.
   "router.tier3_mode": "extractive" | "generative";
   "router.tier3_min_score": number;
-  "router.tier3_verify": boolean; // true: LLM phải xác nhận đoạn tri thức TRẢ LỜI ĐƯỢC câu hỏi rồi mới gửi (nguyên văn); không xác nhận được -> chuyển người thật
   "router.knowledge_lang": "vi" | "en"; // ngôn ngữ CHÍNH của kho tri thức: câu hỏi của khách được dịch sang ngôn ngữ này để tìm (SKILL translate-query)
   "router.too_short_max_chars": number;
 
@@ -51,7 +50,6 @@ export const DEFAULT_SETTINGS: Settings = {
   "router.mode": "hybrid",
   "router.tier3_mode": "generative",
   "router.tier3_min_score": 0.25,
-  "router.tier3_verify": true,
   "router.knowledge_lang": "en", // 3 tài liệu tham khảo viết tiếng Anh (audit R5)
   "router.too_short_max_chars": 2,
 

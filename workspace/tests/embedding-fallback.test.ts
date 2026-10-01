@@ -1,6 +1,8 @@
 /**
- * Embedding theo LỰA CHỌN (Admin Web → Cấu hình → Embedding): đúng MỘT model cho cả kho lẫn câu hỏi, không dự phòng ngầm.
- * API ngoài lỗi hẳn -> tự chuyển hẳn sang cục bộ, KHOÁ lựa chọn API, xếp việc đánh chỉ mục lại; admin kiểm tra rồi mở khoá thủ công.
+ * Embedding theo LỰA CHỌN (Admin Web → Cấu hình → Embedding): đúng MỘT model cho cả kho lẫn câu hỏi, không dự phòng ngầm
+ * (bỏ cơ chế tự chuyển/tự khoá 2026-09-30 theo yêu cầu chủ dự án — chọn API ngoài thì MỌI lượt đều gọi API thật, lỗi thì
+ * báo lỗi thẳng lên trên). `EmbeddingConfig.lockExternal`/`unlockExternal` vẫn còn (chức năng khoá thủ công của admin),
+ * chỉ là không còn gì TỰ ĐỘNG gọi tới nữa.
  * Vector của hai model KHÔNG so sánh được: kho phân vùng theo model, tìm kiếm chỉ dùng bộ vector của model đã embed câu hỏi.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -59,34 +61,17 @@ describe("SelectedEmbedder", () => {
     expect(t.vectors[0]).toHaveLength(4);
   });
 
-  it("API lỗi hẳn -> gọi onExternalFailure ĐÚNG MỘT LẦN dù nhiều lời gọi đồng thời; lời gọi hiện tại phục vụ bằng cục bộ; không tự quay lại API", async () => {
+  it("API lỗi -> embedTagged NÉM LỖI THẲNG, không âm thầm đổi sang cục bộ; API sống lại thì lượt sau bình thường ngay, không cần ai mở khoá", async () => {
     const state = { down: true, calls: 0 };
     const local = new HashEmbedder(16);
-    let sel: EmbeddingSelection = { provider: "external", external: EXT };
-    const failures: string[] = [];
-    const e = new SelectedEmbedder(async () => sel, local, {
-      fetchImpl: fakeRemote(state),
-      onExternalFailure: async (err) => {
-        failures.push(err);
-        sel = { provider: "local", external: EXT }; // như app.ts: chuyển hẳn lựa chọn sang cục bộ + khoá
-      },
-    });
-    const results = await Promise.all([e.embedTagged(["a"]), e.embedTagged(["b"]), e.embedTagged(["c"])]);
-    for (const r of results) expect(r.model).toBe(local.version);
-    expect(failures).toHaveLength(1);
-    expect(failures[0]).toMatch(/503|status/);
+    const sel: EmbeddingSelection = { provider: "external", external: EXT };
+    const e = new SelectedEmbedder(async () => sel, local, { fetchImpl: fakeRemote(state) });
+    await expect(e.embedTagged(["a"])).rejects.toThrow(/503|status/);
+    await expect(e.embedTagged(["b"])).rejects.toThrow(/503|status/); // lỗi tiếp: vẫn ném lỗi, không tự chuyển cục bộ
 
     state.down = false;
-    const calls = state.calls;
-    expect((await e.embedTagged(["d"])).model).toBe(local.version); // API sống lại nhưng lựa chọn đã là cục bộ: không tự thử lại
-    expect(state.calls).toBe(calls);
-
-    // admin mở khoá và chọn lại API -> dùng API; sự cố kế tiếp phải khoá lại được
-    sel = { provider: "external", external: EXT };
-    expect((await e.embedTagged(["e"])).model).toBe(GEMINI);
-    state.down = true;
-    expect((await e.embedTagged(["f"])).model).toBe(local.version);
-    expect(failures).toHaveLength(2);
+    const c = await e.embedTagged(["c"]); // API sống lại: dùng ngay bình thường, không cần thao tác nào của admin
+    expect(c.model).toBe(GEMINI);
   });
 });
 
@@ -144,7 +129,7 @@ describe("EmbeddingConfig (Admin Web)", () => {
   });
 });
 
-describe("kho tri thức với model được chọn: chỉ đánh chỉ mục cho model đó; API lỗi -> tự chuyển cục bộ + khoá + xếp việc đánh chỉ mục lại", () => {
+describe("kho tri thức với model được chọn: chỉ đánh chỉ mục cho model đó; API lỗi -> báo lỗi thẳng, KHÔNG tự chuyển cục bộ nữa", () => {
   const state = { down: false, calls: 0 };
   let now = 5_000_000;
   const local = new HashEmbedder(16);
@@ -164,14 +149,7 @@ describe("kho tri thức với model được chọn: chỉ đánh chỉ mục c
     ops = opsRepo(db);
     cfg = new EmbeddingConfig(ops, null, 0);
     await cfg.save({ baseUrl: "http://remote/v1", model: "gemini-embedding-001" }, "owner"); // đã cấu hình -> mặc định chọn API
-    emb = new SelectedEmbedder(() => cfg.selection(), local, {
-      fetchImpl: fakeRemote(state),
-      // như app.ts: chuyển hẳn sang cục bộ + khoá + xếp việc đánh chỉ mục lại
-      onExternalFailure: async (err) => {
-        await cfg.lockExternal(err);
-        await ops.enqueueJob("reindex-embeddings", {}, { dedupeKey: "reindex:auto-local" });
-      },
-    });
+    emb = new SelectedEmbedder(() => cfg.selection(), local, { fetchImpl: fakeRemote(state) });
     live = new LiveContent(db, kb, ops, emb, "content/config/predicates.yml", () => now, async () => (await emb.active()).version);
     svc = new KbService({ db, kb, ops, embedder: emb, live, predicatesFallback: () => loadPredicates("content/config/predicates.yml") });
     await seedContent(svc, kb, ops, db, { contentDir: "content", adminIds: [9001], ownerId: 9001 });
@@ -213,27 +191,21 @@ describe("kho tri thức với model được chọn: chỉ đánh chỉ mục c
     expect(live.index.vectorsModel).toBe(GEMINI);
   });
 
-  it("API lỗi -> tự chuyển cục bộ + khoá + xếp việc đánh chỉ mục lại; vẫn có kết quả; chọn lại API bị từ chối tới khi mở khoá; không tự quay lại API", async () => {
+  it("API lỗi -> KHÔNG tự chuyển/tự khoá; lựa chọn vẫn nguyên là API; search() vẫn có kết quả nhờ lớp dự phòng RIÊNG của tìm kiếm (chỉ khớp từ khoá, không phải của SelectedEmbedder)", async () => {
     expect((await cfg.view()).provider).toBe("external");
     state.down = true;
+    await expect(emb.embedTagged(["ping"])).rejects.toThrow(/503|status/); // SelectedEmbedder: báo lỗi thẳng, không đổi model
+    expect(await cfg.view()).toMatchObject({ provider: "external", locked: false }); // KHÔNG bị khoá, KHÔNG đổi lựa chọn
+    expect(await ops.hasPendingJob("reindex-embeddings")).toBe(false); // không có gì tự xếp việc đánh chỉ mục lại nữa
+
+    // PgKnowledge.search() có lớp dự phòng RIÊNG của chính nó (bắt lỗi embed, chỉ còn khớp từ khoá) — không liên quan gì
+    // tới SelectedEmbedder, vẫn hoạt động như cũ, không đổi.
     const hits = await search.search("tokenomics vesting schedule", 3, "en");
-    expect(hits.length).toBeGreaterThan(0); // vector cục bộ đã có từ bước trước -> tìm ngay được
-    const v = await cfg.view();
-    expect(v).toMatchObject({ provider: "local", locked: true });
-    expect(v.lockReason).toMatch(/503|status/);
-    expect(await ops.hasPendingJob("reindex-embeddings")).toBe(true);
-    expect((await emb.active()).version).toBe(local.version);
-    await expect(cfg.setProvider("external", "admin")).rejects.toThrow(/KHOÁ/);
+    expect(hits.length).toBeGreaterThan(0);
 
     state.down = false;
-    const calls = state.calls;
-    await search.search("tokenomics vesting schedule", 3, "en");
-    expect(state.calls).toBe(calls); // API sống lại nhưng vẫn bị khoá: không tự quay lại
-
-    await cfg.unlockExternal();
-    expect(await cfg.view()).toMatchObject({ provider: "local", locked: false });
-    await cfg.setProvider("external", "admin");
-    expect((await emb.embedTagged(["ping"])).model).toBe(GEMINI);
+    const ping = await emb.embedTagged(["ping"]); // API sống lại: dùng ngay, không cần ai mở khoá
+    expect(ping.model).toBe(GEMINI);
   });
 
   it("index câu mẫu dựng bằng model này nhận câu hỏi embed bằng model khác -> trả rỗng thay vì so sánh vô nghĩa", async () => {

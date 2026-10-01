@@ -5,7 +5,7 @@ import { detectLanguage, explicitLanguageRequest, resolveLanguage } from "../src
 import { makeInput } from "../src/core/predicates";
 import { detectKeyLeak, maskSensitive } from "../src/core/sanitize";
 import { DEFAULT_ROUTER_SETTINGS, route, type RouteContext, type RouterDeps } from "../src/core/router";
-import { LlmUnavailableError, type LlmPort } from "../src/core/ports";
+import type { LlmPort } from "../src/core/ports";
 import type { VisionResult } from "../src/domain/types";
 import { ESCALATE_TEMPLATE_ID } from "../src/domain/types";
 import type { TemplateIndex } from "../src/core/template-index";
@@ -223,91 +223,13 @@ describe("router: follow-up", () => {
   });
 });
 
-describe("router: tầng 2, 3 và các đường lỗi", () => {
-  const okLlm = (action: string, id?: string): LlmPort => ({
-    understand: async (r) => ({ language: "unknown", intent: "question", follow_up: "none", query_en: r.text, query_kb: r.text }),
-    select: async () => ({ ref: "ESCALATE", reason: "" }),
-    verify: async () => ({ ok: true }),
-    verifyHandoff: async () => ({ ok: true }),
-    reviewOverlap: async () => ({ verdict: "distinct" as const }),
-    draftIntake: async () => ({ kind: "templates", slug: "fake-intake-doc", title: "Fake", templates: [{ id: "fake-intake-tpl", group: "Test", keywords: ["k"], examples: ["e"], answer_en: "a" }], knowledge: null }),
-    draftVaultNotes: async () => ({ notes: [], unmatched: [] }),
-    compareVaultNotes: async () => ({ results: [] }),
-    reviewEval: async () => [],
-    classify: async () => (action === "template" ? { action: "template", template_id: id! } : ({ action } as never)),
-    grounded: async () => ({ answerable: false, answer: "", cited: [] }),
-    vision: async () => { throw new Error("unused"); },
-    translate: async (r) => r.text,
-    translateQuery: async (r) => ({ query: r.text }),
-    summarize: async () => ({ issue: "", user_reported: "", unresolved_points: "" }),
-  });
-
-  it("không cấu hình LLM: câu lạ -> ESCALATE (phân vân -> escalate)", async () => {
+describe("router: chỉ luật/từ khoá, không AI (route() không còn nhánh tầng 2/3 kể từ 2026-09-30)", () => {
+  // route() chỉ còn dùng cho FAST PATH bên trong routeLlmFirst/routeHybrid và cho `npm run eval` (tier 0-1, không LLM) —
+  // luồng AI/RAG thật (chọn template/tri thức bằng AI, tra kho tri thức) nằm trong routeLlmFirst (tests/pipeline.test.ts,
+  // tests/context.test.ts). Test ở đây chỉ còn xác nhận route() luôn ESCALATE khi không khớp luật/từ khoá nào, kể cả có
+  // truyền `llm` (route() không dùng tới).
+  it("câu lạ, không khớp luật/từ khoá nào -> ESCALATE, dù có truyền llm cũng không dùng", async () => {
     expect((await ask("some completely unrelated random statement zebra")).outcome.kind).toBe("ESCALATE");
-  });
-  it("LLM chỉ được chọn template nằm trong danh sách ứng viên được gửi đi", async () => {
-    let sent: string[] = [];
-    const llm: LlmPort = { ...okLlm("template"), classify: async (req) => { sent = req.candidates.map((c) => c.id); return { action: "template", template_id: "id-khong-ton-tai" }; } };
-    const r = await ask("some strange statement about zebras", { llm });
-    expect(sent.length).toBeGreaterThan(30);
-    expect(sent).not.toContain("fp-12-escalate");
-    expect(r.outcome.kind).toBe("ESCALATE");
-  });
-  it("LLM chọn template hợp lệ trong danh mục -> dùng đúng template đó", async () => {
-    const r = await ask("some strange statement about zebras", { llm: okLlm("template", "fp-2-withdraw") });
-    expect(r.outcome).toMatchObject({ kind: "TEMPLATE", templateId: "fp-2-withdraw", tier: 2 });
-  });
-  it("LLM không được chọn template đã bị loại bởi excludes", async () => {
-    const r = await ask("KYC slow, I received the verification email", { llm: okLlm("template", "fp-6-kyc-slow") });
-    expect(r.outcome.kind).toBe("ESCALATE");
-  });
-  it("LLM phân loại off-topic", async () => {
-    expect((await ask("what is the weather in Paris", { llm: okLlm("offtopic") })).outcome.kind).toBe("OFFTOPIC");
-  });
-  it("LLM lỗi/quá tải -> UNAVAILABLE (câu báo mất kết nối cố định), không gửi nội dung trong kho, không lộ lỗi kỹ thuật", async () => {
-    const down: LlmPort = { ...okLlm("escalate"), classify: async () => { throw new LlmUnavailableError("429"); } };
-    const r = await ask("some strange statement about zebras", { llm: down });
-    expect(r.outcome).toMatchObject({ kind: "UNAVAILABLE", tier: 2 });
-  });
-  const twoChunks = { search: async () => [
-    { chunkId: "1", docSlug: "whitepaper", heading: "Listing", text: "Listing date is not announced.", url: "https://x.com/inter_link", score: 0.7 },
-    { chunkId: "2", docSlug: "whitepaper", heading: "$ITLG", text: "$ITLG is the Genesis token.", url: "https://x.com/inter_link", score: 0.6 },
-  ] };
-  const q = { text: "What is $ITLG tokenomics?", norm: normalize("What is $ITLG tokenomics?"), lang: "en", hasImage: false, isSticker: false, ctx: {} };
-  it("câu hỏi tri thức: LLM chỉ XÁC NHẬN đoạn trả lời được; khách nhận NGUYÊN VĂN đoạn đó kèm link, không phải chữ của LLM", async () => {
-    const llm: LlmPort = { ...okLlm("knowledge"), grounded: async () => ({ answerable: true, answer: "LLM paraphrase that must never be sent", cited: ["2"] }) };
-    const r = await route(q, { ...deps, knowledge: twoChunks, llm });
-    expect(r.outcome).toMatchObject({ kind: "GROUNDED", mode: "extractive", answer: "$ITLG is the Genesis token.\n\nhttps://x.com/inter_link", sources: [{ chunkId: "2" }] });
-  });
-  it("điểm truy xuất cao nhưng tài liệu KHÔNG trả lời câu hỏi -> ESCALATE, không gửi đoạn lạc đề", async () => {
-    const llm: LlmPort = { ...okLlm("knowledge"), grounded: async () => ({ answerable: false, answer: "", cited: [] }) };
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm })).outcome).toMatchObject({ kind: "ESCALATE", tier: 3 });
-    const cheat: LlmPort = { ...okLlm("knowledge"), grounded: async () => ({ answerable: true, answer: "made up", cited: ["999"] }) }; // trích đoạn không tồn tại
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm: cheat })).outcome.kind).toBe("ESCALATE");
-  });
-  it("không có LLM để xác nhận -> ESCALATE; chỉ khi admin tắt router.tier3_verify mới gửi đoạn điểm cao nhất", async () => {
-    expect((await route(q, { ...deps, knowledge: twoChunks })).outcome.kind).toBe("ESCALATE");
-    const r = await route(q, { ...deps, knowledge: twoChunks, settings: { ...deps.settings, tier3Verify: false } });
-    expect(r.outcome).toMatchObject({ kind: "GROUNDED", answer: "Listing date is not announced.\n\nhttps://x.com/inter_link" });
-  });
-  it("LLM xác nhận trả kết quả sai schema -> ESCALATE (không báo mất kết nối); LLM quá tải -> UNAVAILABLE", async () => {
-    const bad: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new LlmUnavailableError("bad json", true); } };
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm: bad })).outcome.kind).toBe("ESCALATE");
-    const refused: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new Error("refused"); } };
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm: refused })).outcome.kind).toBe("ESCALATE");
-    const down: LlmPort = { ...okLlm("knowledge"), grounded: async () => { throw new LlmUnavailableError("503"); } };
-    expect((await route(q, { ...deps, knowledge: twoChunks, llm: down })).outcome).toMatchObject({ kind: "UNAVAILABLE", tier: 3 });
-  });
-  it("tri thức không đủ liên quan -> ESCALATE, không tự đoán", async () => {
-    const knowledge = { search: async () => [{ chunkId: "1", docSlug: "w", heading: "h", text: "t", score: 0.05 }] };
-    const r = await route({ text: "tokenomics of the moon", norm: normalize("tokenomics of the moon"), lang: "en", hasImage: false, isSticker: false, ctx: {} }, { ...deps, knowledge });
-    expect(r.outcome.kind).toBe("ESCALATE");
-  });
-  it("câu sinh có URL ngoài whitelist hoặc dự đoán giá bị chặn", async () => {
-    const knowledge = { search: async () => [{ chunkId: "1", docSlug: "w", heading: "h", text: "t", score: 0.9 }] };
-    const llm: LlmPort = { ...okLlm("knowledge"), grounded: async () => ({ answerable: true, answer: "ITLG will be worth $5 per ITLG soon, see https://evil.example.com", cited: ["1"] }) };
-    const r = await route({ text: "What is $ITLG price", norm: normalize("What is $ITLG price"), lang: "en", hasImage: false, isSticker: false, ctx: {} }, { ...deps, knowledge, llm, settings: { ...deps.settings, tier3Mode: "generative" } });
-    expect(r.outcome.kind).toBe("ESCALATE");
   });
 });
 

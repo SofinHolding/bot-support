@@ -38,6 +38,13 @@ export interface ChainOptions {
   openMs?: number;
   now?: () => number;
   onCall?: (rec: CallRecord) => void | Promise<void>;
+  /**
+   * Giãn cách tối thiểu (ms) giữa các lượt gọi thật tới nhà cung cấp. Quan sát thực tế 2026-09-30: gọi liên tục
+   * không nghỉ (nhiều job/eval dồn dập) khiến model trả lời kiểu "không đủ thông tin" dù nội dung có sẵn và điểm
+   * tìm kiếm cao — không có lỗi mạng/429 nào lộ ra, nghi là giới hạn tải "mềm" phía nhà cung cấp/gateway. Gọi cách
+   * quãng đủ xa thì không còn hiện tượng này (đo thực nghiệm). 0/undefined = không giãn (giữ hành vi cũ).
+   */
+  minIntervalMs?: number;
 }
 
 export class ProviderChain {
@@ -45,11 +52,26 @@ export class ProviderChain {
   private readonly threshold: number;
   private readonly openMs: number;
   private readonly now: () => number;
+  private gate: Promise<void> = Promise.resolve();
+  private lastCallAt = 0;
 
   constructor(private readonly providers: LlmProvider[], private readonly opts: ChainOptions = {}) {
     this.threshold = opts.failureThreshold ?? 3;
     this.openMs = opts.openMs ?? 60_000;
     this.now = opts.now ?? Date.now;
+  }
+
+  /** Xếp hàng chờ tới lượt, đảm bảo tối thiểu `minIntervalMs` giữa 2 lượt gọi thật liên tiếp (kể cả khi nhiều yêu cầu chạy đồng thời). */
+  private throttle(): Promise<void> {
+    const interval = this.opts.minIntervalMs;
+    if (!interval) return Promise.resolve();
+    const my = this.gate.then(async () => {
+      const wait = this.lastCallAt + interval - this.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.lastCallAt = this.now();
+    });
+    this.gate = my.catch(() => undefined);
+    return my;
   }
 
   get size() {
@@ -78,6 +100,7 @@ export class ProviderChain {
   }
 
   async generateJson<T>(req: JsonRequest<T>): Promise<JsonResult<T>> {
+    await this.throttle();
     const errors: string[] = [];
     let badOutputs = 0;
     let attempts = 0;

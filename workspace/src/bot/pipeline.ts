@@ -197,7 +197,6 @@ export class BotPipeline {
         semanticSuggest: settings["router.semantic_suggest"],
         tier3Mode: settings["router.tier3_mode"],
         tier3MinScore: settings["router.tier3_min_score"],
-        tier3Verify: settings["router.tier3_verify"],
         knowledgeLang: settings["router.knowledge_lang"],
         tooShortMaxChars: settings["router.too_short_max_chars"],
         urlHostWhitelist: this.d.live.urlHosts,

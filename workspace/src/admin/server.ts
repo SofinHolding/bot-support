@@ -1142,7 +1142,7 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const offline = await runEval(cases, live.index, live.evaluator, evalSettings(live.urlHosts));
     const picked = cases.map((c, i) => ({ c, row: offline.rows[i]! })).filter((x) => b.scope === "all" || !x.row.ok).slice(0, b.limit);
     const settings = await svc.settings.get();
-    const rs: RouterSettings = { semanticConfident: settings["router.semantic_confident"], semanticMargin: settings["router.semantic_margin"], semanticSuggest: settings["router.semantic_suggest"], tier3Mode: settings["router.tier3_mode"], tier3MinScore: settings["router.tier3_min_score"], tier3Verify: settings["router.tier3_verify"], knowledgeLang: settings["router.knowledge_lang"], tooShortMaxChars: settings["router.too_short_max_chars"], urlHostWhitelist: live.urlHosts };
+    const rs: RouterSettings = { semanticConfident: settings["router.semantic_confident"], semanticMargin: settings["router.semantic_margin"], semanticSuggest: settings["router.semantic_suggest"], tier3Mode: settings["router.tier3_mode"], tier3MinScore: settings["router.tier3_min_score"], knowledgeLang: settings["router.knowledge_lang"], tooShortMaxChars: settings["router.too_short_max_chars"], urlHostWhitelist: live.urlHosts };
     const withAi: { got: string; notes: string[] }[] = [];
     for (const { c } of picked) {
       try {

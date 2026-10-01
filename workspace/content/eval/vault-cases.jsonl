@@ -1,0 +1,27 @@
+{"question": "how do I create an InterLink account?", "expected": "GROUNDED:create-interlink-account-001"}
+{"question": "làm sao để tạo tài khoản InterLink vậy", "expected": "GROUNDED:create-interlink-account-001", "lang": "vi"}
+{"question": "I forgot my password, what do I do", "expected": "GROUNDED:forgotten-password-support-001"}
+{"question": "when are weekly and monthly game rewards paid out?", "expected": "GROUNDED:weekly-and-monthly-game-reward-payment-001"}
+{"question": "phần thưởng game hàng tuần với hàng tháng trả lúc nào vậy", "expected": "GROUNDED:weekly-and-monthly-game-reward-payment-001", "lang": "vi"}
+{"question": "what exactly is a Human Node in this network", "expected": "GROUNDED:human-nodes-001"}
+{"question": "how is my HCS score calculated", "expected": "GROUNDED:hcs-calculation-001"}
+{"question": "my HCS is low even though I have a lot of ITLG, why", "expected": "GROUNDED:low-hcs-despite-high-itlg-001"}
+{"question": "how can i earn more ITLG?", "expected": "GROUNDED:ways-to-earn-more-itlg-001"}
+{"question": "làm sao để kiếm thêm nhiều ITLG hơn vậy", "expected": "GROUNDED:ways-to-earn-more-itlg-001", "lang": "vi", "note": "câu đã phát hiện lỗi hôm 2026-09-29: từng bị chọn nhầm sang nội dung Ambassador"}
+{"question": "I mine every single day but my ITLG keeps going down, why", "expected": "GROUNDED:itl-itlg-burning-mechanisms-003"}
+{"question": "when can I withdraw my ITLG", "expected": "GROUNDED:itlg-withdrawal-availability-001"}
+{"question": "khi nào thì rút được ITLG", "expected": "GROUNDED:itlg-withdrawal-availability-001", "lang": "vi"}
+{"question": "can I convert ITLG into ITL right now", "expected": "GROUNDED:convert-itlg-to-itl-001"}
+{"question": "why was the amount of ITLG mined per session cut in half", "expected": "GROUNDED:dynamic-token-mining-sustainability-003"}
+{"question": "how do I apply for KYC", "expected": "GROUNDED:how-to-complete-kyc-001"}
+{"question": "tôi muốn làm KYC thì đăng ký kiểu gì", "expected": "GROUNDED:how-to-complete-kyc-001", "lang": "vi"}
+{"question": "how do I create or join a group mining team", "expected": "GROUNDED:create-or-join-group-mining-001"}
+{"question": "how do I become an interlink ambassador?", "expected": "GROUNDED:interlink-ambassador-program-introduction-001"}
+{"question": "what are the monthly reward exchange rates for each ambassador tier", "expected": "GROUNDED:ambassador-monthly-rewards-and-exchange-rates-001"}
+{"question": "what do ambassadors need to submit for their daily tasks", "expected": "GROUNDED:ambassador-daily-tasks-001"}
+{"question": "how do I create a wallet", "expected": "GROUNDED:create-wallet-001"}
+{"question": "làm sao để tạo ví vậy", "expected": "GROUNDED:create-wallet-001", "lang": "vi"}
+{"question": "where can I go to see my seed phrase or private key", "expected": "GROUNDED:view-seed-phrase-or-private-key-001"}
+{"question": "what's InterLink's vision for 2026", "expected": "GROUNDED:interlink-2026-vision-001"}
+{"question": "what's the weather like today", "expected": null}
+{"question": "can you help me file my taxes", "expected": null}

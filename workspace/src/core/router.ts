@@ -24,8 +24,6 @@ import { graphemeLength, isEmojiOnly, normalize, wordCount } from "./text";
 export interface RouterSettings extends GateSettings {
   tier3Mode: "extractive" | "generative";
   tier3MinScore: number;
-  /** Điểm truy xuất không nói lên đoạn đó có TRẢ LỜI câu hỏi hay không (đo với bge-m3: không ngưỡng nào tách được). true = cần LLM xác nhận. */
-  tier3Verify: boolean;
   /** Ngôn ngữ chính của kho tri thức: câu hỏi của khách được dịch sang ngôn ngữ này để tìm (SKILL translate-query) */
   knowledgeLang: string;
   tooShortMaxChars: number;
@@ -40,7 +38,6 @@ export const DEFAULT_ROUTER_SETTINGS: Omit<RouterSettings, "urlHostWhitelist"> =
   ...DEFAULT_GATE_SETTINGS,
   tier3Mode: "extractive",
   tier3MinScore: 0.25,
-  tier3Verify: true,
   knowledgeLang: "en",
   tooShortMaxChars: 2,
   askWhenUnclear: false,
@@ -177,51 +174,11 @@ export async function route(req: RouteRequest, deps: RouterDeps): Promise<RouteR
     if (target && index.get(target)) return done({ kind: "TEMPLATE", templateId: target, tier: 0, via: "follow_up:info_provided" });
   }
 
-  // --- Câu hỏi về tri thức (whitepaper/tokenomics): tầng 3 ---
-  const ev = makeInput(matchText, {});
-  ev.norm = inp.norm;
-  // (không có ứng viên xác định nào; gợi ý ngữ nghĩa yếu không được chặn câu hỏi tri thức rõ ràng)
-  if (hits.length === 0 && evaluator.test("knowledge_topic", ev)) return tier3(req, deps, trace, done);
-
-  // --- Tầng 2 ---
-  if (!deps.llm) {
-    trace.notes.push("không cấu hình LLM: không khớp/mơ hồ -> ESCALATE");
-    return done({ kind: "ESCALATE", tier: 1, reason: g.verdict === "NO_MATCH" ? "không khớp template" : "mơ hồ giữa nhiều template", sourceTemplateId: last?.id });
-  }
-  // Mơ hồ giữa vài template -> chỉ đưa các template đó. Không khớp gì -> đưa danh mục gọn của toàn bộ template
-  // (ổn định giữa các lượt nên prompt caching hiệu quả) để không phụ thuộc vào chất lượng embedding.
-  // Từ khoá của template viết bằng tiếng Anh/Việt. Với ngôn ngữ khác (Đức, Hàn...), vài từ mượn trùng khớp ("token", "app") tạo ra một nhóm
-  // "mơ hồ" KHÔNG đáng tin và có thể thiếu template đúng => đưa cả danh mục cho LLM thay vì ép nó chọn trong nhóm đó.
-  const keywordsReliable = req.lang === "en" || req.lang === "vi";
-  const candidates =
-    g.verdict === "MATCH_AMBIGUOUS" && keywordsReliable
-      ? g.candidates
-          .map((id) => index.get(id))
-          .filter((t): t is Template => !!t)
-          .map((t) => ({ id: t.id, group: t.group, gist: t.match.examples[0] ?? t.match.keywords[0] ?? t.sets_context.issue ?? t.id }))
-      : index.catalogue();
-  try {
-    const res = await deps.llm.classify({ text: req.text, lang: req.lang, context: req.ctx.contextPack ?? { profile: "", events: [], recent: [] }, candidates });
-    trace.llm = { action: res.action };
-    if (res.action === "template") {
-      const t = index.get(res.template_id);
-      const allowed = candidates.some((c) => c.id === res.template_id);
-      if (!t || !allowed || t.response_mode !== "EXACT_TEMPLATE" || isExcluded(index, evaluator, t.id, inp) || missingRequires(index, evaluator, t.id, inp)) {
-        trace.notes.push(`LLM chọn template không hợp lệ: ${res.template_id}`);
-        return done({ kind: "ESCALATE", tier: 2, reason: "LLM chọn template ngoài danh sách cho phép", sourceTemplateId: last?.id });
-      }
-      // Cổng ngữ cảnh áp dụng cho MỌI đường: khách quay lại chủ đề đã chuyển support thì không lặp lại chuỗi template.
-      if (sameEscalatedTopic(req.ctx.parentEscalatedGroup, t)) {
-        return done({ kind: "ESCALATE", tier: 2, reason: `khách quay lại chủ đề "${t.group}" đã được chuyển support trước đó`, sourceTemplateId: t.id });
-      }
-      return done({ kind: "TEMPLATE", templateId: t.id === GREETING_TEMPLATE_ID ? greeting(req) : t.id, tier: 2, via: "llm" });
-    }
-    if (res.action === "knowledge") return tier3(req, deps, trace, done);
-    if (res.action === "offtopic") return done({ kind: "OFFTOPIC", tier: 2, reason: "LLM phân loại off-topic" });
-    return done({ kind: "ESCALATE", tier: 2, reason: "LLM phân loại cần escalate", sourceTemplateId: last?.id });
-  } catch (e) {
-    return done(llmFailure(e, 2, trace, last?.id));
-  }
+  // Không khớp ứng viên xác định và không mơ hồ giữa nhiều lựa chọn -> chuyển nhân viên. Hàm này chỉ dùng luật/từ
+  // khoá thuần (không AI) — hai người gọi thật của nó (FAST PATH bên trong routeLlmFirst, và `npm run eval` không
+  // LLM/tri thức) đều không truyền `llm`/`knowledge`, nên phần AI/tri thức từng có ở đây chưa từng chạy thật; đã bỏ
+  // 2026-09-30 để chỉ còn một luồng AI/RAG duy nhất (routeLlmFirst/routeHybrid).
+  return done({ kind: "ESCALATE", tier: 1, reason: g.verdict === "NO_MATCH" ? "không khớp template" : "mơ hồ giữa nhiều template", sourceTemplateId: last?.id });
 }
 
 /**
@@ -239,104 +196,6 @@ const noLlm = (trace: RouteTrace): RouteResult => {
   trace.notes.push("không có LLM dùng được (chưa cấu hình hoặc hết ngân sách): không trả lời thẳng từ kho");
   return { outcome: { kind: "UNAVAILABLE", tier: 0, reason: "không có LLM dùng được" }, trace };
 };
-
-/**
- * SKILL translate-query: dịch câu hỏi của khách sang ngôn ngữ của kho tri thức và làm nó đứng độc lập ("còn cái kia?" -> thực thể cụ thể).
- * Chạy khi khách hỏi bằng ngôn ngữ khác kho, hoặc khi có ngữ cảnh để giải "nó / cái đó". Đầu ra là chữ của LLM nên CHỈ dùng để TÌM
- * (không bao giờ gửi cho khách) và phải qua kiểm tra bằng code; không đạt hoặc LLM lỗi thì bỏ, tìm bằng câu gốc như thường.
- */
-async function translateQuery(req: RouteRequest, deps: RouterDeps, trace: RouteTrace): Promise<string | undefined> {
-  const { llm, settings } = deps;
-  const pack = req.ctx.contextPack;
-  const hasContext = !!pack && !!(pack.summary || pack.recent.length || pack.facts?.length);
-  // Cùng ngôn ngữ với kho thì chỉ cần khi câu ngắn có ngữ cảnh ("còn cái kia?", "vậy sau đó?"): câu dài tự đứng độc lập, khỏi tốn một lời gọi LLM
-  const shortFollowUp = hasContext && wordCount(req.norm) <= 6;
-  if (!llm || (req.lang === settings.knowledgeLang && !shortFollowUp)) return undefined;
-  try {
-    const r = await llm.translateQuery({ text: req.text, from: req.lang, to: settings.knowledgeLang, context: pack });
-    const query = maskSensitive(r.query).replace(/\s+/g, " ").trim().slice(0, 200);
-    const ctxText = pack ? [pack.summary ?? "", ...(pack.facts ?? []), ...pack.events, ...pack.recent.map((m) => m.text)].join(" ") : "";
-    const problems = queryProblems(req.text, query, ctxText, settings.knowledgeLang);
-    if (problems.length) {
-      trace.notes.push(`SKILL translate-query: bỏ câu dịch (${problems.join("; ")}); tìm bằng câu gốc`);
-      return undefined;
-    }
-    if (normalize(query) === normalize(req.text)) return undefined;
-    trace.notes.push(`SKILL translate-query (${req.lang}->${settings.knowledgeLang}): "${query}"`);
-    return query;
-  } catch (e) {
-    trace.notes.push(`SKILL translate-query lỗi (${(e as Error).message.slice(0, 80)}); tìm bằng câu gốc`);
-    return undefined;
-  }
-}
-
-async function tier3(req: RouteRequest, deps: RouterDeps, trace: RouteTrace, done: (o: Outcome) => RouteResult): Promise<RouteResult> {
-  const { knowledge, llm, settings } = deps;
-  if (!knowledge) return done({ kind: "ESCALATE", tier: 3, reason: "không có kho tri thức" });
-  const query = await translateQuery(req, deps, trace);
-  // Tìm bằng câu gốc VÀ câu đã dịch (nếu có), gộp theo đoạn, lấy điểm cao nhất: dịch hỏng vẫn còn câu gốc, dịch tốt giúp khớp từ khoá của kho.
-  // Truyền ngôn ngữ của từng truy vấn để chấm điểm đúng khi truy vấn và đoạn khác ngôn ngữ.
-  const lists = await Promise.all([knowledge.search(req.text, 4, req.lang), ...(query ? [knowledge.search(query, 4, settings.knowledgeLang)] : [])]);
-  const merged = new Map<string, KnowledgeHit>();
-  for (const h of lists.flat()) if (!merged.has(h.chunkId) || merged.get(h.chunkId)!.score < h.score) merged.set(h.chunkId, h);
-  const hits = [...merged.values()].sort((a, b) => b.score - a.score).slice(0, 4);
-  const rewritten = query;
-  const top = hits[0];
-  if (!top || top.score < settings.tier3MinScore) {
-    trace.notes.push("tri thức: không tìm thấy đoạn đủ liên quan");
-    return done({ kind: "ESCALATE", tier: 3, reason: "không có nguồn tri thức phù hợp" });
-  }
-  if (settings.tier3Mode === "extractive" || !llm) {
-    // SKILL.md: "tìm section khớp → copy nguyên văn. Kèm link". LLM (nếu bật xác nhận) chỉ PHÁN ĐOÁN đoạn nào trả lời được câu hỏi;
-    // câu gửi cho khách luôn là nguyên văn đoạn đã duyệt, không phải chữ của LLM.
-    // Đoạn khác ngôn ngữ với khách thì điểm truy xuất chỉ là điểm vector (không có tín hiệu từ khoá) và câu gửi phải qua bản dịch:
-    // luôn bắt LLM xác nhận đoạn đó trả lời đúng câu hỏi, bất kể `tier3Verify`.
-    const crossLanguage = hitLang(top) !== req.lang;
-    let chosen = top;
-    if (settings.tier3Verify || crossLanguage) {
-      if (!llm) {
-        trace.notes.push("tri thức: không có LLM để xác nhận đoạn tìm được trả lời đúng câu hỏi");
-        return done({ kind: "ESCALATE", tier: 3, reason: "không có nguồn tri thức được xác nhận là trả lời đúng câu hỏi" });
-      }
-      try {
-        const v = await llm.grounded({ question: req.text, standalone: rewritten, verifyOnly: true, lang: "en", chunks: hits.map((h) => ({ id: h.chunkId, heading: h.heading, text: h.text, url: h.url })) });
-        const pick = v.answerable ? hits.find((h) => v.cited.includes(h.chunkId)) : undefined;
-        if (!pick) {
-          trace.notes.push("tri thức: các đoạn tìm được không trả lời câu hỏi");
-          return done({ kind: "ESCALATE", tier: 3, reason: "không có nguồn tri thức phù hợp" });
-        }
-        chosen = pick;
-      } catch (e) {
-        return done(llmFailure(e, 3, trace));
-      }
-    }
-    const answer = `${chosen.text}${chosen.url ? `\n\n${chosen.url}` : ""}`;
-    const chk = checkOutput(answer, { urlHostWhitelist: settings.urlHostWhitelist });
-    if (!chk.ok) {
-      trace.notes.push(`đầu ra bị chặn: ${chk.problems.join("; ")}`);
-      return done({ kind: "ESCALATE", tier: 3, reason: "đoạn tri thức không qua kiểm tra đầu ra" });
-    }
-    return done({ kind: "GROUNDED", tier: 3, answer, mode: "extractive", sourceLang: hitLang(chosen), sources: [{ chunkId: chosen.chunkId, docSlug: chosen.docSlug, heading: chosen.heading, url: chosen.url }] });
-  }
-
-  try {
-    const res = await llm.grounded({ question: req.text, standalone: rewritten, lang: req.lang, chunks: hits.map((h) => ({ id: h.chunkId, heading: h.heading, text: h.text, url: h.url })) });
-    const valid = new Set(hits.map((h) => h.chunkId));
-    const cited = res.cited.filter((c) => valid.has(c));
-    if (!res.answerable || !cited.length) return done({ kind: "ESCALATE", tier: 3, reason: "LLM không tìm được câu trả lời có trích dẫn" });
-    const answer = res.answer;
-    const chk = checkOutput(answer, { urlHostWhitelist: settings.urlHostWhitelist, forbidFinancialClaims: true });
-    if (!chk.ok) {
-      trace.notes.push(`đầu ra bị chặn: ${chk.problems.join("; ")}`);
-      return done({ kind: "ESCALATE", tier: 3, reason: `câu sinh bị bộ lọc chặn: ${chk.problems.join("; ")}` });
-    }
-    const src = hits.filter((h) => cited.includes(h.chunkId)).map((h) => ({ chunkId: h.chunkId, docSlug: h.docSlug, heading: h.heading, url: h.url }));
-    // LLM được yêu cầu viết bằng ngôn ngữ của khách; nếu nó lỡ viết tiếng Việt thì sourceLang = "vi" và pipeline sẽ dịch/chặn
-    return done({ kind: "GROUNDED", tier: 3, answer, mode: "generative", sourceLang: sourceLangOf(answer, scriptProblem(answer, req.lang) ? undefined : req.lang), sources: src });
-  } catch (e) {
-    return done(llmFailure(e, 3, trace));
-  }
-}
 
 /**
  * Câu hỏi lại khách, DỰNG BẰNG CODE từ nội dung đã duyệt của chính các trường hợp tìm thấy (yêu cầu §2 — không để AI viết,
@@ -464,7 +323,10 @@ const MAX_TEMPLATE_CANDIDATES = 8;
 const NOT_SOLVED = new Set<string>(["negative", "not_receive"]);
 /** Mã gốc của mục hỏi đáp: bước n mang mã "<id>--bN" */
 const itemRoot = (id: string) => id.replace(/--b\d+$/, "");
-const MAX_CHUNK_CANDIDATES = 4;
+// 8 (không phải rerank riêng): theo sơ đồ Notion "Xây dựng bộ nhớ LLM" mục 7 ("giữ 5-8 note đưa cho Router AI chọn").
+// Quyết định 2026-09-30 (đề xuất senior-architect): không thêm bước rerank AI riêng vì select() đã đọc toàn văn từng
+// ứng viên và tự phán đoán — làm gần hết việc rerank định làm, không có bằng chứng thật cần thêm 1 lượt gọi AI nữa.
+const MAX_CHUNK_CANDIDATES = 8;
 const NON_LATIN_LANGS = new Set(["ko", "ja", "zh", "ru", "uk", "ar", "fa", "th", "hi"]);
 
 /** Ngôn ngữ trả lời: AI xác định, code kiểm lại. Chữ viết của tin nhắn (Hàn, Nhật, Nga...) là bằng chứng chắc chắn nên thắng khi AI nói khác. */

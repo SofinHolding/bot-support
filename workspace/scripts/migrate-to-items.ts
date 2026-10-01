@@ -52,7 +52,7 @@ async function main() {
   const ops = opsRepo(db);
   const secretBox = cfg.SECRETS_KEY ? new SecretBox(cfg.SECRETS_KEY) : null;
   const embedding = new EmbeddingConfig(ops, secretBox);
-  const embedder = new SelectedEmbedder(() => embedding.selection(), createEmbedder(cfg), { log: () => undefined, onExternalFailure: async () => undefined });
+  const embedder = new SelectedEmbedder(() => embedding.selection(), createEmbedder(cfg), { log: () => undefined });
   const live = new LiveContent(db, kb, ops, embedder, `${cfg.CONTENT_DIR}/config/predicates.yml`, Date.now, async () => (await embedder.active()).version);
   await live.rebuild();
 

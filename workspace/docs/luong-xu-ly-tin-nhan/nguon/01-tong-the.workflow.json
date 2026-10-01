@@ -1,0 +1,241 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Luồng xử lý tin nhắn khách hàng",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "khach",
+      "label": "Khách hàng · Telegram"
+    },
+    {
+      "id": "tiepnhan",
+      "label": "Tiếp nhận & kiểm tra (code)"
+    },
+    {
+      "id": "xuly",
+      "label": "Hiểu & trả lời (AI + code)"
+    },
+    {
+      "id": "ngoaile",
+      "label": "Nhánh ngoại lệ",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "customer",
+    "ingest",
+    "precheck",
+    "context",
+    "router",
+    "resolver",
+    "policy",
+    "reply"
+  ],
+  "nodes": [
+    {
+      "id": "customer",
+      "lane": "khach",
+      "col": 0,
+      "type": "external",
+      "label": "Khách hàng",
+      "sublabel": "chữ · ảnh · sticker",
+      "width": 156
+    },
+    {
+      "id": "reply",
+      "lane": "khach",
+      "col": 5,
+      "type": "frontend",
+      "label": "Khách nhận trả lời",
+      "sublabel": "gửi lỗi → hàng đợi gửi lại",
+      "width": 156
+    },
+    {
+      "id": "ingest",
+      "lane": "tiepnhan",
+      "col": 1,
+      "type": "backend",
+      "label": "Nhận & gom tin",
+      "sublabel": "webhook/polling · gom 2s",
+      "tag": "chống trùng update",
+      "width": 156
+    },
+    {
+      "id": "precheck",
+      "lane": "tiepnhan",
+      "col": 2,
+      "type": "security",
+      "label": "Kiểm tra trước",
+      "sublabel": "nhóm · spam · hạn mức AI",
+      "width": 156
+    },
+    {
+      "id": "fp0",
+      "lane": "tiepnhan",
+      "col": 3,
+      "type": "security",
+      "label": "Cảnh báo lộ khoá",
+      "sublabel": "seed/key · không gọi AI",
+      "width": 156
+    },
+    {
+      "id": "unavailable",
+      "lane": "ngoaile",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Báo mất kết nối",
+      "sublabel": "câu dịch sẵn → khách",
+      "width": 156
+    },
+    {
+      "id": "escalate",
+      "lane": "ngoaile",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Chuyển nhân viên",
+      "sublabel": "phiếu · mã REF → khách",
+      "width": 156
+    },
+    {
+      "id": "context",
+      "lane": "xuly",
+      "col": 2,
+      "type": "backend",
+      "label": "Chuẩn bị ngữ cảnh",
+      "sublabel": "ảnh · ngôn ngữ · vụ việc",
+      "width": 156
+    },
+    {
+      "id": "router",
+      "lane": "xuly",
+      "col": 3,
+      "type": "backend",
+      "label": "Router AI",
+      "sublabel": "hiểu → tìm → chọn/xác nhận",
+      "tag": "AI chỉ chọn",
+      "width": 156
+    },
+    {
+      "id": "resolver",
+      "lane": "xuly",
+      "col": 4,
+      "type": "backend",
+      "label": "Dựng & dịch",
+      "sublabel": "dịch có kiểm, tối đa 3 lần",
+      "width": 156
+    },
+    {
+      "id": "policy",
+      "lane": "xuly",
+      "col": 5,
+      "type": "security",
+      "label": "Kiểm tra đầu ra",
+      "sublabel": "URL · độ dài · ngôn ngữ",
+      "width": 156
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-in",
+      "from": "customer",
+      "to": "ingest",
+      "label": "tin nhắn"
+    },
+    {
+      "id": "e-check",
+      "from": "ingest",
+      "to": "precheck"
+    },
+    {
+      "id": "e-safe",
+      "from": "precheck",
+      "to": "context",
+      "label": "an toàn",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-route",
+      "from": "context",
+      "to": "router"
+    },
+    {
+      "id": "e-outcome",
+      "from": "router",
+      "to": "resolver",
+      "label": "nội dung đã duyệt",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-validate",
+      "from": "resolver",
+      "to": "policy"
+    },
+    {
+      "id": "e-send",
+      "from": "policy",
+      "to": "reply",
+      "label": "đạt",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-leak",
+      "from": "precheck",
+      "to": "fp0",
+      "label": "có seed/key",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-alert",
+      "from": "fp0",
+      "to": "reply",
+      "label": "gửi ngay",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e-down",
+      "from": "router",
+      "to": "unavailable",
+      "label": "AI mất kết nối",
+      "variant": "dashed",
+      "role": "error"
+    },
+    {
+      "id": "e-esc",
+      "from": "router",
+      "to": "escalate",
+      "label": "cần người thật",
+      "role": "branch"
+    },
+    {
+      "id": "e-fail",
+      "from": "policy",
+      "to": "escalate",
+      "label": "không đạt",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Nguyên tắc cứng",
+      "items": [
+        "AI chỉ chọn nội dung đã duyệt, code kiểm lại mọi đầu ra",
+        "Mọi câu gửi khách bằng đúng ngôn ngữ của khách"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Khi có sự cố",
+      "items": [
+        "Mất AI: gửi câu báo mất kết nối, không trả lời bằng từ khoá",
+        "Không trả lời được đúng: chuyển nhân viên kèm mã REF"
+      ]
+    }
+  ]
+}

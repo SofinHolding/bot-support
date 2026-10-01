@@ -1,0 +1,205 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Xử lý khi AI lỗi hoặc mất kết nối",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "goi",
+      "label": "Gọi AI · chuỗi provider"
+    },
+    {
+      "id": "loi",
+      "label": "Loại lỗi",
+      "variant": "exception"
+    },
+    {
+      "id": "tra",
+      "label": "Kết quả & tự phục hồi"
+    }
+  ],
+  "mainPath": [
+    "call",
+    "chain",
+    "infra",
+    "down"
+  ],
+  "nodes": [
+    {
+      "id": "call",
+      "lane": "goi",
+      "col": 0,
+      "type": "backend",
+      "label": "Bước cần AI",
+      "sublabel": "hiểu · chọn · xác nhận · dịch",
+      "width": 148
+    },
+    {
+      "id": "chain",
+      "lane": "goi",
+      "col": 1,
+      "type": "cloud",
+      "label": "Thử từng provider",
+      "sublabel": "thành công → code kiểm lại",
+      "tag": "chờ tối đa 30s",
+      "width": 148
+    },
+    {
+      "id": "crash",
+      "lane": "loi",
+      "col": 0,
+      "type": "security",
+      "label": "Lỗi hệ thống",
+      "sublabel": "DB · lỗi lập trình",
+      "width": 148
+    },
+    {
+      "id": "infra",
+      "lane": "loi",
+      "col": 1,
+      "type": "security",
+      "label": "Hết provider",
+      "sublabel": "mất mạng · 429 · 5xx",
+      "width": 148
+    },
+    {
+      "id": "bad",
+      "lane": "loi",
+      "col": 2,
+      "type": "security",
+      "label": "Đầu ra hỏng",
+      "sublabel": "JSON sai · AI từ chối",
+      "width": 148
+    },
+    {
+      "id": "trans",
+      "lane": "loi",
+      "col": 3,
+      "type": "security",
+      "label": "Dịch không đạt",
+      "sublabel": "3 lần vẫn sai kiểm tra",
+      "width": 148
+    },
+    {
+      "id": "down",
+      "lane": "tra",
+      "col": 1,
+      "type": "frontend",
+      "label": "Báo mất kết nối",
+      "sublabel": "bản dịch sẵn → tiếng Anh",
+      "width": 148
+    },
+    {
+      "id": "esc",
+      "lane": "tra",
+      "col": 3,
+      "type": "frontend",
+      "label": "Chuyển nhân viên",
+      "sublabel": "phiếu · mã REF",
+      "width": 148
+    },
+    {
+      "id": "trace",
+      "lane": "tra",
+      "col": 0,
+      "type": "database",
+      "label": "Ghi vết",
+      "sublabel": "câu chưa trả lời · phiếu",
+      "width": 148
+    },
+    {
+      "id": "prewarm",
+      "lane": "tra",
+      "col": 2,
+      "type": "database",
+      "label": "Dịch sẵn câu khẩn",
+      "sublabel": "mỗi giờ · ngôn ngữ mới",
+      "width": 148
+    }
+  ],
+  "edges": [
+    {
+      "id": "l-call",
+      "from": "call",
+      "to": "chain"
+    },
+    {
+      "id": "l-infra",
+      "from": "chain",
+      "to": "infra",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "l-bad",
+      "from": "chain",
+      "to": "bad",
+      "label": "mọi đầu ra hỏng",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "l-down",
+      "from": "infra",
+      "to": "down",
+      "variant": "emphasis"
+    },
+    {
+      "id": "l-crash",
+      "from": "crash",
+      "to": "down",
+      "label": "lỗi bất ngờ",
+      "role": "branch",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "l-bad-esc",
+      "from": "bad",
+      "to": "esc",
+      "role": "branch"
+    },
+    {
+      "id": "l-trans-esc",
+      "from": "trans",
+      "to": "esc",
+      "role": "branch"
+    },
+    {
+      "id": "l-trace",
+      "from": "down",
+      "to": "trace",
+      "label": "lưu lại",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "l-prewarm",
+      "from": "prewarm",
+      "to": "down",
+      "label": "bản dịch sẵn",
+      "variant": "dashed",
+      "role": "async"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Chuỗi provider",
+      "items": [
+        "Lỗi hạ tầng: thử provider kế tiếp, 3 lỗi liền thì bỏ qua 60s",
+        "Đầu ra hỏng: thử provider khác, không ngắt cầu dao"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Không bao giờ",
+      "items": [
+        "Trả lời bằng từ khoá khi AI lỗi",
+        "Hiện lỗi kỹ thuật hay chữ tiếng Việt cho khách nước ngoài"
+      ]
+    }
+  ]
+}

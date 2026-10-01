@@ -49,6 +49,13 @@ export interface Services {
   channel: Channel;
   telegram?: TelegramClient;
   resolver: ResponseResolver;
+  /**
+   * Resolver riêng cho việc NỀN, không khẩn cấp (hiện chỉ job `prewarm-urgent-translations`) — dùng cùng gateway
+   * nhưng gọi CÁCH QUÃNG (`minIntervalMs`), để việc nền tự nhường chỗ cho câu hỏi khách thật thay vì cạnh tranh
+   * cùng lúc. Phát hiện 2026-09-30: job dịch sẵn 34 ngôn ngữ chiếm cổng LLM liên tục 25-30 phút mỗi giờ, đủ để làm
+   * chậm/hỏng câu trả lời khách thật đang chạy song song dù bản thân job không có lỗi gì.
+   */
+  resolverBackground: ResponseResolver;
   knowledge: KnowledgePort;
   media: MediaStore;
   pipeline: BotPipeline;
@@ -75,20 +82,12 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   const ops = opsRepo(db);
   const vault = vaultRepo(db);
   // Embedding: người vận hành CHỌN đúng một model (Admin Web → Cấu hình → Embedding): API ngoài (vd gemini-embedding-001) hoặc
-  // cục bộ trong .env (TEI/bge-m3). Không dự phòng ngầm. API lỗi hẳn -> tự chuyển hẳn sang cục bộ, khoá lựa chọn API, đánh chỉ mục
-  // lại toàn bộ nội dung đã publish bằng model cục bộ (worker), ghi audit; admin kiểm tra rồi mở khoá thủ công mới chọn lại API.
+  // cục bộ trong .env (TEI/bge-m3). Không dự phòng ngầm (bỏ 2026-09-30 theo yêu cầu chủ dự án): chọn API ngoài thì MỌI lượt
+  // đều gọi API thật, lỗi thì báo lỗi thẳng — không tự chuyển/tự khoá sang cục bộ nữa. Xem ghi chú trong embedder.ts.
   const secretBox = cfg.SECRETS_KEY ? new SecretBox(cfg.SECRETS_KEY) : null; // mã hoá khoá API nhập từ web; không có -> chỉ dùng khoá trong .env
   const localEmbedder = createEmbedder(cfg);
   const embedding = new EmbeddingConfig(ops, secretBox);
-  const embedder = new SelectedEmbedder(() => embedding.selection(), localEmbedder, {
-    log: (m) => log("warn", m),
-    onExternalFailure: async (err) => {
-      await embedding.lockExternal(err);
-      await ops.audit("system", "embedding.auto_switch_local", "embedding", null, { error: err.slice(0, 200), local: localEmbedder.version });
-      await ops.enqueueJob("reindex-embeddings", {}, { dedupeKey: "reindex:auto-local" }).catch(() => undefined);
-      log("error", "embedding API lỗi: đã TỰ CHUYỂN sang model cục bộ và KHOÁ lựa chọn API. Kiểm tra Cấu hình → Embedding rồi mở khoá.", { err: err.slice(0, 200) });
-    },
-  });
+  const embedder = new SelectedEmbedder(() => embedding.selection(), localEmbedder, { log: (m) => log("warn", m) });
   const settings = new SettingsService(ops);
   const predicatesFile = `${cfg.CONTENT_DIR}/config/predicates.yml`;
 
@@ -119,6 +118,22 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
     return live.guide;
   });
 
+  // Chuỗi gọi AI riêng cho việc nền, gọi cách quãng để không cạnh tranh với câu hỏi khách thật (xem ghi chú ở `resolverBackground`).
+  const chainBackground = new ProviderChain(providers, {
+    minIntervalMs: 4_000,
+    onCall: async (r) => {
+      try {
+        await conv.addLlmCall({ messageId: r.messageId, userId: r.userId, purpose: r.purpose, provider: r.provider, model: r.model, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, cost: r.cost, latencyMs: r.latencyMs, ok: r.ok, error: r.error });
+      } catch (e) {
+        log("warn", "không ghi được llm_calls (nền)", { err: (e as Error).message });
+      }
+    },
+  });
+  const llmBackground = new LlmClient(chainBackground, () => skills.get(), () => gateway.ready || !!cfg.ANTHROPIC_API_KEY, async () => {
+    await live.ensureFresh(10_000);
+    return live.guide;
+  });
+
   const telegram = cfg.TELEGRAM_BOT_TOKEN ? new TelegramClient(cfg.TELEGRAM_BOT_TOKEN) : undefined;
   const channel: Channel = telegram ?? new NullChannel();
 
@@ -136,6 +151,7 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   await live.rebuild();
 
   const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
+  const resolverBackground = new ResponseResolver(kb, llmBackground, () => live.index, () => live.urlHosts);
   // Tài liệu cũ đã publish + note trong vault (docs/adr/0005), gộp RRF
   const knowledge = new CompositeKnowledge(new PgKnowledge(kb, embedder), new VaultKnowledge(vault, embedder));
   const media = new MediaStore(cfg.MEDIA_DIR);
@@ -145,5 +161,5 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
     clearInterval(gatewayTimer);
     await db.close();
   };
-  return { cfg, db, conv, kb, ops, vault, settings, embedder, embedding, skills, live, kbService, llm, gateway, channel, telegram, resolver, knowledge, media, pipeline, log, close };
+  return { cfg, db, conv, kb, ops, vault, settings, embedder, embedding, skills, live, kbService, llm, gateway, channel, telegram, resolver, resolverBackground, knowledge, media, pipeline, log, close };
 }

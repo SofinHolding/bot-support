@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Bên trong Router AI",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "fast", "label": "Đường nhanh · luật & từ khoá" },
+    { "id": "main", "label": "Hiểu → tìm → chọn" },
+    { "id": "khac", "label": "Kết quả khác", "variant": "exception" }
+  ],
+  "mainPath": ["input", "understand", "fastpath", "search", "select", "answer"],
+  "nodes": [
+    { "id": "fastpath", "lane": "fast", "col": 2, "type": "backend", "label": "Khớp chắc chắn?", "sublabel": "luật · từ khoá ≥ 50% câu", "width": 148 },
+    { "id": "verify", "lane": "fast", "col": 3, "type": "security", "label": "AI xác nhận", "sublabel": "verify-answer", "width": 148 },
+    { "id": "input", "lane": "main", "col": 0, "type": "external", "label": "Tin đã che", "sublabel": "chữ + chữ đọc từ ảnh", "width": 148 },
+    { "id": "understand", "lane": "main", "col": 1, "type": "cloud", "label": "AI hiểu tin", "sublabel": "ngôn ngữ · ý định · câu EN", "width": 148 },
+    { "id": "search", "lane": "main", "col": 3, "type": "database", "label": "Tìm trong kho", "sublabel": "mục hỏi đáp + tài liệu", "tag": "code lọc điều kiện", "width": 148 },
+    { "id": "select", "lane": "main", "col": 4, "type": "cloud", "label": "AI chọn", "sublabel": "chỉ trong danh sách", "width": 148 },
+    { "id": "answer", "lane": "main", "col": 5, "type": "frontend", "label": "Trả lời từ kho", "sublabel": "mục hỏi đáp / tài liệu", "width": 148 },
+    { "id": "offtopic", "lane": "khac", "col": 1, "type": "messagebus", "label": "Ngoài phạm vi", "sublabel": "cảnh báo · chặn bậc thang", "width": 148 },
+    { "id": "unavailable", "lane": "khac", "col": 2, "type": "messagebus", "label": "Báo mất kết nối", "sublabel": "mọi bước AI lỗi mạng", "width": 148 },
+    { "id": "escalate", "lane": "khac", "col": 3, "type": "messagebus", "label": "Chuyển nhân viên", "sublabel": "phiếu · mã REF", "width": 148 },
+    { "id": "clarify", "lane": "khac", "col": 4, "type": "messagebus", "label": "Hỏi lại khách", "sublabel": "tối đa 1 lần / vụ việc", "width": 148 }
+  ],
+  "edges": [
+    { "id": "r-in", "from": "input", "to": "understand" },
+    { "id": "r-question", "from": "understand", "to": "fastpath", "label": "câu hỏi", "variant": "emphasis" },
+    { "id": "r-sure", "from": "fastpath", "to": "verify", "label": "khớp chắc" },
+    { "id": "r-verified", "from": "verify", "to": "answer", "label": "đúng ý khách", "variant": "emphasis" },
+    { "id": "r-unsure", "from": "fastpath", "to": "search", "label": "chưa chắc", "variant": "emphasis" },
+    { "id": "r-rejected", "from": "verify", "to": "search", "label": "không xác nhận", "variant": "dashed" },
+    { "id": "r-candidates", "from": "search", "to": "select", "label": "≤ 8 + 4 ứng viên", "variant": "emphasis" },
+    { "id": "r-picked", "from": "select", "to": "answer", "label": "1 mục", "variant": "emphasis" },
+    { "id": "r-offtopic", "from": "understand", "to": "offtopic", "label": "ngoài phạm vi", "role": "branch" },
+    { "id": "r-down", "from": "understand", "to": "unavailable", "label": "lỗi mạng", "variant": "dashed", "role": "error" },
+    { "id": "r-none", "from": "search", "to": "escalate", "label": "không có", "role": "branch" },
+    { "id": "r-esc", "from": "select", "to": "escalate", "label": "không mục nào đúng", "role": "branch" },
+    { "id": "r-clarify", "from": "select", "to": "clarify", "label": "mơ hồ", "role": "branch" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Luật của Router",
+      "items": [
+        "Không có đường nào gửi nội dung kho mà chưa qua AI xác nhận/chọn",
+        "Lời chào, sticker, tin nối tiếp vẫn phải qua bước AI hiểu"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "AI lỗi ở bất kỳ bước nào",
+      "items": [
+        "Mất mạng / quá tải / chưa cấu hình → Báo mất kết nối",
+        "Đầu ra hỏng hoặc chọn ngoài danh sách → Chuyển nhân viên"
+      ]
+    }
+  ]
+}

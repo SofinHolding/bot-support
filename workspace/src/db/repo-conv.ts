@@ -165,9 +165,15 @@ export function convRepo(db: Db) {
       );
       return r.rows.map((x) => ({ ...mapUser(x), episode_count: num(x.episode_count) }));
     },
-    /** Mọi ngôn ngữ khách đã dùng (users.language) — danh sách dịch sẵn câu khẩn. */
-    async knownLanguages(): Promise<string[]> {
-      const r = await db.query<{ language: string }>("SELECT DISTINCT language FROM users WHERE language IS NOT NULL ORDER BY language");
+    /**
+     * Ngôn ngữ khách đã dùng — danh sách dịch sẵn câu khẩn. `activeDays` (mặc định: không lọc, mọi lúc) giới hạn theo
+     * `last_seen` để job dịch sẵn không phải dịch cho ngôn ngữ của khách đã bỏ đi từ lâu (danh sách chỉ tăng dần theo
+     * thời gian nếu không lọc).
+     */
+    async knownLanguages(activeDays?: number): Promise<string[]> {
+      const r = activeDays
+        ? await db.query<{ language: string }>("SELECT DISTINCT language FROM users WHERE language IS NOT NULL AND last_seen > now() - ($1 || ' days')::interval ORDER BY language", [String(activeDays)])
+        : await db.query<{ language: string }>("SELECT DISTINCT language FROM users WHERE language IS NOT NULL ORDER BY language");
       return r.rows.map((x) => x.language);
     },
     async allUserIds(): Promise<number[]> {
