@@ -15,6 +15,7 @@ import { kbRepo } from "./db/repo-kb";
 import { opsRepo } from "./db/repo-ops";
 import { vaultRepo, type VaultRepo } from "./db/repo-vault";
 import { PgKnowledge } from "./kb/knowledge-search";
+import { PythonKnowledge, ShadowKnowledge } from "./kb/python-knowledge";
 import { CompositeKnowledge, VaultKnowledge } from "./vault/search";
 import { LiveContent } from "./kb/live-content";
 import { seedContent } from "./kb/seed";
@@ -152,8 +153,19 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
 
   const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
   const resolverBackground = new ResponseResolver(kb, llmBackground, () => live.index, () => live.urlHosts);
-  // Tài liệu cũ đã publish + note trong vault (docs/adr/0005), gộp RRF
-  const knowledge = new CompositeKnowledge(new PgKnowledge(kb, embedder), new VaultKnowledge(vault, embedder));
+  // Trong migration: legacy vẫn là production mặc định. Python/RAGFlow có thể chạy shadow trước khi cutover.
+  const legacyKnowledge = new CompositeKnowledge(new PgKnowledge(kb, embedder), new VaultKnowledge(vault, embedder));
+  const pythonKnowledge = cfg.KNOWLEDGE_SERVICE_URL
+    ? new PythonKnowledge({ baseUrl: cfg.KNOWLEDGE_SERVICE_URL, token: cfg.INTERNAL_SERVICE_TOKEN })
+    : null;
+  let knowledge: KnowledgePort = legacyKnowledge;
+  if (cfg.RETRIEVAL_PROVIDER === "python") {
+    if (!pythonKnowledge) throw new Error("RETRIEVAL_PROVIDER=python nhưng chưa cấu hình KNOWLEDGE_SERVICE_URL");
+    knowledge = pythonKnowledge;
+  } else if (cfg.RETRIEVAL_PROVIDER === "shadow") {
+    if (!pythonKnowledge) throw new Error("RETRIEVAL_PROVIDER=shadow nhưng chưa cấu hình KNOWLEDGE_SERVICE_URL");
+    knowledge = new ShadowKnowledge(legacyKnowledge, pythonKnowledge, (msg, extra) => log("info", msg, extra));
+  }
   const media = new MediaStore(cfg.MEDIA_DIR);
   const pipeline = new BotPipeline({ db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge, media, ownerId: cfg.ownerId, adminWebUrl: cfg.PUBLIC_ADMIN_URL, log });
 

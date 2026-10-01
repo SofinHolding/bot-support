@@ -7,6 +7,9 @@ x-app: &app
       required: false
   environment:
     DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
+    KNOWLEDGE_SERVICE_URL: ${KNOWLEDGE_SERVICE_URL:-}
+    INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+    RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-legacy}
     MEDIA_DIR: /app/data/media
     # vault Obsidian + tệp thô admin tải lên (docs/adr/0005): admin ghi raw-data, worker ghi vault; bot chỉ đọc DB
     VAULT_DIR: /app/data/vault
@@ -88,9 +91,58 @@ services:
     # song có thể làm một job ghi đè mất kết quả của job kia. Muốn scale worker thì phải thêm khoá (vd advisory lock theo
     # vault) trước.
 
+  # Giai đoạn migration sang Python. Bật bằng: docker compose --profile python-rag up -d --build
+  # RAGFlow được triển khai riêng và pin version; stack của RAGFlow khá nặng nên không nhúng vào compose chính này.
+  knowledge-api:
+    profiles: ["python-rag"]
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
+      PYTHON_SERVICE_HOST: 0.0.0.0
+      PYTHON_SERVICE_PORT: 3010
+      KNOWLEDGE_SOURCE_DIR: /app/data/knowledge-sources
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - knowledge-sources:/app/data/knowledge-sources
+    ports: ["127.0.0.1:3010:3010"]
+    restart: unless-stopped
+
+  knowledge-worker:
+    profiles: ["python-rag"]
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["interlink-knowledge-worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:-support}@db:5432/support
+      KNOWLEDGE_SOURCE_DIR: /app/data/knowledge-sources
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - knowledge-sources:/app/data/knowledge-sources
+    restart: unless-stopped
+
 volumes:
   pgdata:
   media:
   vault:
   raw-data:
   embedding-models:
+  knowledge-sources:

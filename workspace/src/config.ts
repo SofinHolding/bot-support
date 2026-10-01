@@ -42,6 +42,11 @@ const Env = z.object({
   EMBEDDING_API_KEY: z.string().optional(),
   EMBEDDING_MODEL: z.string().optional(),
 
+  // Migration có kiểm soát sang Python + RAGFlow. Mặc định legacy để rollback tức thì; shadow chỉ quan sát.
+  KNOWLEDGE_SERVICE_URL: z.string().optional(), // vd http://knowledge-api:3010
+  INTERNAL_SERVICE_TOKEN: z.string().optional(),
+  RETRIEVAL_PROVIDER: z.enum(["legacy", "shadow", "python"]).default("legacy"),
+
   MEDIA_DIR: z.string().default("./data/media"),
   CONTENT_DIR: z.string().default("content"),
   // Vault Obsidian (note tri thức đã chuẩn hoá) và thư mục lưu file thô admin tải lên (docs/adr/0005)

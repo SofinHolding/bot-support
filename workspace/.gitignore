@@ -1,6 +1,10 @@
 # dependencies / build
 node_modules/
 dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 
 # secrets and local state
 .env

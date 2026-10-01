@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    INTERLINK_MIGRATIONS_DIR=/app/src/db/migrations
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY python_app ./python_app
+COPY src/db/migrations ./src/db/migrations
+RUN pip install --no-cache-dir .
+
+RUN mkdir -p /app/data/knowledge-sources && useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+USER appuser
+EXPOSE 3010
+CMD ["interlink-python-api"]

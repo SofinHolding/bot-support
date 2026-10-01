@@ -1,0 +1,88 @@
+# Python + Knowledge Governance + RAGFlow migration
+
+## Mục tiêu
+
+Migration này không thực hiện big-bang rewrite. Python nhận quyền sở hữu **Knowledge Governance + retrieval** trước,
+trong khi Node/TypeScript tiếp tục giữ Telegram, security, idempotency, episode, conversation state, LLM gateway và
+output guard cho tới khi từng khối có parity test.
+
+Nguyên tắc:
+
+- PostgreSQL là source of truth.
+- RAGFlow là derived search index; có thể xoá/rebuild.
+- Mỗi `knowledge_key + scope_key` chỉ có tối đa một `active` version.
+- Version cũ được giữ `superseded`, không overwrite/delete.
+- RAGFlow hit luôn được revalidate với PostgreSQL trước khi trở thành evidence.
+- Dữ liệu upload mới được xử lý tự động theo precedence, không bắt người dùng duyệt mỗi lần.
+
+## Precedence tự động
+
+Thứ tự quyết định:
+
+1. Identity confidence thấp hơn ngưỡng -> `conflicted` (fail closed).
+2. Content hash giống active -> `duplicate`.
+3. Source priority cao hơn -> supersede.
+4. Source priority thấp hơn -> `shadow`, không thay active.
+5. Cùng priority: `effective_from` mới hơn thắng; cũ hơn không thắng.
+6. Nếu không có effective date để phân biệt: upload mới hơn thắng (controlled latest-wins).
+7. Vẫn không phân biệt được -> `conflicted`.
+
+Ví dụ `forgot ID`: bản cũ “contact support” và bản mới “self recovery” cùng identity/scope, cùng authority, bản mới
+có effective/upload time mới hơn -> bản cũ `superseded`, bản mới `active` trong **một DB transaction**.
+
+## Biến môi trường Python
+
+```text
+DATABASE_URL=postgres://support:...@db:5432/support
+INTERNAL_SERVICE_TOKEN=<random internal token>
+
+KNOWLEDGE_LLM_BASE_URL=http://host.docker.internal:20128/v1
+KNOWLEDGE_LLM_API_KEY=...
+KNOWLEDGE_LLM_MODEL=<fast structured-output-capable model>
+KNOWLEDGE_IDENTITY_MIN_CONFIDENCE=0.78
+KNOWLEDGE_DEFAULT_SOURCE_PRIORITY=50
+
+RAGFLOW_ENABLED=true
+RAGFLOW_BASE_URL=http://host.docker.internal:9380
+RAGFLOW_API_KEY=...
+RAGFLOW_DATASET_ID=...
+RAGFLOW_RERANK_ID=
+RAGFLOW_SIMILARITY_THRESHOLD=0.2
+RAGFLOW_VECTOR_WEIGHT=0.5
+RAGFLOW_KEYWORD=true
+```
+
+Dataset RAGFlow nên cấu hình embedding bằng gateway OpenAI-compatible hiện có và model
+`text-embedding-3-small` (hoặc đúng model ID mà gateway expose, ví dụ `openai/text-embedding-3-small`).
+
+## Feature flag Node
+
+```text
+KNOWLEDGE_SERVICE_URL=http://knowledge-api:3010
+INTERNAL_SERVICE_TOKEN=<same token>
+
+RETRIEVAL_PROVIDER=legacy  # production cũ
+RETRIEVAL_PROVIDER=shadow  # production vẫn trả legacy, Python chỉ chạy đối chiếu/log
+RETRIEVAL_PROVIDER=python  # cutover sang Python/RAGFlow
+```
+
+Không có silent fallback khi chọn `python`. Muốn rollback thì đổi `RETRIEVAL_PROVIDER=legacy` và restart service.
+
+## Rollout
+
+1. Chạy migration 013 và Python unit tests.
+2. Deploy RAGFlow riêng, pin release/image cụ thể.
+3. Tạo dataset, cấu hình `text-embedding-3-small` + reranker nếu dùng.
+4. Bật profile `python-rag`, ingest knowledge vào PostgreSQL và để outbox sync RAGFlow.
+5. Đặt Node `RETRIEVAL_PROVIDER=shadow`, thu log/eval Recall@k/MRR/P95.
+6. Khi đạt acceptance criteria, chuyển `RETRIEVAL_PROVIDER=python`.
+7. Sau một số release ổn định mới disable Vault/Obsidian write path và sau đó retire code Vault.
+
+## API nội bộ Python
+
+- `POST /v1/knowledge/upload`: upload TXT/MD/JSON/CSV/PDF/DOCX/XLSX, tự tách atomic knowledge và resolve version.
+- `POST /v1/knowledge/units`: internal/test/migration path cho atomic units có sẵn.
+- `GET /v1/knowledge/conflicts`: chỉ các case hệ thống không thể resolve an toàn.
+- `POST /v1/knowledge/rollback/{version_id}`: rollback append-only, tạo active version mới từ lịch sử.
+- `POST /v1/retrieval/search`: adapter RAGFlow + active-version revalidation.
+- `POST /v1/retrieval/by-ids`: chỉ trả version vẫn còn active.
