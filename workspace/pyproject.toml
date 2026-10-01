@@ -31,6 +31,7 @@ dev = [
 interlink-python-api = "interlink_support.api:run"
 interlink-python-migrate = "interlink_support.migrate:main"
 interlink-knowledge-worker = "interlink_support.worker:main"
+interlink-import-clean-source = "interlink_support.import_clean_source:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["python_app/interlink_support"]

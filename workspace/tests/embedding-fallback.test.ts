@@ -99,6 +99,21 @@ describe("EmbeddingConfig (Admin Web)", () => {
     await db.close();
   });
 
+  it("dùng EMBEDDING_API_KEY làm fallback khi DB chưa lưu secret", async () => {
+    const db = await openDb("pglite:memory");
+    await migrate(db);
+    const ops = opsRepo(db);
+    const cfg = new EmbeddingConfig(ops, null, 0, Date.now, "env-embedding-key");
+    await cfg.save({ baseUrl: "https://platform.beeknoee.com/v1", model: "openai/text-embedding-3-small", dimensions: 1536 }, "owner");
+    expect(await cfg.resolve()).toEqual({
+      baseUrl: "https://platform.beeknoee.com/v1",
+      apiKey: "env-embedding-key",
+      model: "openai/text-embedding-3-small",
+      dimensions: 1536,
+    });
+    await db.close();
+  });
+
   it("lựa chọn model: mặc định API khi đã cấu hình; khoá -> hiệu lực cục bộ, chọn API bị từ chối; mở khoá KHÔNG tự chọn lại API", async () => {
     const db = await openDb("pglite:memory");
     await migrate(db);

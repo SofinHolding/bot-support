@@ -94,7 +94,15 @@ class KnowledgeRepository:
             INSERT INTO knowledge_units
               (id,knowledge_key,scope_key,subject,intent,condition_key,product,platform,region,metadata)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-            ON CONFLICT (knowledge_key,scope_key) DO UPDATE SET updated_at=now()
+            ON CONFLICT (knowledge_key,scope_key) DO UPDATE SET
+              subject=EXCLUDED.subject,
+              intent=EXCLUDED.intent,
+              condition_key=EXCLUDED.condition_key,
+              product=EXCLUDED.product,
+              platform=EXCLUDED.platform,
+              region=EXCLUDED.region,
+              metadata=EXCLUDED.metadata,
+              updated_at=now()
             """,
             new_id,
             unit.knowledge_key,
@@ -240,6 +248,37 @@ class KnowledgeRepository:
                 ids,
             )
         return {r["id"]: r for r in rows}
+
+    async def exact_active_matches(self, query: str, limit: int = 5) -> list[asyncpg.Record]:
+        """Exact title/known-customer-phrase branch before semantic retrieval.
+
+        The clean source already carries explicit customer phrasings. Those aliases are stronger evidence
+        than vector similarity and do not require an LLM or RAGFlow keyword extraction.
+        """
+        q = query.strip()
+        if not q:
+            return []
+        async with self.db.connection() as conn:
+            return await conn.fetch(
+                """
+                SELECT v.*, u.knowledge_key, u.scope_key
+                FROM knowledge_versions v
+                JOIN knowledge_units u ON u.id=v.knowledge_unit_id
+                WHERE v.status='active'
+                  AND (
+                    lower(trim(v.canonical_title)) = lower(trim($1))
+                    OR EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements_text(COALESCE(u.metadata->'customer_questions','[]'::jsonb)) AS a(value)
+                      WHERE lower(trim(a.value)) = lower(trim($1))
+                    )
+                  )
+                ORDER BY v.source_priority DESC, v.generation DESC
+                LIMIT $2
+                """,
+                q,
+                limit,
+            )
 
     async def versions_for_documents(self, document_ids: list[str]) -> dict[str, asyncpg.Record]:
         if not document_ids:

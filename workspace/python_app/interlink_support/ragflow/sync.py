@@ -101,7 +101,9 @@ class RagFlowSyncWorker:
             await self.client.add_chunk(
                 dataset_id=self.dataset_id,
                 document_id=document_id,
-                content=str(version["content"]),
+                # Search/index against title + customer phrasing + answer together.
+                # The retrieval API still returns authoritative raw `content` from Postgres.
+                content=payload,
                 important_keywords=[str(x) for x in (version["keywords"] or [])],
                 tags=[
                     f"knowledge_key:{version['knowledge_key']}",

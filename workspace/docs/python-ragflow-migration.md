@@ -49,11 +49,30 @@ RAGFLOW_DATASET_ID=...
 RAGFLOW_RERANK_ID=
 RAGFLOW_SIMILARITY_THRESHOLD=0.2
 RAGFLOW_VECTOR_WEIGHT=0.5
-RAGFLOW_KEYWORD=true
+RAGFLOW_KEYWORD=false
 ```
 
 Dataset RAGFlow nên cấu hình embedding bằng gateway OpenAI-compatible hiện có và model
 `text-embedding-3-small` (hoặc đúng model ID mà gateway expose, ví dụ `openai/text-embedding-3-small`).
+`RAGFLOW_KEYWORD=false` là mặc định cho triển khai embedding-only; bật keyword extraction của RAGFlow sẽ yêu cầu
+thêm một default chat model trong RAGFlow.
+
+## Nguồn canonical hiện tại
+
+Nguồn production chuẩn là `raw-data/2026-09-29_V1-nguon-sach.xlsx`, sheet `Noi dung V1` với ba cột
+`Tên`, `Khách thường hỏi`, `Nội dung`. Thư mục `content/` là bản mirror phục vụ cấu hình/template/audit và không
+được ingest lần thứ hai vào Knowledge Governance, tránh tạo hai bản semantic giống nhau trong retrieval.
+
+Import sạch toàn bộ Governance:
+
+```text
+interlink-import-clean-source raw-data/2026-09-29_V1-nguon-sach.xlsx --replace
+```
+
+Importer tạo một `knowledge_key` ổn định theo `Tên`, giữ các câu trong `Khách thường hỏi` làm retrieval aliases,
+và giữ nguyên `Nội dung` làm evidence chính thức. Hai topic khác nhau vẫn là hai knowledge unit riêng ngay cả khi
+chúng cố ý dùng chung cùng một câu trả lời/chuyển nhân viên. Với `RAGFLOW_ENABLED=true`, `--replace` xoá dataset
+dẫn xuất trên RAGFlow trước rồi mới reset Governance; nếu không xoá được RAGFlow thì lệnh dừng trước khi chạm DB.
 
 ## Feature flag Node
 
@@ -76,7 +95,8 @@ Không có silent fallback khi chọn `python`. Muốn rollback thì đổi `RET
 4. Bật profile `python-rag`, ingest knowledge vào PostgreSQL và để outbox sync RAGFlow.
 5. Đặt Node `RETRIEVAL_PROVIDER=shadow`, thu log/eval Recall@k/MRR/P95.
 6. Khi đạt acceptance criteria, chuyển `RETRIEVAL_PROVIDER=python`.
-7. Sau một số release ổn định mới disable Vault/Obsidian write path và sau đó retire code Vault.
+7. Vault/Obsidian không còn được cron tự index sau cutover; dữ liệu cũ chỉ giữ cho audit/migration. Sau một số
+   release ổn định có thể retire nốt các handler/file legacy còn lại.
 
 ## API nội bộ Python
 

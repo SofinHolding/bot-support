@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     RAGFLOW_SIMILARITY_THRESHOLD: float = Field(default=0.2, ge=0, le=1)
     RAGFLOW_VECTOR_WEIGHT: float = Field(default=0.5, ge=0, le=1)
     RAGFLOW_RERANK_ID: str = ""
-    RAGFLOW_KEYWORD: bool = True
+    # Keyword extraction in RAGFlow requires a default chat model. Keep it opt-in so
+    # embedding-only deployments can retrieve without configuring an unrelated LLM.
+    RAGFLOW_KEYWORD: bool = False
 
 
 @lru_cache(maxsize=1)

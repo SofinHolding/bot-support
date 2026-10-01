@@ -36,6 +36,19 @@ class RagFlowKnowledge:
     async def search(self, query: str, k: int, query_lang: str | None = None) -> list[RetrievalHit]:
         if not query.strip() or k <= 0:
             return []
+        exact_rows = await self.repo.exact_active_matches(query, min(k, 5))
+        exact: dict[UUID, RetrievalHit] = {}
+        for row in exact_rows:
+            version_id: UUID = row["id"]
+            exact[version_id] = RetrievalHit(
+                chunkId=f"pykv:{version_id}",
+                docSlug=str(row["knowledge_key"]),
+                heading=str(row["canonical_title"] or ""),
+                text=str(row["content"]),
+                score=1.05,
+                lang=str(row["language"] or query_lang or "en"),
+            )
+
         data = await self.client.retrieve(
             question=query,
             dataset_id=self.dataset_id,
@@ -54,7 +67,7 @@ class RagFlowKnowledge:
 
         # Một knowledge version hiện được sync thành một document + một chunk. Nếu RAGFlow trả nhiều chunk,
         # chỉ lấy score cao nhất của version đó để không chiếm top-k bằng các đoạn cùng nguồn.
-        best: dict[UUID, RetrievalHit] = {}
+        best: dict[UUID, RetrievalHit] = dict(exact)
         for chunk in chunks:
             if not isinstance(chunk, dict):
                 continue

@@ -83,10 +83,11 @@ const BKK = "Asia/Bangkok";
 
 /** Các cron của hệ thống mới, thay thế 3 cron OpenClaw + việc Heartbeat cũ. */
 export const CRONS: CronDef[] = [
+  // Vault/Obsidian indexing is intentionally NOT scheduled anymore: production knowledge is now
+  // versioned in Postgres and indexed by the Python/RAGFlow worker. Legacy vault handlers remain
+  // available only for explicit migration/audit operations and must not recreate stale vectors.
   { name: "maintenance", spec: { kind: "every", minutes: 10 }, replaces: "Heartbeat: dọn context bỏ dở (episode dormant/abandoned), hàng đợi kẹt" },
   { name: "reindex-embeddings", spec: { kind: "every", minutes: 10 }, replaces: "(mới) embed lại chunk tri thức khi đổi embedding model hoặc khi dịch vụ embedding từng lỗi lúc publish" },
-  { name: "vault-index", spec: { kind: "every", minutes: 5 }, replaces: "(mới) chạy bù hàng đợi index của vault Obsidian và embed bù chunk thiếu vector" },
-  { name: "vault-conflict-notify", spec: { kind: "hourly", minute: 10 }, replaces: "(mới) gửi xung đột dữ liệu cho admin qua Telegram và nhắc lại sau 24 giờ nếu chưa ai chọn" },
   { name: "outbox-flush", spec: { kind: "every", minutes: 1 }, replaces: "delivery-queue/failed (1.083 tin lỗi không ai gửi lại)" },
   { name: "usage-aggregate", spec: { kind: "hourly", minute: 5 }, replaces: "cron usage-aggregator-daily `5 * * * *` UTC" },
   { name: "escalation-alert", spec: { kind: "daily", at: "23:59", tz: BKK }, replaces: "cron daily-escalate-threshold-alert 23:59 Asia/Bangkok" },

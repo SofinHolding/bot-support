@@ -31,6 +31,11 @@ afterAll(async () => {
 });
 
 describe("lịch", () => {
+  it("không tự lập lịch lại index Vault cũ sau khi production chuyển sang Knowledge Governance", () => {
+    expect(CRONS.some((c) => c.name === "vault-index")).toBe(false);
+    expect(CRONS.some((c) => c.name === "vault-conflict-notify")).toBe(false);
+  });
+
   it("cron hàng ngày 23:59 Asia/Bangkok: trước giờ là slot hôm qua, sau giờ là slot hôm nay", () => {
     const spec = CRONS.find((c) => c.name === "escalation-alert")!.spec;
     // 2026-09-21 16:58 UTC = 23:58 ICT

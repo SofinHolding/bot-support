@@ -119,3 +119,18 @@ class RagFlowClient:
                 json={"ids": document_ids, "delete_all": False},
             )
         self._unwrap(response)
+
+    async def delete_all_documents(self, *, dataset_id: str) -> None:
+        """Clear a derived dataset before a full source replacement.
+
+        PostgreSQL remains the source of truth, but deleting the remote documents first prevents
+        orphaned stale chunks from occupying RAGFlow's top-k after a full Governance reset.
+        """
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.request(
+                "DELETE",
+                self._url(f"/datasets/{dataset_id}/documents"),
+                headers=self._headers(),
+                json={"delete_all": True},
+            )
+        self._unwrap(response)

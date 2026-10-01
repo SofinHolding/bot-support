@@ -49,7 +49,13 @@ interface Lock {
 export class EmbeddingConfig {
   private cache: { at: number; resolved: EmbeddingResolved | null; view: EmbeddingView; selection: EmbeddingSelection } | null = null;
 
-  constructor(private readonly ops: OpsRepo, private readonly box: SecretBox | null, private readonly ttlMs = 10_000, private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly ops: OpsRepo,
+    private readonly box: SecretBox | null,
+    private readonly ttlMs = 10_000,
+    private readonly now: () => number = Date.now,
+    private readonly fallbackApiKey?: string,
+  ) {}
 
   invalidate() {
     this.cache = null;
@@ -68,7 +74,10 @@ export class EmbeddingConfig {
     const stored = await this.ops.getSettings();
     const str = (k: string) => (typeof stored[k] === "string" && (stored[k] as string).trim() ? (stored[k] as string).trim() : undefined);
     const enc = await this.ops.getSecret(K.apiKey);
-    const apiKey = enc && this.box ? (this.box.decrypt(enc) ?? undefined) : undefined;
+    const storedApiKey = enc && this.box ? (this.box.decrypt(enc) ?? undefined) : undefined;
+    // Headless/CI deployments may provide the credential through EMBEDDING_API_KEY.
+    // An encrypted DB secret, when present and decryptable, remains authoritative.
+    const apiKey = storedApiKey ?? (this.fallbackApiKey?.trim() || undefined);
     const baseUrl = str(K.baseUrl) ?? "";
     const model = str(K.model) ?? "";
     const dimsRaw = Number(stored[K.dims]);

@@ -87,7 +87,7 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   // đều gọi API thật, lỗi thì báo lỗi thẳng — không tự chuyển/tự khoá sang cục bộ nữa. Xem ghi chú trong embedder.ts.
   const secretBox = cfg.SECRETS_KEY ? new SecretBox(cfg.SECRETS_KEY) : null; // mã hoá khoá API nhập từ web; không có -> chỉ dùng khoá trong .env
   const localEmbedder = createEmbedder(cfg);
-  const embedding = new EmbeddingConfig(ops, secretBox);
+  const embedding = new EmbeddingConfig(ops, secretBox, 10_000, Date.now, cfg.EMBEDDING_API_KEY);
   const embedder = new SelectedEmbedder(() => embedding.selection(), localEmbedder, { log: (m) => log("warn", m) });
   const settings = new SettingsService(ops);
   const predicatesFile = `${cfg.CONTENT_DIR}/config/predicates.yml`;
