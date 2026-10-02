@@ -203,6 +203,29 @@ export function kbRepo(db: Db) {
         [templateId, lang, text, sourceHash, origin, status, approvedBy ?? null],
       );
     },
+    async translationRetryAllowed(templateId: string, lang: string, sourceHash: string): Promise<boolean> {
+      const r = await db.query<{ ok: boolean }>(
+        `SELECT (source_hash <> $3 OR next_attempt_at <= now()) AS ok
+         FROM translation_failures WHERE template_id=$1 AND lang=$2`,
+        [templateId, lang, sourceHash],
+      );
+      return r.rows[0]?.ok ?? true;
+    },
+    async recordTranslationFailure(templateId: string, lang: string, sourceHash: string, error: string) {
+      await db.query(
+        `INSERT INTO translation_failures(template_id,lang,source_hash,attempts,next_attempt_at,last_error)
+         VALUES($1,$2,$3,1,now() + interval '6 hours',$4)
+         ON CONFLICT(template_id,lang) DO UPDATE SET
+           source_hash=$3,
+           attempts=CASE WHEN translation_failures.source_hash=$3 THEN translation_failures.attempts+1 ELSE 1 END,
+           next_attempt_at=now() + (LEAST(24, 6 * POWER(2, LEAST(2, CASE WHEN translation_failures.source_hash=$3 THEN translation_failures.attempts ELSE 0 END)))::text || ' hours')::interval,
+           last_error=$4,updated_at=now()`,
+        [templateId, lang, sourceHash, error.slice(0, 500)],
+      );
+    },
+    async clearTranslationFailure(templateId: string, lang: string) {
+      await db.query("DELETE FROM translation_failures WHERE template_id=$1 AND lang=$2", [templateId, lang]);
+    },
     async listTranslations(status?: string) {
       const r = await db.query("SELECT * FROM template_translations WHERE $1::text IS NULL OR status = $1 ORDER BY created_at DESC LIMIT 500", [status ?? null]);
       return r.rows as { template_id: string; lang: string; text: string; status: string; origin: string; source_hash: string }[];

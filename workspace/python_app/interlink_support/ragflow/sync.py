@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -56,7 +57,7 @@ class RagFlowSyncWorker:
         async with self.db.connection() as conn:
             version = await conn.fetchrow(
                 """
-                SELECT v.*,u.knowledge_key,u.scope_key
+                SELECT v.*,u.knowledge_key,u.scope_key,u.metadata
                 FROM knowledge_versions v JOIN knowledge_units u ON u.id=v.knowledge_unit_id
                 WHERE v.id=$1
                 """,
@@ -74,10 +75,21 @@ class RagFlowSyncWorker:
                 await conn.execute("DELETE FROM knowledge_ragflow_sync WHERE version_id=$1", version_id)
             return
 
+        name = f"{version['knowledge_key']}--v{version['version_number']}--{version_id}.txt"
+        metadata = version["metadata"] if isinstance(version["metadata"], dict) else {}
+        customer_questions = [str(x).strip() for x in (metadata.get("customer_questions") or []) if str(x).strip()]
+        phrasing_block = f"Customer phrasings: {' | '.join(customer_questions)}\n\n" if customer_questions else ""
+        payload = (
+            f"{version['canonical_title']}\n\n"
+            f"{phrasing_block}"
+            f"{version['canonical_summary']}\n\n"
+            f"{version['content']}"
+        ).strip()
+        index_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         if (
             mapping
             and mapping["state"] == "synced"
-            and mapping["content_hash"] == version["content_hash"]
+            and mapping["content_hash"] == index_hash
             and int(mapping["generation"]) == int(version["generation"])
             and mapping["document_id"]
         ):
@@ -86,12 +98,6 @@ class RagFlowSyncWorker:
         if mapping and mapping["document_id"]:
             await self.client.delete_documents(dataset_id=self.dataset_id, document_ids=[str(mapping["document_id"])])
 
-        name = f"{version['knowledge_key']}--v{version['version_number']}--{version_id}.txt"
-        payload = (
-            f"{version['canonical_title']}\n\n"
-            f"{version['canonical_summary']}\n\n"
-            f"{version['content']}"
-        ).strip()
         document_id = await self.client.upload_document(
             dataset_id=self.dataset_id,
             name=name,
@@ -129,7 +135,7 @@ class RagFlowSyncWorker:
                 version_id,
                 self.dataset_id,
                 document_id,
-                version["content_hash"],
+                index_hash,
                 int(version["generation"]),
             )
 

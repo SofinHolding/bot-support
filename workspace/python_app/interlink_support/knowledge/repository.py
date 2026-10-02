@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -15,6 +17,17 @@ from .models import (
     ResolutionAction,
     SourceDescriptor,
 )
+
+
+def _search_norm(value: str) -> str:
+    """Stable lexical normalization for Vietnamese aliases and user queries.
+
+    The vector index remains the semantic source; this branch only gives deterministic priority to
+    explicit titles/customer phrasings, including Vietnamese written without diacritics.
+    """
+    value = value.casefold().replace("đ", "d")
+    value = "".join(ch for ch in unicodedata.normalize("NFKD", value) if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9$]+", " ", value).strip()
 
 
 def _active(row: asyncpg.Record | None) -> ActiveVersionSnapshot | None:
@@ -250,35 +263,55 @@ class KnowledgeRepository:
         return {r["id"]: r for r in rows}
 
     async def exact_active_matches(self, query: str, limit: int = 5) -> list[asyncpg.Record]:
-        """Exact title/known-customer-phrase branch before semantic retrieval.
+        """Strong title/customer-phrase branch before semantic retrieval.
 
         The clean source already carries explicit customer phrasings. Those aliases are stronger evidence
-        than vector similarity and do not require an LLM or RAGFlow keyword extraction.
+        than vector similarity and do not require an LLM or RAGFlow keyword extraction. Matching is
+        accent-insensitive so a known Vietnamese phrase still works when the customer omits diacritics.
         """
-        q = query.strip()
+        q = _search_norm(query)
         if not q:
             return []
         async with self.db.connection() as conn:
-            return await conn.fetch(
+            rows = await conn.fetch(
                 """
-                SELECT v.*, u.knowledge_key, u.scope_key
+                SELECT v.*, u.knowledge_key, u.scope_key, u.metadata
                 FROM knowledge_versions v
                 JOIN knowledge_units u ON u.id=v.knowledge_unit_id
                 WHERE v.status='active'
-                  AND (
-                    lower(trim(v.canonical_title)) = lower(trim($1))
-                    OR EXISTS (
-                      SELECT 1
-                      FROM jsonb_array_elements_text(COALESCE(u.metadata->'customer_questions','[]'::jsonb)) AS a(value)
-                      WHERE lower(trim(a.value)) = lower(trim($1))
-                    )
-                  )
                 ORDER BY v.source_priority DESC, v.generation DESC
-                LIMIT $2
                 """,
-                q,
-                limit,
             )
+        ranked: list[tuple[int, asyncpg.Record]] = []
+        q_tokens = set(q.split())
+        for row in rows:
+            metadata = row["metadata"] if isinstance(row["metadata"], dict) else {}
+            phrases = [str(row["canonical_title"] or "")]
+            phrases.extend(str(x) for x in (metadata.get("customer_questions") or []))
+            phrases.extend(str(x) for x in (row["keywords"] or []))
+            best = 0
+            for raw in phrases:
+                phrase = _search_norm(raw)
+                if not phrase:
+                    continue
+                if q == phrase:
+                    best = max(best, 4)
+                    continue
+                p_tokens = phrase.split()
+                # Only explicit multi-token phrases are allowed to match as substrings; this avoids
+                # a generic one-word keyword stealing unrelated queries.
+                if len(p_tokens) >= 2 and len(phrase) >= 6 and phrase in q:
+                    best = max(best, 3)
+                    continue
+                if len(p_tokens) >= 2 and set(p_tokens).issubset(q_tokens):
+                    best = max(best, 2)
+            if best:
+                ranked.append((best, row))
+        ranked.sort(
+            key=lambda item: (item[0], int(item[1]["source_priority"]), int(item[1]["generation"])),
+            reverse=True,
+        )
+        return [row for _, row in ranked[:limit]]
 
     async def versions_for_documents(self, document_ids: list[str]) -> dict[str, asyncpg.Record]:
         if not document_ids:

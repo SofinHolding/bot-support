@@ -4,7 +4,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { LlmUnavailableError } from "../core/ports";
-import { costOf } from "./prices";
+import { costOf, type CostStatus, type TokenPrice } from "./prices";
 import { LlmBadOutputError, LlmRefusalError, ProviderUnavailableError, type JsonRequest, type JsonResult, type LlmProvider, type Purpose, type Usage } from "./types";
 
 export interface CallRecord {
@@ -12,7 +12,8 @@ export interface CallRecord {
   provider: string;
   model: string | null;
   usage: Usage;
-  cost: number;
+  cost: number | null;
+  costStatus: CostStatus;
   latencyMs: number;
   ok: boolean;
   error: string | null;
@@ -38,6 +39,8 @@ export interface ChainOptions {
   openMs?: number;
   now?: () => number;
   onCall?: (rec: CallRecord) => void | Promise<void>;
+  /** Optional operator-supplied pricing for gateway aliases; never guess unknown provider prices. */
+  prices?: Record<string, TokenPrice>;
   /**
    * Giãn cách tối thiểu (ms) giữa các lượt gọi thật tới nhà cung cấp. Quan sát thực tế 2026-09-30: gọi liên tục
    * không nghỉ (nhiều job/eval dồn dập) khiến model trả lời kiểu "không đủ thông tin" dù nội dung có sẵn và điểm
@@ -113,12 +116,13 @@ export class ProviderChain {
       try {
         const res = await p.generateJson(req);
         this.ok(p.name);
-        await this.record({ purpose: req.purpose, provider: res.provider, model: res.model, usage: res.usage, cost: costOf(res.model, res.usage), latencyMs: res.latencyMs, ok: true, error: null });
+        const priced = costOf(res.model, res.usage, this.opts.prices);
+        await this.record({ purpose: req.purpose, provider: res.provider, model: res.model, usage: res.usage, cost: priced.usd, costStatus: priced.status, latencyMs: res.latencyMs, ok: true, error: null });
         return res;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`${p.name}: ${msg}`);
-        await this.record({ purpose: req.purpose, provider: p.name, model: null, usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0, latencyMs: 0, ok: false, error: msg.slice(0, 300) });
+        await this.record({ purpose: req.purpose, provider: p.name, model: null, usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, cost: null, costStatus: "unknown", latencyMs: 0, ok: false, error: msg.slice(0, 300) });
         if (e instanceof LlmRefusalError) throw e; // không thử lại chỗ khác
         if (e instanceof ProviderUnavailableError) this.fail(p.name, e.retryAfterMs);
         else if (e instanceof LlmBadOutputError) badOutputs++; // lỗi của riêng câu này: thử provider khác, KHÔNG mở circuit breaker cho mọi khách

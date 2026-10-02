@@ -47,6 +47,12 @@ RAGFLOW_BASE_URL=http://host.docker.internal:9380
 RAGFLOW_API_KEY=...
 RAGFLOW_DATASET_ID=...
 RAGFLOW_RERANK_ID=
+RAGFLOW_TIMEOUT_SECONDS=30
+RAGFLOW_CONNECT_TIMEOUT_SECONDS=5
+RAGFLOW_POOL_TIMEOUT_SECONDS=5
+RAGFLOW_MAX_CONNECTIONS=16
+RAGFLOW_MAX_KEEPALIVE_CONNECTIONS=8
+RAGFLOW_MAX_CONCURRENCY=8
 RAGFLOW_SIMILARITY_THRESHOLD=0.2
 RAGFLOW_VECTOR_WEIGHT=0.5
 RAGFLOW_KEYWORD=false
@@ -56,6 +62,24 @@ Dataset RAGFlow nên cấu hình embedding bằng gateway OpenAI-compatible hi�
 `text-embedding-3-small` (hoặc đúng model ID mà gateway expose, ví dụ `openai/text-embedding-3-small`).
 `RAGFLOW_KEYWORD=false` là mặc định cho triển khai embedding-only; bật keyword extraction của RAGFlow sẽ yêu cầu
 thêm một default chat model trong RAGFlow.
+
+Client retrieval dùng connection pool/keep-alive dùng lại giữa các request và một semaphore cục bộ để không dồn
+vượt `RAGFLOW_MAX_CONCURRENCY` request vào upstream. `RAGFLOW_TIMEOUT_SECONDS` là **total request budget**, không
+phải cách che latency bằng cách tăng timeout. Connect/pool timeout có budget riêng. Timeout/network/HTTP 5xx từ
+RAGFlow được chuyển thành lỗi tạm thời có kiểm soát (`503` ở Knowledge API) kèm `X-Request-ID`; retrieval không
+tự retry để tránh retry storm. Caller có thể retry ở biên request nếu có idempotency/backoff phù hợp.
+
+## Cost telemetry cho gateway alias
+
+Các alias gateway như `cx/...` không có giá đáng tin cậy trong source code thì được ghi `cost_status=unknown` và
+`cost=NULL`; báo cáo hiển thị `N/A`, không cộng thành `$0`. Nếu operator có bảng giá đã xác minh, có thể cấu hình:
+
+```text
+LLM_PRICING_JSON={"provider/model":{"in":1.0,"out":4.0}}
+```
+
+`in`/`out` là USD trên 1 triệu input/output token. Giá cấu hình được đánh dấu `estimated`; chỉ dữ liệu do provider
+trả trực tiếp mới nên được gọi là `actual`. Không đưa giá alias chưa xác minh vào repository.
 
 ## Nguồn canonical hiện tại
 

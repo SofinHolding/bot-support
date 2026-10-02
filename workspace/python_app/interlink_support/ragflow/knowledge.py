@@ -33,7 +33,9 @@ class RagFlowKnowledge:
         self.keyword = keyword
         self.rerank_id = rerank_id
 
-    async def search(self, query: str, k: int, query_lang: str | None = None) -> list[RetrievalHit]:
+    async def search(
+        self, query: str, k: int, query_lang: str | None = None, *, request_id: str | None = None
+    ) -> list[RetrievalHit]:
         if not query.strip() or k <= 0:
             return []
         exact_rows = await self.repo.exact_active_matches(query, min(k, 5))
@@ -57,6 +59,7 @@ class RagFlowKnowledge:
             vector_similarity_weight=self.vector_weight,
             keyword=self.keyword,
             rerank_id=self.rerank_id,
+            request_id=request_id,
         )
         chunks = data.get("chunks") if isinstance(data, dict) else None
         if not isinstance(chunks, list):

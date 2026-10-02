@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MediaStore } from "../src/bot/media";
+import { translationFailureFingerprint } from "../src/bot/resolver";
 import { CRONS, dueSlot, mondayOf } from "../src/worker/schedule";
 import { HANDLERS, WHITEPAPER_PAGES, type JobContext } from "../src/worker/jobs";
 import { runDueJobs, scheduleDue } from "../src/worker/runner";
@@ -93,6 +94,30 @@ describe("lịch", () => {
     expect(all).toContain("id");
     expect(recent).not.toContain("th");
     expect(recent).toContain("id");
+  });
+
+  it("prewarm không lặp 3 lần mỗi giờ cho cùng bản dịch đã biết là lỗi", async () => {
+    const key = "fp-0-security-alert";
+    const lang = "te";
+    const hash = "source-v1";
+    expect(await w.kb.translationRetryAllowed(key, lang, hash)).toBe(true);
+    await w.kb.recordTranslationFailure(key, lang, hash, "model output failed language guard");
+    expect(await w.kb.translationRetryAllowed(key, lang, hash)).toBe(false);
+    // Nội dung nguồn đổi phải được thử lại ngay, không bị backoff cũ giữ lại.
+    expect(await w.kb.translationRetryAllowed(key, lang, "source-v2")).toBe(true);
+    await w.kb.clearTranslationFailure(key, lang);
+    expect(await w.kb.translationRetryAllowed(key, lang, hash)).toBe(true);
+  });
+
+  it("validator đổi revision thì failure backoff cũ không khóa bản dịch đã có thể hợp lệ", async () => {
+    const key = "fp-0-security-alert";
+    const lang = "bn";
+    const legacy = "legacy-validator-source-hash";
+    await w.kb.recordTranslationFailure(key, lang, legacy, "old validator rejected Bengali script");
+    const current = translationFailureFingerprint("Keep your account secure");
+    expect(current).not.toBe(legacy);
+    expect(await w.kb.translationRetryAllowed(key, lang, current)).toBe(true);
+    await w.kb.clearTranslationFailure(key, lang);
   });
 });
 

@@ -256,7 +256,11 @@ export function opsRepo(db: Db) {
         `SELECT (created_at AT TIME ZONE '${TZ}')::date::text AS day,
                 count(*)::int AS requests, COALESCE(sum(input_tokens),0)::bigint AS input, COALESCE(sum(output_tokens),0)::bigint AS output,
                 COALESCE(sum(cache_read),0)::bigint AS cache_read, COALESCE(sum(cache_write),0)::bigint AS cache_write,
-                COALESCE(sum(cost),0)::float8 AS cost, count(DISTINCT user_id)::int AS unique_users
+                COALESCE(sum(cost) FILTER (WHERE cost_status <> 'unknown'),0)::float8 AS known_cost,
+                count(*) FILTER (WHERE cost_status = 'unknown')::int AS unknown_cost_calls,
+                count(*) FILTER (WHERE cost_status = 'actual')::int AS actual_cost_calls,
+                count(*) FILTER (WHERE cost_status = 'estimated')::int AS estimated_cost_calls,
+                count(DISTINCT user_id)::int AS unique_users
          FROM llm_calls WHERE (created_at AT TIME ZONE '${TZ}')::date BETWEEN $1::date AND $2::date GROUP BY 1 ORDER BY 1`,
         [fromDay, toDay],
       );
@@ -265,7 +269,19 @@ export function opsRepo(db: Db) {
         const output = num(x.output);
         const cr = num(x.cache_read);
         const cw = num(x.cache_write);
-        return { day: String(x.day), requests: num(x.requests), input, output, cacheRead: cr, cacheWrite: cw, totalTokens: input + output + cr + cw, cost: num(x.cost), uniqueUsers: num(x.unique_users) };
+        const unknownCostCalls = num(x.unknown_cost_calls);
+        const knownCost = num(x.known_cost);
+        return {
+          day: String(x.day), requests: num(x.requests), input, output, cacheRead: cr, cacheWrite: cw,
+          totalTokens: input + output + cr + cw,
+          cost: unknownCostCalls > 0 ? null : knownCost,
+          knownCost,
+          unknownCostCalls,
+          actualCostCalls: num(x.actual_cost_calls),
+          estimatedCostCalls: num(x.estimated_cost_calls),
+          costStatus: unknownCostCalls > 0 ? "partial_unknown" as const : "known" as const,
+          uniqueUsers: num(x.unique_users),
+        };
       });
     },
     async usageHourly(day: string) {
@@ -300,7 +316,7 @@ export function opsRepo(db: Db) {
           `INSERT INTO usage_daily (day, requests, input_tokens, output_tokens, cache_read, cache_write, total_tokens, cost, unique_users, updated_at)
            VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,$9, now())
            ON CONFLICT (day) DO UPDATE SET requests=$2, input_tokens=$3, output_tokens=$4, cache_read=$5, cache_write=$6, total_tokens=$7, cost=$8, unique_users=$9, updated_at=now()`,
-          [d.day, d.requests, d.input, d.output, d.cacheRead, d.cacheWrite, d.totalTokens, d.cost, d.uniqueUsers],
+          [d.day, d.requests, d.input, d.output, d.cacheRead, d.cacheWrite, d.totalTokens, d.knownCost, d.uniqueUsers],
         );
       }
       return rows.length;

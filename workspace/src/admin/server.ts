@@ -1070,7 +1070,8 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const { from, to } = range(q);
     const perDay = await ops.usageByDay(from, to);
     const distinct = await svc.db.query<{ n: number }>("SELECT count(DISTINCT user_id)::int AS n FROM llm_calls WHERE user_id IS NOT NULL AND (created_at AT TIME ZONE 'Asia/Bangkok')::date BETWEEN $1::date AND $2::date", [from, to]);
-    const totals = perDay.reduce((t, d) => ({ requests: t.requests + d.requests, input: t.input + d.input, output: t.output + d.output, cacheRead: t.cacheRead + d.cacheRead, cacheWrite: t.cacheWrite + d.cacheWrite, totalTokens: t.totalTokens + d.totalTokens, cost: t.cost + d.cost }), { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 });
+    const totals0 = perDay.reduce((t, d) => ({ requests: t.requests + d.requests, input: t.input + d.input, output: t.output + d.output, cacheRead: t.cacheRead + d.cacheRead, cacheWrite: t.cacheWrite + d.cacheWrite, totalTokens: t.totalTokens + d.totalTokens, knownCost: t.knownCost + d.knownCost, unknownCostCalls: t.unknownCostCalls + d.unknownCostCalls, actualCostCalls: t.actualCostCalls + d.actualCostCalls, estimatedCostCalls: t.estimatedCostCalls + d.estimatedCostCalls }), { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, knownCost: 0, unknownCostCalls: 0, actualCostCalls: 0, estimatedCostCalls: 0 });
+    const totals = { ...totals0, cost: totals0.unknownCostCalls > 0 ? null : totals0.knownCost, costStatus: totals0.unknownCostCalls > 0 ? "partial_unknown" as const : "known" as const };
     return { range: { from, to }, totals: { ...totals, uniqueUsers: Number(distinct.rows[0]?.n ?? 0) }, perDay, topUsers: await ops.usageTopUsers(from, to, 20), hourly: from === to ? await ops.usageHourly(from) : null };
   };
 
@@ -1085,10 +1086,10 @@ export async function buildAdminServer(svc: Services, opt: AdminServerOptions = 
     const q = req.query as { from?: string; to?: string; format?: string };
     const u = await usageData(q);
     if (q.format === "md") {
-      const md = [`# Usage Report — ${u.range.from} → ${u.range.to}`, `> Generated: ${now().toISOString()}`, "", "| Date | Users | Req | Input | Output | Cache | Total | Cost |", "|---|---|---|---|---|---|---|---|", ...u.perDay.map((d) => `| ${d.day} | ${d.uniqueUsers} | ${d.requests} | ${d.input} | ${d.output} | ${d.cacheRead + d.cacheWrite} | ${d.totalTokens} | $${d.cost.toFixed(4)} |`)].join("\n");
+      const md = [`# Usage Report — ${u.range.from} → ${u.range.to}`, `> Generated: ${now().toISOString()}`, "", "| Date | Users | Req | Input | Output | Cache | Total | Cost | Unknown-price calls |", "|---|---|---|---|---|---|---|---|---|", ...u.perDay.map((d) => `| ${d.day} | ${d.uniqueUsers} | ${d.requests} | ${d.input} | ${d.output} | ${d.cacheRead + d.cacheWrite} | ${d.totalTokens} | ${d.cost === null ? `N/A (known subtotal $${d.knownCost.toFixed(4)})` : `$${d.cost.toFixed(4)}`} | ${d.unknownCostCalls} |`)].join("\n");
       return reply.header("content-type", "text/markdown; charset=utf-8").header("content-disposition", `attachment; filename="usage-report-${u.range.to}.md"`).send(md);
     }
-    const csv = ["date,users,requests,input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_usd", ...u.perDay.map((d) => [d.day, d.uniqueUsers, d.requests, d.input, d.output, d.cacheRead, d.cacheWrite, d.totalTokens, d.cost].join(","))].join("\n");
+    const csv = ["date,users,requests,input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_usd,known_cost_usd,cost_status,unknown_cost_calls", ...u.perDay.map((d) => [d.day, d.uniqueUsers, d.requests, d.input, d.output, d.cacheRead, d.cacheWrite, d.totalTokens, d.cost ?? "N/A", d.knownCost, d.costStatus, d.unknownCostCalls].join(","))].join("\n");
     return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="usage-daily-${u.range.to}.csv"`).send(csv);
   });
 

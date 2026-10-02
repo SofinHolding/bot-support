@@ -249,11 +249,22 @@ describe("usage và dashboard", () => {
     expect(u.hourly[0]).toMatchObject({ hour: "01", requests: 1 });
     expect(u.topUsers[0]).toMatchObject({ userId: 777003, totalTokens: 2100 });
     const csv = await get("/api/usage/export?from=2026-09-21&to=2026-09-21&format=csv", c);
-    expect(csv.body.split("\n")[0]).toBe("date,users,requests,input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_usd");
+    expect(csv.body.split("\n")[0]).toBe("date,users,requests,input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_usd,known_cost_usd,cost_status,unknown_cost_calls");
     expect(csv.body).toContain("2026-09-21,1,1,2000,100");
     expect((await get("/api/usage/export?format=md", c)).body).toContain("# Usage Report");
     const bad = await get("/api/usage?from=abc", c);
     expect(bad.statusCode).toBe(400);
+  });
+
+  it("unknown pricing hiển thị N/A thay vì $0", async () => {
+    const c = await login(9001);
+    await svc.conv.addLlmCall({ userId: 777003, purpose: "translate", model: "cx/unknown", inputTokens: 1000, outputTokens: 100, cost: null, costStatus: "unknown" }, new Date("2026-09-20T18:00:00Z"));
+    const u = (await get("/api/usage?from=2026-09-21&to=2026-09-21", c)).json();
+    expect(u.totals.cost).toBeNull();
+    expect(u.totals.costStatus).toBe("partial_unknown");
+    expect(u.totals.unknownCostCalls).toBeGreaterThanOrEqual(1);
+    const md = await get("/api/usage/export?from=2026-09-21&to=2026-09-21&format=md", c);
+    expect(md.body).toContain("N/A");
   });
 
   it("dashboard: tỉ lệ không-LLM, escalate, câu chưa khớp và sức khoẻ hệ thống", async () => {

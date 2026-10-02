@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -15,8 +16,10 @@ from .knowledge.extractor import OpenAICompatibleKnowledgeExtractor
 from .knowledge.models import ExtractedKnowledgeUnit, RetrievalHit
 from .knowledge.repository import KnowledgeRepository
 from .knowledge.service import KnowledgeService
-from .ragflow.client import RagFlowClient
+from .ragflow.client import RagFlowClient, RagFlowError, RagFlowUnavailableError
 from .ragflow.knowledge import RagFlowKnowledge
+
+log = logging.getLogger("interlink_support.knowledge_api")
 
 
 class UnitIngestRequest(BaseModel):
@@ -94,6 +97,11 @@ async def lifespan(app: FastAPI):
             base_url=settings.RAGFLOW_BASE_URL,
             api_key=settings.RAGFLOW_API_KEY,
             timeout=settings.RAGFLOW_TIMEOUT_SECONDS,
+            connect_timeout=settings.RAGFLOW_CONNECT_TIMEOUT_SECONDS,
+            pool_timeout=settings.RAGFLOW_POOL_TIMEOUT_SECONDS,
+            max_connections=settings.RAGFLOW_MAX_CONNECTIONS,
+            max_keepalive_connections=settings.RAGFLOW_MAX_KEEPALIVE_CONNECTIONS,
+            max_concurrency=settings.RAGFLOW_MAX_CONCURRENCY,
         )
         retrieval = RagFlowKnowledge(
             client=client,
@@ -111,6 +119,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if retrieval is not None:
+            await retrieval.client.aclose()
         await db.close()
 
 
@@ -197,7 +207,23 @@ async def retrieval_search(request: Request, body: SearchRequest) -> list[Retrie
     retrieval: RagFlowKnowledge | None = request.app.state.retrieval
     if retrieval is None:
         raise HTTPException(status_code=503, detail="RAGFlow retrieval chưa được cấu hình")
-    return await retrieval.search(body.query, body.k, body.queryLang)
+    request_id = request.headers.get("X-Request-ID") or uuid4().hex
+    try:
+        return await retrieval.search(body.query, body.k, body.queryLang, request_id=request_id)
+    except RagFlowUnavailableError as exc:
+        log.warning("RAGFlow retrieval unavailable kind=%s request_id=%s", exc.kind, exc.request_id)
+        raise HTTPException(
+            status_code=503,
+            detail="retrieval service temporarily unavailable",
+            headers={"X-Request-ID": exc.request_id, "Retry-After": "2"},
+        ) from exc
+    except RagFlowError as exc:
+        log.error("RAGFlow retrieval protocol error request_id=%s error=%s", request_id, str(exc)[:240])
+        raise HTTPException(
+            status_code=502,
+            detail="retrieval upstream error",
+            headers={"X-Request-ID": request_id},
+        ) from exc
 
 
 @app.post("/v1/retrieval/by-ids", dependencies=[Depends(require_internal_auth)])

@@ -407,11 +407,11 @@ export function convRepo(db: Db) {
     },
 
     // ---- LLM usage ----
-    async addLlmCall(c: { messageId?: number | null; userId?: number | null; purpose: string; provider?: string | null; model?: string | null; inputTokens?: number; outputTokens?: number; cacheRead?: number; cacheWrite?: number; cost?: number; latencyMs?: number | null; ok?: boolean; error?: string | null }, at?: Date) {
+    async addLlmCall(c: { messageId?: number | null; userId?: number | null; purpose: string; provider?: string | null; model?: string | null; inputTokens?: number; outputTokens?: number; cacheRead?: number; cacheWrite?: number; cost?: number | null; costStatus?: "actual" | "estimated" | "unknown"; latencyMs?: number | null; ok?: boolean; error?: string | null }, at?: Date) {
       await db.query(
-        `INSERT INTO llm_calls (message_id, user_id, purpose, provider, model, input_tokens, output_tokens, cache_read, cache_write, cost, latency_ms, ok, error, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, COALESCE($14::timestamptz, now()))`,
-        [c.messageId ?? null, c.userId ?? null, c.purpose, c.provider ?? null, c.model ?? null, c.inputTokens ?? 0, c.outputTokens ?? 0, c.cacheRead ?? 0, c.cacheWrite ?? 0, c.cost ?? 0, c.latencyMs ?? null, c.ok ?? true, c.error ?? null, at ? iso(at) : null],
+        `INSERT INTO llm_calls (message_id, user_id, purpose, provider, model, input_tokens, output_tokens, cache_read, cache_write, cost, cost_status, latency_ms, ok, error, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, COALESCE($15::timestamptz, now()))`,
+        [c.messageId ?? null, c.userId ?? null, c.purpose, c.provider ?? null, c.model ?? null, c.inputTokens ?? 0, c.outputTokens ?? 0, c.cacheRead ?? 0, c.cacheWrite ?? 0, c.cost ?? null, c.costStatus ?? (c.cost !== undefined && c.cost !== null ? "actual" : "unknown"), c.latencyMs ?? null, c.ok ?? true, c.error ?? null, at ? iso(at) : null],
       );
     },
   };

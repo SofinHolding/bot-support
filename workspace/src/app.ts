@@ -104,9 +104,10 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   }, "gateway")];
   if (cfg.ANTHROPIC_API_KEY) providers.push(new AnthropicProvider({ apiKey: cfg.ANTHROPIC_API_KEY, baseURL: cfg.ANTHROPIC_BASE_URL, models: { fast: cfg.ANTHROPIC_MODEL_FAST, strong: cfg.ANTHROPIC_MODEL_STRONG, intake: cfg.ANTHROPIC_MODEL_FAST } }));
   const chain = new ProviderChain(providers, {
+    prices: cfg.llmPrices,
     onCall: async (r) => {
       try {
-        await conv.addLlmCall({ messageId: r.messageId, userId: r.userId, purpose: r.purpose, provider: r.provider, model: r.model, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, cost: r.cost, latencyMs: r.latencyMs, ok: r.ok, error: r.error });
+        await conv.addLlmCall({ messageId: r.messageId, userId: r.userId, purpose: r.purpose, provider: r.provider, model: r.model, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, cost: r.cost, costStatus: r.costStatus, latencyMs: r.latencyMs, ok: r.ok, error: r.error });
       } catch (e) {
         log("warn", "không ghi được llm_calls", { err: (e as Error).message });
       }
@@ -122,9 +123,10 @@ export async function createServices(cfg: Config, service: string, opts: { seed?
   // Chuỗi gọi AI riêng cho việc nền, gọi cách quãng để không cạnh tranh với câu hỏi khách thật (xem ghi chú ở `resolverBackground`).
   const chainBackground = new ProviderChain(providers, {
     minIntervalMs: 4_000,
+    prices: cfg.llmPrices,
     onCall: async (r) => {
       try {
-        await conv.addLlmCall({ messageId: r.messageId, userId: r.userId, purpose: r.purpose, provider: r.provider, model: r.model, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, cost: r.cost, latencyMs: r.latencyMs, ok: r.ok, error: r.error });
+        await conv.addLlmCall({ messageId: r.messageId, userId: r.userId, purpose: r.purpose, provider: r.provider, model: r.model, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, cost: r.cost, costStatus: r.costStatus, latencyMs: r.latencyMs, ok: r.ok, error: r.error });
       } catch (e) {
         log("warn", "không ghi được llm_calls (nền)", { err: (e as Error).message });
       }

@@ -92,6 +92,7 @@ export interface World {
   channel: FakeChannel;
   clock: { now: Date; advance(ms: number): void };
   settings: SettingsService;
+  knowledge: PgKnowledge;
   say(userId: number, text: string, extra?: Partial<InboundItem> & { chatType?: InboundBatch["chatType"]; isMention?: boolean; name?: string }): ReturnType<BotPipeline["handle"]>;
   sayPhoto(userId: number, fileId: string, caption?: string): ReturnType<BotPipeline["handle"]>;
   close(): Promise<void>;
@@ -122,13 +123,14 @@ export async function makeWorld(opts: { llm?: LlmPort | null; adminIds?: number[
   await ops.setSetting("router.tier3_mode", "extractive", "test"); // test kiểm luồng trích nguyên văn; chế độ sinh có test riêng
   settings.invalidate();
   const resolver = new ResponseResolver(kb, llm, () => live.index, () => live.urlHosts);
+  const knowledge = new PgKnowledge(kb, embedder);
   const pipeline = new BotPipeline({
-    db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge: new PgKnowledge(kb, embedder),
+    db, conv, kb, ops, live, settings, resolver, channel, llm, knowledge,
     ownerId, adminWebUrl: "https://admin.example.test", now: () => clock.now,
   });
 
   const world: World = {
-    db, conv, kb, ops, live, kbService, pipeline, channel, clock, settings,
+    db, conv, kb, ops, live, kbService, pipeline, channel, clock, settings, knowledge,
     say(userId, text, extra = {}) {
       const { chatType, isMention, name, ...item } = extra;
       return pipeline.handle({ chatId: userId, chatType: chatType ?? "private", userId, name: name ?? `User ${userId}`, username: `u${userId}`, isMention: isMention ?? true, at: clock.now, items: [{ updateId: updateSeq++, messageId: updateSeq, text, ...item }] });

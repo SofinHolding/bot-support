@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     RAGFLOW_API_KEY: str = ""
     RAGFLOW_DATASET_ID: str = ""
     RAGFLOW_TIMEOUT_SECONDS: float = 30.0
+    RAGFLOW_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    RAGFLOW_POOL_TIMEOUT_SECONDS: float = 5.0
+    RAGFLOW_MAX_CONNECTIONS: int = Field(default=16, ge=1, le=256)
+    RAGFLOW_MAX_KEEPALIVE_CONNECTIONS: int = Field(default=8, ge=1, le=256)
+    RAGFLOW_MAX_CONCURRENCY: int = Field(default=8, ge=1, le=256)
     RAGFLOW_SIMILARITY_THRESHOLD: float = Field(default=0.2, ge=0, le=1)
     RAGFLOW_VECTOR_WEIGHT: float = Field(default=0.5, ge=0, le=1)
     RAGFLOW_RERANK_ID: str = ""

@@ -19,15 +19,23 @@ async def _run() -> None:
     db = Database(settings.DATABASE_URL)
     await db.open()
     await apply_migrations(db)
+    client: RagFlowClient | None = None
     try:
         client = RagFlowClient(
             base_url=settings.RAGFLOW_BASE_URL,
             api_key=settings.RAGFLOW_API_KEY,
             timeout=settings.RAGFLOW_TIMEOUT_SECONDS,
+            connect_timeout=settings.RAGFLOW_CONNECT_TIMEOUT_SECONDS,
+            pool_timeout=settings.RAGFLOW_POOL_TIMEOUT_SECONDS,
+            max_connections=settings.RAGFLOW_MAX_CONNECTIONS,
+            max_keepalive_connections=settings.RAGFLOW_MAX_KEEPALIVE_CONNECTIONS,
+            max_concurrency=settings.RAGFLOW_MAX_CONCURRENCY,
         )
         worker = RagFlowSyncWorker(db=db, client=client, dataset_id=settings.RAGFLOW_DATASET_ID)
         await worker.run_forever()
     finally:
+        if client is not None:
+            await client.aclose()
         await db.close()
 
 

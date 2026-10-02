@@ -31,6 +31,8 @@ const Env = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL_FAST: z.string().default(""), // phân loại tầng 2, vision, tóm tắt
   LLM_MODEL_STRONG: z.string().default(""), // dịch template, tri thức tầng 3
+  /** JSON map model -> token rates USD/1M. cacheRead/cacheWrite chỉ khai báo khi provider đã xác minh rate riêng. */
+  LLM_PRICING_JSON: z.string().optional(),
   SECRETS_KEY: z.string().min(32, "SECRETS_KEY phải dài ≥ 32 ký tự").optional(), // khoá mã hoá bí mật lưu trong DB (khoá API nhập từ web)
   // Dự phòng tuỳ chọn: gọi thẳng API Anthropic khi gateway lỗi
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -56,6 +58,33 @@ const Env = z.object({
 
 export type Config = ReturnType<typeof loadConfig>;
 
+function parsePricing(raw: string | undefined): Record<string, { in: number; out: number; cacheRead?: number; cacheWrite?: number }> {
+  if (!raw?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`LLM_PRICING_JSON không phải JSON hợp lệ: ${(e as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("LLM_PRICING_JSON phải là object model -> {in,out}");
+  const out: Record<string, { in: number; out: number; cacheRead?: number; cacheWrite?: number }> = {};
+  for (const [model, value] of Object.entries(parsed)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`pricing ${model} phải là {in,out}`);
+    const p = value as Record<string, unknown>;
+    if (typeof p.in !== "number" || typeof p.out !== "number" || !Number.isFinite(p.in) || !Number.isFinite(p.out) || p.in < 0 || p.out < 0) {
+      throw new Error(`pricing ${model}: in/out phải là số >= 0`);
+    }
+    const optional: Record<string, number> = {};
+    for (const key of ["cacheRead", "cacheWrite"] as const) {
+      if (p[key] === undefined) continue;
+      if (typeof p[key] !== "number" || !Number.isFinite(p[key]) || p[key] < 0) throw new Error(`pricing ${model}: ${key} phải là số >= 0`);
+      optional[key] = p[key];
+    }
+    out[model] = { in: p.in, out: p.out, ...optional };
+  }
+  return out;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const e = Env.parse(env);
   return {
@@ -64,5 +93,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     ownerId: e.OWNER_TELEGRAM_ID ? Number(e.OWNER_TELEGRAM_ID) : null,
     cookieSecure: e.COOKIE_SECURE === "true",
     trustProxy: e.TRUST_PROXY === "true",
+    llmPrices: parsePricing(e.LLM_PRICING_JSON),
   };
 }

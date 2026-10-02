@@ -230,6 +230,23 @@ describe("luồng AI hiểu trước", () => {
     expect(r.reply).toContain("@interlink_technicalsupport");
     expect(r.reply).not.toContain("Network disconnected"); // chuyển người thật thật sự, không phải câu báo mất kết nối
   });
+  it("kho tri thức (RAGFlow) sập: khách nhận câu mất kết nối, KHÔNG có câu trả lời giả, không mở ticket system-error", async () => {
+    understand = () => U({ query_en: "what is the ITLG token used for?", query_kb: "token ITLG dùng để làm gì?" });
+    select = () => { throw new Error("select không được gọi khi retrieval lỗi"); };
+    const real = w.knowledge.search.bind(w.knowledge);
+    w.knowledge.search = async () => { throw new Error("python knowledge search 503"); };
+    try {
+      const r = await ask(6501, "what is the ITLG token used for?");
+      expect(seenSelect).toHaveLength(0);
+      expect(r.d).toMatchObject({ kind: "UNAVAILABLE", template_id: null });
+      expect(r.reply).toBe(NETWORK_DISCONNECTED_EN);
+      expect(r.notes).toContain("kho tri thức");
+      const tickets = await w.db.query("SELECT 1 FROM tickets WHERE user_id = $1 AND category = 'system-error'", [6501]);
+      expect(tickets.rows).toHaveLength(0);
+    } finally {
+      w.knowledge.search = real;
+    }
+  });
 });
 
 describe("workflow hai nhánh (router.mode = hybrid): AI xác định ngôn ngữ -> router -> FAST PATH | AI/RAG", () => {

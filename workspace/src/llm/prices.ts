@@ -1,16 +1,25 @@
 import type { Usage } from "./types";
 
-/** USD / triệu token (giá công khai; model không có trong bảng thì chi phí = 0 và chỉ đếm token). */
-const PRICES: Record<string, { in: number; out: number }> = {
-  "claude-opus-5": { in: 5, out: 25 },
-  "claude-sonnet-5": { in: 2, out: 10 },
-  "claude-haiku-4-5": { in: 1, out: 5 },
-  "claude-fable-5-1": { in: 10, out: 50 },
-};
+export type CostStatus = "actual" | "estimated" | "unknown";
+export type TokenPrice = { in: number; out: number; cacheRead?: number; cacheWrite?: number };
+export type CostEstimate = { usd: number | null; status: CostStatus };
 
-export function costOf(model: string, u: Usage, extra: Record<string, { in: number; out: number }> = {}): number {
-  const p = extra[model] ?? PRICES[model];
-  if (!p) return 0;
-  // cache đọc ~0.1x giá input, ghi ~1.25x
-  return (u.inputTokens * p.in + u.outputTokens * p.out + u.cacheRead * p.in * 0.1 + u.cacheWrite * p.in * 1.25) / 1_000_000;
+/**
+ * USD / triệu token. Giá model phải đến từ cấu hình đã được operator xác minh
+ * (`LLM_PRICING_JSON`); không giữ bảng giá hard-code vì model/alias và giá có thể
+ * thay đổi độc lập với bản phát hành ứng dụng. Model chưa cấu hình = UNKNOWN.
+ */
+export function costOf(model: string, u: Usage, extra: Record<string, TokenPrice> = {}): CostEstimate {
+  const p = extra[model];
+  if (!p) return { usd: null, status: "unknown" };
+  // Không đoán hệ số cache của provider. Nếu usage có cache token mà operator chưa
+  // cấu hình đúng rate riêng, toàn bộ cost của call phải là UNKNOWN thay vì một số
+  // có vẻ chính xác nhưng dựa trên giả định pricing không được xác minh.
+  if ((u.cacheRead > 0 && p.cacheRead === undefined) || (u.cacheWrite > 0 && p.cacheWrite === undefined)) {
+    return { usd: null, status: "unknown" };
+  }
+  return {
+    usd: (u.inputTokens * p.in + u.outputTokens * p.out + u.cacheRead * (p.cacheRead ?? 0) + u.cacheWrite * (p.cacheWrite ?? 0)) / 1_000_000,
+    status: "estimated",
+  };
 }

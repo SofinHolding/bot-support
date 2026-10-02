@@ -19,6 +19,14 @@ import type { KbRepo } from "../db/repo-kb";
 
 /** Số lần gọi SKILL dịch cho một nội dung (lần đầu + các lần dịch lại kèm lỗi) */
 export const TRANSLATE_ATTEMPTS = 3;
+/**
+ * Revision of the deterministic translation validator used only for failure backoff.
+ * Bump when a validator bug is fixed so stale failures do not suppress a now-valid
+ * translation until their old retry window expires. Translation cache hashes remain
+ * content-only and are therefore not invalidated by validator changes.
+ */
+export const TRANSLATION_VALIDATION_REVISION = "script-v2";
+export const translationFailureFingerprint = (source: string): string => sha1(`${TRANSLATION_VALIDATION_REVISION}\0${source}`);
 
 export interface Resolved {
   text: string;
@@ -139,7 +147,7 @@ export class ResponseResolver {
 
   /**
    * Dịch sẵn nhóm câu khẩn sang các ngôn ngữ (job prewarm-urgent-translations). Bản dịch hợp lệ đã có thì bỏ qua (chỉ đọc DB).
-   * Dịch có kiểm như mọi nội dung (tối đa TRANSLATE_ATTEMPTS lần); không đạt thì không lưu, lần chạy sau thử lại.
+   * Dịch có kiểm như mọi nội dung; cặp thất bại được backoff 6h→24h thay vì bị gọi lại ba lần mỗi giờ.
    * Mất kết nối LLM -> ném LlmUnavailableError để job được chạy lại sau.
    */
   async prewarmUrgent(ids: readonly string[], langs: string[]): Promise<{ translated: number; skipped: number; failed: string[] }> {
@@ -160,15 +168,23 @@ export class ResponseResolver {
         }
         const stored = await this.kb.getTranslation(key, lang);
         if (stored && stored.source_hash === hash && !this.problems(en, stored.text, lang, TELEGRAM_MAX_CHARS).length) {
+          await this.kb.clearTranslationFailure(key, lang).catch(() => undefined);
+          out.skipped++;
+          continue;
+        }
+        const failureFingerprint = translationFailureFingerprint(en);
+        if (!(await this.kb.translationRetryAllowed(key, lang, failureFingerprint))) {
           out.skipped++;
           continue;
         }
         const r = await this.translateChecked(en, lang, "en", TELEGRAM_MAX_CHARS);
         if (!r.ok) {
+          await this.kb.recordTranslationFailure(key, lang, failureFingerprint, r.note);
           out.failed.push(`${key}:${lang}`);
           continue;
         }
         await this.kb.saveTranslation(key, lang, r.text, hash, "llm", "pending");
+        await this.kb.clearTranslationFailure(key, lang);
         out.translated++;
       }
     }

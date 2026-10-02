@@ -327,7 +327,80 @@ const itemRoot = (id: string) => id.replace(/--b\d+$/, "");
 // Quyết định 2026-09-30 (đề xuất senior-architect): không thêm bước rerank AI riêng vì select() đã đọc toàn văn từng
 // ứng viên và tự phán đoán — làm gần hết việc rerank định làm, không có bằng chứng thật cần thêm 1 lượt gọi AI nữa.
 const MAX_CHUNK_CANDIDATES = 8;
+// Lấy pool rộng hơn cho từng biến thể truy vấn rồi mới fuse xuống 8 chunk mà selector được phép đọc.
+// Audit natural-query cho thấy hit đúng từ bản rewrite tiếng Anh có thể nằm ở rank 9-20; lấy đúng 8 từ đầu
+// sẽ làm mất candidate trước khi RRF/select có cơ hội phục hồi.
+const RETRIEVAL_POOL_PER_QUERY = 20;
 const NON_LATIN_LANGS = new Set(["ko", "ja", "zh", "ru", "uk", "ar", "fa", "th", "hi"]);
+
+/**
+ * Merge ranked retrieval lists without comparing raw similarity values across different queries.
+ * Cosine/hybrid scores are calibrated per query, so taking max(raw score) lets a noisy source-language
+ * query outrank the validated English rewrite even when the latter ranks the correct document first.
+ * Weighted reciprocal-rank fusion only uses within-query rank; `bestRaw` is a deterministic tie-breaker
+ * and the original hit score is preserved for downstream evidence gates. These lists are paraphrases
+ * of the same retriever, not independent retrieval engines: a large classic RRF constant (e.g. 60)
+ * over-rewards documents that are merely mediocre in both lists and can suppress a rank-1/2 hit from
+ * the better rewrite. Dev-set evaluation showed a rank bias of 1 keeps cross-query comparability while
+ * preserving strong per-query candidates; holdout is intentionally not used to tune this value.
+ */
+export function fuseKnowledgeRanks(
+  lists: { hits: KnowledgeHit[]; weight: number }[],
+  minScore: number,
+  maxResults: number,
+  exclude: (hit: KnowledgeHit) => boolean = () => false,
+): KnowledgeHit[] {
+  const fused = new Map<string, { hit: KnowledgeHit; rrf: number; bestRaw: number }>();
+  for (const { hits, weight } of lists) {
+    let rank = 0;
+    for (const hit of hits) {
+      if (hit.score < minScore || exclude(hit)) continue;
+      rank++;
+      const old = fused.get(hit.chunkId);
+      const rrf = (old?.rrf ?? 0) + weight / (1 + rank);
+      const bestRaw = Math.max(old?.bestRaw ?? -Infinity, hit.score);
+      fused.set(hit.chunkId, {
+        hit: !old || hit.score > old.bestRaw ? hit : old.hit,
+        rrf,
+        bestRaw,
+      });
+    }
+  }
+  return [...fused.values()]
+    .sort((a, b) => b.rrf - a.rrf || b.bestRaw - a.bestRaw || a.hit.chunkId.localeCompare(b.hit.chunkId))
+    .slice(0, maxResults)
+    .map((x) => x.hit);
+}
+
+/**
+ * Tạo các semantic search plan. Khi ngôn ngữ khách khác ngôn ngữ KB và đã có rewrite hợp lệ,
+ * không trộn raw cross-lingual embedding vào RRF: trên KB tiếng Anh hiện tại, raw tiếng Việt nhiễu hơn
+ * đáng kể và có thể kéo tụt hit đúng của bản rewrite. Câu gốc vẫn được dùng ở deterministic template/exact
+ * routing phía trên; nếu rewrite bị validation loại bỏ thì raw query được giữ làm fail-safe.
+ */
+export function buildKnowledgeSearchPlans(
+  original: string,
+  originalLang: string,
+  queryKb: string | undefined,
+  knowledgeLang: string,
+  queryEn: string | undefined,
+  issueTexts: string[] = [],
+): { q: string; lang: string; weight: number }[] {
+  const plans = new Map<string, { q: string; lang: string; weight: number }>();
+  const add = (q: string | undefined, lang: string, weight: number) => {
+    const text = q?.trim();
+    if (!text) return;
+    const key = `${lang}\u0000${text.toLocaleLowerCase()}`;
+    const old = plans.get(key);
+    if (!old || weight > old.weight) plans.set(key, { q: text, lang, weight });
+  };
+  const hasRewrite = !!queryKb?.trim() || !!queryEn?.trim();
+  if (originalLang === knowledgeLang || !hasRewrite) add(original, originalLang, 1.0);
+  add(queryKb, knowledgeLang, 1.2);
+  add(queryEn, "en", 1.2);
+  for (const text of issueTexts) add(text, "en", 0.9);
+  return [...plans.values()];
+}
 
 /** Ngôn ngữ trả lời: AI xác định, code kiểm lại. Chữ viết của tin nhắn (Hàn, Nhật, Nga...) là bằng chứng chắc chắn nên thắng khi AI nói khác. */
 function resolveReplyLang(aiLang: string, codeLang: string, codeDetected: string | null, trace: RouteTrace): string {
@@ -461,7 +534,10 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     return s;
   };
   const queryEn = checked(u.query_en, "en");
-  const queryKb = settings.knowledgeLang === "en" ? queryEn : checked(u.query_kb, settings.knowledgeLang);
+  // `query_en` preserves the user's meaning while `query_kb` is allowed to be a concise,
+  // retrieval-oriented paraphrase even when the KB itself is English. Keeping both gives the
+  // retriever semantic + support-vocabulary variants without adding another LLM call.
+  const queryKb = checked(u.query_kb, settings.knowledgeLang);
   queryEnOut = queryEn;
   if (queryEn) trace.notes.push(`truy vấn (en): "${queryEn}"`);
   if (queryKb && queryKb !== queryEn) trace.notes.push(`truy vấn (${settings.knowledgeLang}): "${queryKb}"`);
@@ -524,19 +600,24 @@ export async function routeLlmFirst(req: LlmFirstRequest, deps: RouterDeps, opts
     .filter((t) => !exhaust || !tried(`T:${t.id}`))
     .slice(0, MAX_TEMPLATE_CANDIDATES);
 
-  const chunkById = new Map<string, KnowledgeHit>();
+  let chunks: KnowledgeHit[] = [];
   if (clarifying) {
-    for (const h of pendingChunkIds.length && knowledge?.byIds ? await knowledge.byIds(pendingChunkIds) : []) chunkById.set(h.chunkId, h);
+    chunks = pendingChunkIds.length && knowledge?.byIds ? await knowledge.byIds(pendingChunkIds) : [];
   } else if (knowledge) {
-    const searches: [string, string][] = [[req.text, lang]];
-    if (queryKb) searches.push([queryKb, settings.knowledgeLang]);
-    if (queryEn && queryEn !== queryKb) searches.push([queryEn, "en"]);
-    for (const t of issueTexts) searches.push([t, "en"]);
-    for (const list of await Promise.all(searches.map(([q, l]) => knowledge.search(q, MAX_CHUNK_CANDIDATES, l)))) {
-      for (const h of list) if (h.score >= settings.tier3MinScore && !(exhaust && tried(`K:${h.chunkId}`)) && (chunkById.get(h.chunkId)?.score ?? -1) < h.score) chunkById.set(h.chunkId, h);
+    const searches = buildKnowledgeSearchPlans(req.text, lang, queryKb, settings.knowledgeLang, queryEn, issueTexts);
+    let lists: { hits: KnowledgeHit[]; weight: number }[];
+    try {
+      lists = await Promise.all(searches.map(async (s) => ({ hits: await knowledge.search(s.q, RETRIEVAL_POOL_PER_QUERY, s.lang), weight: s.weight })));
+    } catch (e) {
+      // Kho tri thức (Python/RAGFlow) lỗi hoặc quá hạn: không được coi là "không có nội dung" (sẽ chuyển nhân viên oan) và không được đoán.
+      // Khách nhận câu báo mất kết nối cố định, tin được ghi lại để lượt sau làm điểm bắt đầu; không tạo ticket lỗi hệ thống cho từng khách.
+      const msg = e instanceof Error ? e.message : String(e);
+      trace.notes.push(`kho tri thức lỗi: ${msg.slice(0, 200)}`);
+      return done({ kind: "UNAVAILABLE", tier: 2, reason: `kho tri thức không khả dụng: ${msg.slice(0, 120)}` }, lang);
     }
+    chunks = fuseKnowledgeRanks(lists, settings.tier3MinScore, MAX_CHUNK_CANDIDATES, (h) => exhaust && tried(`K:${h.chunkId}`));
   }
-  const chunks = [...chunkById.values()].sort((a, b) => b.score - a.score).slice(0, MAX_CHUNK_CANDIDATES);
+  chunks = chunks.slice(0, MAX_CHUNK_CANDIDATES);
 
   trace.candidates = [...templates.map((t) => t.id), ...chunks.map((c) => `K:${c.chunkId}`)];
   if (!templates.length && !chunks.length) {

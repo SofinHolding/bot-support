@@ -79,6 +79,16 @@ describe("translationProblems: bản dịch không được bịa", () => {
   it("đích là tiếng Việt thì không bị coi là 'sót tiếng Việt'", () => {
     expect(translationProblems("Locked tokens unlock over 180 months.", "Token bị khóa được mở dần trong 180 tháng.", "vi")).toEqual([]);
   });
+  it.each([
+    ["bn", "আপনার অ্যাকাউন্ট নিরাপদ রাখুন"],
+    ["te", "మీ ఖాతాను సురక్షితంగా ఉంచండి"],
+    ["kn", "ನಿಮ್ಮ ಖಾತೆಯನ್ನು ಸುರಕ್ಷಿತವಾಗಿರಿಸಿ"],
+    ["ur", "اپنا اکاؤنٹ محفوظ رکھیں"],
+    ["ps", "خپل حساب خوندي وساتئ"],
+  ])("%s dùng đúng hệ chữ thì không bị chặn nhầm là ngôn ngữ Latin", (lang, translated) => {
+    expect(translationProblems("Keep your account secure", translated, lang).join(" ")).not.toContain("không phải Latin");
+    expect(translationProblems("Keep your account secure", translated, lang).join(" ")).not.toContain("không viết bằng chữ");
+  });
 });
 
 describe("parseKnowledgeDoc: ngôn ngữ của tài liệu", () => {

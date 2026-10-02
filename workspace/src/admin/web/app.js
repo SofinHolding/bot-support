@@ -82,7 +82,7 @@
   const dm = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(iso || "") ? `${iso.slice(8)}/${iso.slice(5, 7)}` : String(iso ?? ""));
   const fmtNum = (n) => (n == null || Number.isNaN(Number(n)) ? "-" : Number(n).toLocaleString("vi-VN"));
   const fmtPct = (r, d = 1) => (r == null || Number.isNaN(Number(r)) ? "-" : `${(Number(r) * 100).toFixed(d)}%`);
-  const fmtCost = (c) => `$${Number(c || 0).toFixed(4)}`;
+  const fmtCost = (c) => (c == null || Number.isNaN(Number(c)) ? "N/A" : `$${Number(c).toFixed(4)}`);
   const short = (s, n) => {
     const t = String(s ?? "");
     return t.length > n ? `${t.slice(0, n)}…` : t;
@@ -3434,7 +3434,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
           stat("Yêu cầu LLM", fmtNum(t.requests)),
           stat("Tổng token", fmtNum(t.totalTokens), `vào ${fmtNum(t.input)} · ra ${fmtNum(t.output)}`),
           stat("Cache", fmtNum(t.cacheRead + t.cacheWrite), `đọc ${fmtNum(t.cacheRead)} · ghi ${fmtNum(t.cacheWrite)}`),
-          stat("Chi phí", fmtCost(t.cost)),
+          stat("Chi phí", fmtCost(t.cost), t.unknownCostCalls ? `${fmtNum(t.unknownCostCalls)} lượt chưa có bảng giá · subtotal đã biết ${fmtCost(t.knownCost)}` : t.estimatedCostCalls ? "ước tính theo bảng giá cấu hình" : "dữ liệu giá đã biết"),
           stat("Người dùng", fmtNum(t.uniqueUsers), "khác nhau"),
         ),
         card("Token theo ngày", dayChart),
@@ -3449,7 +3449,7 @@ Nội dung cũ sẽ bị bỏ trong một bản nháp mới (chưa publish). Ch�
               { label: "Ra", cell: (d) => fmtNum(d.output), cls: "num" },
               { label: "Cache", cell: (d) => fmtNum(d.cacheRead + d.cacheWrite), cls: "num" },
               { label: "Tổng token", cell: (d) => fmtNum(d.totalTokens), cls: "num" },
-              { label: "Chi phí", cell: (d) => fmtCost(d.cost), cls: "num" },
+              { label: "Chi phí", cell: (d) => d.cost == null ? `N/A · biết ${fmtCost(d.knownCost)}` : fmtCost(d.cost), cls: "num" },
             ],
             u.perDay,
             { empty: "Không có dữ liệu trong khoảng này" },

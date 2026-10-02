@@ -24,6 +24,8 @@ describe("PGlite + migration", () => {
       "011_vault.sql",
       "012_vault_merge_prompts.sql",
       "013_knowledge_governance.sql",
+      "014_audit_hardening.sql",
+      "015_ragflow_index_payload_refresh.sql",
     ]);
     expect(await migrate(db)).toEqual([]); // idempotent
 
